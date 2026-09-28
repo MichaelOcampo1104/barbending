@@ -7,7 +7,6 @@ Runs entirely in the browser — no server, no upload, no install beyond `npm`.
 ## Quickstart
 
 ```powershell
-cd "C:\Users\Michael Ocampo\Documents\P_Files\barbending"
 npm install
 npm run dev        # → http://localhost:5173/ (opens automatically)
 ```
