@@ -27,19 +27,24 @@ function highlightMaterial(opacity) {
 export default function IfcModel() {
   const ifc = useStore((s) => s.ifc);
   const rev = useStore((s) => s.ifcRev);
-  const pick = useStore((s) => s.ifcPick);
-  const idx = useStore((s) => s.selectedBar);
-  const updateBar = useStore((s) => s.updateBar);
   const selected = useStore((s) => s.ifcSelected);
-  const setSelected = useStore((s) => s.setIfcSelected);
   const capsOn = useStore((s) => !!(s.section?.enabled && (s.section?.solidCut ?? true)));
+  const xray = useStore((s) => s.shading === 'xray');
+  const xform = useStore((s) => s.ifcXform);
   const group = ifcSession.group;
   void rev;
 
   useEffect(() => {
     if (!group || !ifc) return;
     group.scale.setScalar(ifc.unitToMeters);
-    const o = ifc.opacity ?? 0.3;
+    // User placement: mm offset + deg rotation, model frame (Y up).
+    const p = xform?.pos || [0, 0, 0];
+    const r = xform?.rot || [0, 0, 0];
+    const d = Math.PI / 180;
+    group.position.set(p[0] / 1000, p[1] / 1000, p[2] / 1000);
+    group.rotation.set(r[0] * d, r[1] * d, r[2] * d);
+    // X-ray shading overrides the per-model opacity (Blender-style see-through).
+    const o = xray ? 0.15 : (ifc.opacity ?? 1);
     if (ifcSession.material) {
       const m = ifcSession.material;
       m.opacity = o;
@@ -67,7 +72,7 @@ export default function IfcModel() {
       }
     }
     group.updateMatrixWorld(true);
-  }, [group, ifc, selected, rev]);
+  }, [group, ifc, selected, xform, xray, rev]);
 
   // Solid-cut stencil children: same geometry, no colour/depth writes, inherit
   // the subset transform automatically. Removed when caps are off/unloaded.
@@ -120,29 +125,12 @@ export default function IfcModel() {
   }, [group]);
 
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') setSelected(null); };
+    const onKey = (e) => { if (e.key === 'Escape') useStore.getState().setIfcSelected(null); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setSelected]);
+  }, []);
 
   if (!group) return null;
 
-  const onClick = (e) => {
-    if (!ifc) return;
-    e.stopPropagation();
-    if (pick) {
-      const p = group.worldToLocal(e.point.clone());
-      const mm = ifc.unitToMeters * 1000;
-      updateBar(idx, {
-        Pos_x: Math.round(p.x * mm),
-        Pos_y: Math.round(-p.z * mm),
-        Pos_z: Math.round(p.y * mm),
-      });
-      return;
-    }
-    const key = e.object?.userData?.ifcKey;
-    if (key) setSelected(key === selected ? null : key);
-  };
-
-  return <primitive object={group} onClick={onClick} />;
+  return <primitive object={group} />;
 }

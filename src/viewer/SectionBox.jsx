@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useThree } from '@react-three/fiber';
 import { Html, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -17,6 +17,26 @@ const noHitRaycast = () => null;
 
 // One cap material per plane (created once; shared Plane refs, no recompiles).
 const capMats = [0, 1, 2, 3, 4, 5].map((i) => capMaterial(i));
+
+// Headless stencil census (?captest=eq0|eq1|eq255): force all caps to
+// EqualStencilFunc over the FULL byte to map stencil values (0 vs 1 vs 255
+// distinguishes no-marks vs back-only vs front-only). Proves single-sided marks.
+if (typeof window !== 'undefined') {
+  const ct = new URLSearchParams(window.location.search).get('captest');
+  if (ct === 'eq0' || ct === 'eq1' || ct === 'eq255') {
+    const ref = ct === 'eq1' ? 1 : ct === 'eq255' ? 255 : 0;
+    // full-byte census: neutralise per-plane write masks on marks too
+    stencilMats.forEach((m) => {
+      m.back.stencilWriteMask = 0xff;
+      m.front.stencilWriteMask = 0xff;
+    });
+    capMats.forEach((m) => {
+      m.stencilFunc = THREE.EqualStencilFunc;
+      m.stencilFuncMask = 0xff;
+      m.stencilRef = ref;
+    });
+  }
+}
 
 // Cap quad transforms per plane, in box-local coords (box centred at origin).
 function capQuad(i, size) {
@@ -53,14 +73,38 @@ export default function SectionBox() {
   const raycaster = useRef(null);
   if (!raycaster.current) raycaster.current = new THREE.Raycaster();
 
+  // Safety: never leave orbit disabled (alt-tab mid-drag, lost pointerup).
+  // Stale move listeners are harmless: they early-return on null drag.current,
+  // and the once:true up/cancel listeners self-remove.
+  // (Above all early returns: hooks must run unconditionally every render.)
+  useEffect(() => {
+    const rescue = () => {
+      drag.current = null;
+      if (controls) controls.enabled = true;
+      document.body.style.cursor = '';
+    };
+    window.addEventListener('blur', rescue);
+    return () => window.removeEventListener('blur', rescue);
+  }, [controls]);
+
   if (section?.enabled && section.center && section.size) {
     updateSectionPlanesBox(section.center, section.size, section.quat);
   } else if (!section?.enabled) {
     updateSectionPlanes(null, null);
   }
+  // Headless isolation (?oneplane=N): park every plane but N giant so a single
+  // plane's marks/fill can be judged alone.
+  if (typeof window !== 'undefined' && section?.enabled) {
+    const op = new URLSearchParams(window.location.search).get('oneplane');
+    if (op !== null && op !== '') {
+      const keep = Number(op);
+      sectionPlanes.forEach((p, i) => { if (i !== keep) p.constant = 1e6; });
+    }
+  }
 
   if (!section?.enabled || !section.center || !section.size) return null;
   const { center, size, quat, mode, solidCut } = section;
+  const showBox = section.showBox ?? true;
   const q = new THREE.Quaternion(quat[0], quat[1], quat[2], quat[3]);
 
   const syncFromGizmo = () => {
@@ -122,6 +166,10 @@ export default function SectionBox() {
     window.addEventListener('pointerup', endDrag, { once: true });
     window.addEventListener('pointercancel', endDrag, { once: true });
   };
+
+  // Hidden-box mode: planes above stay live, but no visuals, handles, gizmo or
+  // label mount — zero picking interference while the cut remains active.
+  if (!showBox) return null;
 
   return (
     <>

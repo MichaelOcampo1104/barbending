@@ -1,15 +1,94 @@
-import { useEffect, useLayoutEffect, useMemo, lazy, Suspense } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, lazy, Suspense } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
 import { genBarPoints, distOffsets, MAX_RENDER_COPIES } from '../bbs/shapes.js';
 import FitIfc from './FitIfc.jsx';
+import AutoClipping from './AutoClipping.jsx';
 import SectionBox from './SectionBox.jsx';
 import { sectionPlanes } from './sectionPlanes.js';
 import { stencilMats } from './stencilMats.js';
 
 const noopStencilRaycast = () => null;
+
+// Blender-style direct picking: DOM pointer tracking + manual raycast against
+// pickable roots only (IFC group, concrete boxes, rebar tubes). Skips hidden
+// subtrees and stencil ghosts, so big models stay interactive. Independent of
+// R3F event bubbling; tolerates small pointer drift.
+function PickHandler() {
+  const gl = useThree((s) => s.gl);
+  const camera = useThree((s) => s.camera);
+  const scene = useThree((s) => s.scene);
+  const raycaster = useRef(null);
+  if (!raycaster.current) raycaster.current = new THREE.Raycaster();
+  useEffect(() => {
+    const el = gl.domElement;
+    let down = null;
+    const autotest = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('autotest');
+    const onDown = (ev) => {
+      down = [ev.clientX, ev.clientY];
+      if (autotest) console.info('[pick] down @' + ev.clientX + ',' + ev.clientY);
+    };
+    const onUp = (ev) => {
+      if (!down) return;
+      const dx = ev.clientX - down[0];
+      const dy = ev.clientY - down[1];
+      down = null;
+      if (dx * dx + dy * dy > 25) return; // drag, not a click
+      const st = useStore.getState();
+      const rect = el.getBoundingClientRect();
+      const nx = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const ny = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.current.setFromCamera(new THREE.Vector2(nx, ny), camera);
+      const roots = [];
+      scene.traverse((o) => { if (o.userData?.pickRoot) roots.push(o); });
+      const isShown = (o) => {
+        let p = o;
+        while (p && p !== scene) { if (!p.visible) return false; p = p.parent; }
+        return true;
+      };
+      const targets = [];
+      for (const r of roots) {
+        if (!isShown(r)) continue;
+        if (r.userData.pickRoot === 'concrete') { if (r.isMesh) targets.push(r); continue; }
+        r.traverse((o) => {
+          if (!o.isMesh || !isShown(o) || o.userData?.stencil) return;
+          targets.push(o);
+        });
+      }
+      const hits = raycaster.current.intersectObjects(targets, false);
+      if (autotest) console.info('[pick] up: targets=' + targets.length + ' hits=' + hits.length + ' pick=' + st.ifcPick);
+      if (!hits.length) return;
+      const h = hits[0];
+      let root = h.object;
+      while (root && root !== scene && !root.userData?.pickRoot) root = root.parent;
+      if (st.ifcPick) {
+        let pos;
+        if (root && root.userData.pickRoot === 'ifc') {
+          const u = st.ifc?.unitToMeters || 1;
+          const lp = root.worldToLocal(h.point.clone());
+          pos = { Pos_x: Math.round(lp.x * u * 1000), Pos_y: Math.round(-lp.z * u * 1000), Pos_z: Math.round(lp.y * u * 1000) };
+        } else {
+          // app frame (mm): x right, y plan, z up; scene is metres, Y-up
+          pos = { Pos_x: Math.round(h.point.x * 1000), Pos_y: Math.round(-h.point.z * 1000), Pos_z: Math.round(h.point.y * 1000) };
+        }
+        st.updateBar(st.selectedBar, pos);
+        st.setLastPick({ ...pos, at: Date.now() });
+      } else {
+        const key = h.object.userData?.ifcKey || null;
+        if (key) st.setIfcSelected(key === st.ifcSelected ? null : key);
+      }
+    };
+    el.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, [gl, camera, scene]);
+  return null;
+}
 
 // Headless hook (?autotest=section): drives the section + rewrites live renderer/
 // material/section state into #autotest-dump every second (settled-state truth,
@@ -18,6 +97,30 @@ function AutotestDump() {
   const gl = useThree((s) => s.gl);
   const scene = useThree((s) => s.scene);
   const camera = useThree((s) => s.camera);
+  // Expose scene/camera + a manual pick probe for headless debugging.
+  useLayoutEffect(() => {
+    window.__scene = scene;
+    window.__camera = camera;
+    window.__probePick = (nx, ny) => {
+      try {
+        const rc = new THREE.Raycaster();
+        rc.setFromCamera(new THREE.Vector2(nx, ny), camera);
+        const hits = rc.intersectObjects(scene.children, true).slice(0, 6);
+        return JSON.stringify(hits.map((h) => {
+          const chain = [];
+          let p = h.object;
+          while (p) { if (p.__r3f?.eventCount) chain.push(p.type); p = p.parent; }
+          return {
+            d: +h.distance.toFixed(2),
+            type: `${h.object.type}/${h.object.geometry?.type || '-'}`,
+            ifcKey: h.object.userData?.ifcKey || null,
+            handlers: chain,
+            pt: h.point.toArray().map((v) => +v.toFixed(2)),
+          };
+        }));
+      } catch (e) { return 'ERR:' + e.message; }
+    };
+  }, [scene, camera]);
   useLayoutEffect(() => {
     const st = useStore.getState();
     if (!st.section) st.toggleSection();
@@ -56,11 +159,23 @@ function AutotestDump() {
           ? `n=${cp.length} n0=[${cp[0].normal.toArray().map((v) => v.toFixed(2)).join(',')}] c0=${cp[0].constant.toFixed(2)}`
           : 'null';
       });
-      // Find the rebar tube specifically: same array? compiled with clipping?
+      // Rebar tube census: exists? sane verts? visible chain? world bounds?
       scene.traverse((o) => {
         if (tubeInfo !== 'none' || !o.isMesh || o.geometry?.type !== 'TubeGeometry') return;
+        const pos = o.geometry.attributes.position;
+        let nan = 0;
+        for (let i = 0; i < Math.min(pos.count, 200); i++) {
+          if (!Number.isFinite(pos.getX(i) + pos.getY(i) + pos.getZ(i))) nan += 1;
+        }
+        o.updateWorldMatrix(true, false);
+        const bb = new THREE.Box3().setFromObject(o);
+        let visChain = true;
+        let p = o;
+        while (p) { if (!p.visible) { visChain = false; break; } p = p.parent; }
         const mp = gl.properties.get(o.material);
-        tubeInfo = `sameArray=${o.material.clippingPlanes === sectionPlanes} compiledPlanes=${mp.numClippingPlanes} prog=${!!mp.currentProgram}`;
+        tubeInfo = `verts=${pos.count} nan=${nan} vis=${o.visible}/${visChain} `
+          + `bb=[${bb.min.toArray().map((v) => v.toFixed(2)).join(',')}]-[${bb.max.toArray().map((v) => v.toFixed(2)).join(',')}] `
+          + `clip=${o.material.clippingPlanes === sectionPlanes}/${mp.numClippingPlanes}`;
       });
       // Pixel verdict: 5 sample points along the default bar OUTSIDE the box
       // (bar x∈[0,3] at y=z=0; thirded box x∈[-1.33,1.33]) must read background.
@@ -93,6 +208,13 @@ function AutotestDump() {
         meshesStandard: meshes,
         sampleMat: sample,
         tube: tubeInfo,
+        pick: useStore.getState().ifcPick,
+        lastPick: useStore.getState().lastPick,
+        barPos: (() => {
+          const s = useStore.getState();
+          const b = s.bars[s.selectedBar];
+          return b ? [b.Pos_x, b.Pos_y, b.Pos_z] : null;
+        })(),
       });
     }, 1000);
     return () => { clearInterval(iv); el.remove(); };
@@ -141,7 +263,7 @@ function RebarMesh({ bar, selected, onClick }) {
   const rot = THREE.MathUtils.degToRad(Number(bar.Pos_Rotation) || 0);
 
   return (
-    <group onClick={(e) => { e.stopPropagation(); onClick?.(); }}>
+    <group userData-pickRoot="rebar" onClick={(e) => { e.stopPropagation(); onClick?.(); }}>
       {copies.map(([ox, oy, oz], i) => (
         <group key={i} position={[bx + ox * S, bz + oz * S, by - oy * S]} rotation={[0, rot, 0]}>
           <mesh geometry={tube}>
@@ -163,14 +285,16 @@ function ConcreteMesh({ c }) {
   const [lx, ly, lz] = [c.lx * S, c.lz * S, c.ly * S];
   const geom = useMemo(() => new THREE.BoxGeometry(lx, lz, ly), [lx, ly, lz]);
   const capsOn = useStore((s) => !!(s.section?.enabled && (s.section?.solidCut ?? true)));
+  const xray = useStore((s) => s.shading === 'xray');
+  const noMarks = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('nomarks') === '1';
   return (
-    <mesh position={[(c.x * S) + lx / 2, (c.z * S) + lz / 2, -((c.y * S) + ly / 2)]} geometry={geom}>
-      <meshStandardMaterial color="#9ca3af" transparent opacity={0.22} roughness={0.9} depthWrite={false} clippingPlanes={sectionPlanes} />
+    <mesh userData-pickRoot="concrete" position={[(c.x * S) + lx / 2, (c.z * S) + lz / 2, -((c.y * S) + ly / 2)]} geometry={geom}>
+      <meshStandardMaterial color="#9ca3af" transparent opacity={xray ? 0.1 : 0.22} roughness={0.9} depthWrite={false} clippingPlanes={sectionPlanes} />
       <lineSegments>
         <edgesGeometry args={[new THREE.BoxGeometry(lx, lz, ly)]} />
         <lineBasicMaterial color="#6b7280" />
       </lineSegments>
-      {capsOn && [0, 1, 2, 3, 4, 5].map((i) => (
+      {capsOn && !noMarks && [0, 1, 2, 3, 4, 5].map((i) => (
         <group key={i}>
           <mesh geometry={geom} material={stencilMats[i].back} renderOrder={3 * i} raycast={noopStencilRaycast} />
           <mesh geometry={geom} material={stencilMats[i].front} renderOrder={3 * i + 1} raycast={noopStencilRaycast} />
@@ -187,9 +311,11 @@ export default function Scene() {
   const selectBar = useStore((s) => s.selectBar);
   const showConcrete = useStore((s) => s.showConcrete);
   const ifcActive = useStore((s) => s.ifcActive);
+  const navOrbit = useStore((s) => s.navMode === 'orbit');
 
   return (
     <Canvas camera={{ position: [6, 4, -6], fov: 45 }} style={{ background: '#0f172a' }}
+      dpr={[1, 1.75]}
       gl={{ preserveDrawingBuffer: true }}
       onCreated={({ gl }) => {
         gl.localClippingEnabled = true;
@@ -212,8 +338,11 @@ export default function Scene() {
       {bars.map((b, i) => (
         <RebarMesh key={i} bar={b} selected={i === selectedBar} onClick={() => selectBar(i)} />
       ))}
-      <OrbitControls makeDefault />
+      <OrbitControls makeDefault zoomToCursor minDistance={0} maxDistance={Infinity} panSpeed={0.7}
+        mouseButtons={{ LEFT: navOrbit ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN }} />
       <FitIfc />
+      <AutoClipping />
+      <PickHandler />
       {typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('autotest') && <AutotestDump />}
     </Canvas>
   );

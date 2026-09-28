@@ -59,6 +59,7 @@ export function normalizeSection(s) {
     center, size,
     quat: s.quat ?? [0, 0, 0, 1],
     solidCut: s.solidCut ?? true,
+    showBox: s.showBox ?? true,
   };
 }
 // Default box: IFC bounds + margin, else an 8×4×8 m cube. Scene units (metres).

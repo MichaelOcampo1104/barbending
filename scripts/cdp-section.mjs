@@ -47,14 +47,55 @@ ws.onmessage = ((prev) => (ev) => {
   try {
     const m = JSON.parse(ev.data.toString());
     if (m.method === 'Log.entryAdded') logs.push(`[${m.params.entry.level}] ${m.params.entry.text} ${m.params.entry.url || ''}`);
+    if (m.method === 'Runtime.consoleAPICalled') {
+      const vals = (m.params.args || []).map((a) => a.value ?? `[${a.type}]`).join(' ');
+      logs.push(`[con.${m.params.type}] ${vals}`);
+    }
     if (m.method === 'Runtime.exceptionThrown') logs.push(`[EXC] ${(m.params.exceptionDetails.exception || {}).description || m.params.exceptionDetails.text} :: ${(m.params.exceptionDetails.stackTrace || {}).callFrames || []}`.slice(0, 900));
   } catch { /* ignore */ }
 })(ws.onmessage);
 await send('Page.navigate', { url: URL });
+const CLICK = process.argv[4] || '';
+// Optional 5th arg "synclk": after CLICK, send TRUSTED mouse clicks on a grid
+// across the canvas via CDP Input (real pointer pipeline).
+const SYN = process.argv[5] || '';
+if (CLICK) {
+  await new Promise((r) => setTimeout(r, 4000));
+  const clickRes = await send('Runtime.evaluate', { expression: `(() => {
+    const btns = [...document.querySelectorAll('button')];
+    const b = btns.find((x) => (x.textContent || '').includes(${JSON.stringify(CLICK)}));
+    if (b) { b.click(); return 'clicked:' + b.textContent.trim(); }
+    return 'not-found';
+  })()`, returnByValue: true });
+  console.log('CLICKRES:', JSON.stringify(clickRes?.result?.result));
+  await new Promise((r) => setTimeout(r, 5000));
+}
+if (SYN === 'synclk' && CLICK) {
+  const r = await send('Runtime.evaluate', { expression: `(() => {
+    const cv = document.querySelector('.view canvas') || document.querySelector('canvas');
+    if (!cv) return null;
+    const b = cv.getBoundingClientRect();
+    return JSON.stringify({ x: b.left, y: b.top, w: b.width, h: b.height });
+  })()`, returnByValue: true });
+  const rect = JSON.parse(r?.result?.result?.value || 'null');
+  console.log('CLICKRECT:', JSON.stringify(rect));
+  if (rect) {
+    for (const [fx, fy] of [[0.5, 0.5], [0.35, 0.6], [0.65, 0.4], [0.45, 0.45], [0.55, 0.55], [0.3, 0.5], [0.7, 0.5]]) {
+      const x = Math.round(rect.x + rect.w * fx), y = Math.round(rect.y + rect.h * fy);
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+      await new Promise((rr) => setTimeout(rr, 600));
+    }
+  }
+  await new Promise((r) => setTimeout(r, 4000));
+}
 // poll for settled dump (section applied + several rewrite ticks;
 // with &sample=1 also waits for the IFC to finish loading)
 const needIfc = URL.includes('sample=1');
+const needDump = URL.includes('autotest');
 let dump = null;
+if (needDump) {
 for (let i = 0; i < 90; i++) {
   await new Promise((r) => setTimeout(r, 1000));
   const r = await send('Runtime.evaluate', { expression: `(() => { const el = document.getElementById('autotest-dump'); const root = document.getElementById('root'); return JSON.stringify({ dump: el ? el.textContent : '', rootLen: root ? root.innerHTML.length : -1 }); })()` });
@@ -66,11 +107,23 @@ for (let i = 0; i < 90; i++) {
     } catch { /* keep polling */ }
   }
 }
+} else {
+  const r = await send('Runtime.evaluate', { expression: `(() => { const root = document.getElementById('root'); return JSON.stringify({ rootLen: root ? root.innerHTML.length : -1, body: document.body.innerText.slice(0, 120) }); })()` });
+  dump = r?.result?.result?.value || null;
+}
 console.log('DUMP:', dump || 'NO-DUMP-DIV');
 console.log('LOGS:');
 logs.slice(0, 20).forEach((l) => console.log(' ', l.slice(0, 300)));
 const shot = await send('Page.captureScreenshot', { format: 'png' });
 fs.writeFileSync(OUT, Buffer.from(shot.result.data, 'base64'));
 console.log('SHOT OK:', OUT);
+// Optional 6th arg "probe": NDC pairs "x,y;x,y" raycast via page probe.
+const PROBE = process.argv[6] || '';
+if (PROBE) {
+  for (const pair of PROBE.split(';')) {
+    const r = await send('Runtime.evaluate', { expression: `window.__probePick${pair ? `(${pair})` : '(0,0)'}` });
+    console.log('PROBE', pair, '=>', (r?.result?.result?.value || 'n/a').slice(0, 1200));
+  }
+}
 ws.close();
 try { execSync(`taskkill /PID ${edge.pid} /F`); } catch { /* gone */ }

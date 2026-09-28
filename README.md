@@ -38,6 +38,9 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
 - **Section box (Revit-style)** — Faces (push/pull coloured grips), Move and
   Rotate gizmos, live mm size tag, **Test cut**, **Fit box**, **Solid cut**
   (filled cut faces) toggle.
+- **Blender-style viewport** — unlimited zoom (dynamic clip planes +
+  zoom-to-cursor), Solid / X-ray shading, FPS + camera readout in the status
+  bar, collapsible panels.
 - **BBS table + CSV** — live cut lengths (bend deductions) and `D²/162`
   weights; one-click `rebar_scheduling.csv` export, CSV re-import.
 

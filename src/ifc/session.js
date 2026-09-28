@@ -168,6 +168,7 @@ export async function loadIfc(file) {
 
   const group = new THREE.Group();
   group.name = `IFC:${file.name}`;
+  group.userData.pickRoot = 'ifc';
   const mat = new THREE.MeshStandardMaterial({
     color: '#8fa3c8', transparent: true, opacity: 1,
     roughness: 0.9, metalness: 0, depthWrite: true, side: THREE.DoubleSide,

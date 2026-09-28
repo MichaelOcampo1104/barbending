@@ -70,6 +70,18 @@ export async function loadFile(e, setIfc, setBusy, setErr) {
   setBusy('');
 }
 
+// Fit the camera to the model's LIVE bounding box (follows unit changes,
+// placement offsets and visibility toggles).
+export async function fitIfcLive() {
+  const { ifcSession } = await import('./session.js');
+  const g = ifcSession.group;
+  if (!g) return;
+  const bb = new THREE.Box3().setFromObject(g);
+  const size = bb.getSize(new THREE.Vector3());
+  if (size.length() === 0) return;
+  useStore.getState().setIfcFitBox(bb.getCenter(new THREE.Vector3()).toArray(), size.length() / 2);
+}
+
 // Full control panel — rendered in the right sidebar when a model is loaded.
 export default function IfcPanel() {
   const ifc = useStore((s) => s.ifc);
@@ -80,12 +92,14 @@ export default function IfcPanel() {
   const setIfcElements = useStore((s) => s.setIfcElements);
   const setIfcOpacity = useStore((s) => s.setIfcOpacity);
   const setIfcUnit = useStore((s) => s.setIfcUnit);
-  const refitIfc = useStore((s) => s.refitIfc);
+  const setIfcXform = useStore((s) => s.setIfcXform);
+  const resetIfcXform = useStore((s) => s.resetIfcXform);
   const setIfcFitBox = useStore((s) => s.setIfcFitBox);
   const selected = useStore((s) => s.ifcSelected);
   const setSelected = useStore((s) => s.setIfcSelected);
   const renameEl = useStore((s) => s.renameIfcElement);
   const moveEl = useStore((s) => s.moveIfcElement);
+  const xform = useStore((s) => s.ifcXform) || { pos: [0, 0, 0], rot: [0, 0, 0] };
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
   const [query, setQuery] = useState('');
@@ -103,7 +117,7 @@ export default function IfcPanel() {
     unloadIfc();
     clearIfc();
   };
-  const changeUnit = (toMeters, label) => { setIfcUnit(toMeters, label); refitIfc(); };
+  const changeUnit = (toMeters, label) => { setIfcUnit(toMeters, label); fitIfcLive(); };
   const zoomTo = async (key) => {
     const { ifcSession, subsetBox } = await import('./session.js');
     const mesh = ifcSession.meshes[key];
@@ -170,12 +184,35 @@ export default function IfcPanel() {
       <div className="btnrow">
         <button onClick={showAll}>All on</button>
         <button onClick={hideAll}>All off</button>
-        <button onClick={refitIfc}>Fit view</button>
+        <button onClick={fitIfcLive}>Fit view</button>
         <button onClick={() => fileRef.current?.click()}>Swap file…</button>
         <input ref={fileRef} type="file" accept=".ifc,.IFC" hidden onChange={(e) => loadFile(e, setIfc, setBusy, setErr)} />
       </div>
       {busy && <p className="distnote">{busy}</p>}
       {err && <p className="err">{err}</p>}
+
+      <div className="sect">Placement (model mm / deg, Y up)</div>
+      <div className="grid3">
+        {[['X', 0], ['Y', 1], ['Z', 2]].map(([l, i]) => (
+          <label key={l} className="fld"><span>{l} mm</span>
+            <input type="number" value={xform.pos[i]} onChange={(e) => {
+              const v = [...xform.pos]; v[i] = Number(e.target.value); setIfcXform({ pos: v });
+            }} />
+          </label>
+        ))}
+      </div>
+      <div className="grid3">
+        {[['Rx°', 0], ['Ry°', 1], ['Rz°', 2]].map(([l, i]) => (
+          <label key={l} className="fld"><span>{l}</span>
+            <input type="number" value={xform.rot[i]} onChange={(e) => {
+              const v = [...xform.rot]; v[i] = Number(e.target.value); setIfcXform({ rot: v });
+            }} />
+          </label>
+        ))}
+      </div>
+      <div className="btnrow">
+        <button onClick={() => { resetIfcXform(); fitIfcLive(); }}>Reset to 0,0,0 + 0°</button>
+      </div>
 
       {sel && (
         <div className="props">

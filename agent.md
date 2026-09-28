@@ -109,6 +109,8 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
 ## Edit discipline
 
 - Read before Edit (tool-enforced); keep diffs minimal; don't reformat.
+- **Never place hooks after early returns** (React #310 blanked the whole app
+  once — SectionBox). All hooks must run unconditionally every render.
 - No new files unless required; prefer editing existing modules.
 - Clipping planes (`sectionPlanes`) are mutated in place and shared by
   reference — never replace the array, never change its length (avoids shader
@@ -120,6 +122,14 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   timing; the per-face `clearStencil` (imperative `onAfterRender` via ref, NOT
   the prop) is belt-and-braces.
   Mark/cap materials are module singletons; quads are box-group children.
+- Pick-to-place/select (`PickHandler` in Scene.jsx): DOM pointer tracking +
+  manual raycast against `userData.pickRoot` roots only (`ifc` group, concrete
+  meshes, rebar groups), skipping hidden subtrees + `userData.stencil` ghosts.
+  Reads live store (no stale closures). IFC hits use model-unit→mm math;
+  concrete/rebar use scene→app-mm mapping. R3F event bubbling is NOT used
+  (unreliable for imperative subset meshes); `lastPick` in store is the proof.
+- Mouse map is Blender-like: LMB select (or orbit via `navMode` switch), MMB
+  rotate, RMB pan, wheel zoom-to-cursor; status-bar hints derive from `navMode`.
 - Caps are attached ONLY for `SOLID_CAP_TYPES` (beams/columns/slabs/walls/
   footings/piles/stairs/ramps). Thin shells (plates, members, roofs, proxies)
   project whole-surface fills instead of cut lines, so they clip hollow-only.
@@ -131,9 +141,19 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   polls `#autotest-dump`, screenshots to Temp. Run: `node scripts/cdp-section.mjs
   [url] [out.png]`. Needs the `:5174` preview server up.
 - `?autotest=section` (App timer + `AutotestDump` in Scene) self-drives the
-  section; `&showmarks=1` makes stencil mark passes visible (red/blue).
+  section; `&showmarks=1` makes stencil mark passes visible (red/blue);
+  `&captest=eq0|eq1|eq255` maps stencil values; `&nomarks=1` drops mark meshes;
+  `&oneplane=N` parks all but one plane.
   `&sample=1` loads `public/sample-concrete.ifc` (beam+column test model,
   same code path as upload) — full IFC+caps proof without a file dialog.
+- `AutotestDump` writes `#autotest-dump` JSON every second: renderer flag,
+  live plane constants, store, per-material plane refs, rebar-tube census
+  (verts/NaN/visibility/world-bounds/program planes), and a pixel verdict
+  (readPixels on known-outside bar points vs background).
+- `scripts/cdp-section.mjs [url] [out.png] [clickText]` drives headless Edge
+  over CDP: console + uncaught exceptions, dump polling, screenshot, and
+  optional toolbar-button click (reproduces exact user actions — caught the
+  #310 blank-page crash).
 - `AutotestDump` also writes pixel ground truth (readPixels on known-outside
   bar points vs background) — trust pixels over screenshots, and screenshots
   over prop dumps.

@@ -3,7 +3,7 @@ import Scene from './viewer/Scene.jsx';
 import { useStore } from './store.js';
 import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount } from './bbs/shapes.js';
 import { enrichBar, downloadCsv, parseCsv } from './bbs/csv.js';
-import IfcPanel, { IfcLoadButton } from './ifc/IfcPanel.jsx';
+import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
 // IFC load so the main bundle stays light. See IfcPanel handlers.
 import './App.css';
@@ -154,16 +154,29 @@ function ViewportBar() {
   const ifc = useStore((s) => s.ifc);
   const ifcPick = useStore((s) => s.ifcPick);
   const setIfcPick = useStore((s) => s.setIfcPick);
-  const refitIfc = useStore((s) => s.refitIfc);
+  const lastPick = useStore((s) => s.lastPick);
+  const shading = useStore((s) => s.shading);
+  const setShading = useStore((s) => s.setShading);
+  const navMode = useStore((s) => s.navMode);
+  const setNavMode = useStore((s) => s.setNavMode);
   const section = useStore((s) => s.section);
   const toggleSection = useStore((s) => s.toggleSection);
   const fitSectionToIfc = useStore((s) => s.fitSectionToIfc);
   const thirdSection = useStore((s) => s.thirdSection);
   const setSection = useStore((s) => s.setSection);
+  const showBox = section?.showBox ?? true;
   return (
     <>
       <div className="vptools">
         <button className={showConcrete ? 'on' : ''} onClick={toggleConcrete}>◧ Concrete</button>
+        <span className="seg">
+          <button className={shading === 'solid' ? 'on' : ''} onClick={() => setShading('solid')} title="Solid shading (Blender)">Solid</button>
+          <button className={shading === 'xray' ? 'on' : ''} onClick={() => setShading('xray')} title="X-ray: see-through concrete (Blender)">X-ray</button>
+        </span>
+        <span className="seg" title="Left-mouse behavior (middle-drag always orbits)">
+          <button className={navMode === 'select' ? 'on' : ''} onClick={() => setNavMode('select')} title="LMB selects bars/IFC (orbit with MMB)">Select</button>
+          <button className={navMode === 'orbit' ? 'on' : ''} onClick={() => setNavMode('orbit')} title="LMB orbits the view">Orbit</button>
+        </span>
         <button className={section?.enabled ? 'on' : ''} onClick={toggleSection} title="Revit-style section box: push/pull faces, move or rotate gizmo">◫ Section</button>
         {section?.enabled && (
           <span className="seg">
@@ -173,18 +186,22 @@ function ViewportBar() {
           </span>
         )}
         {section?.enabled && ifc && <button onClick={fitSectionToIfc} title="Reset section box to model bounds">Fit box</button>}
+        {section?.enabled && (
+          <button className={showBox ? 'on' : ''} onClick={() => setSection({ showBox: !showBox })} title="Hide the box visuals — the cut stays active">👁 Box</button>
+        )}
         {section?.enabled && <button onClick={thirdSection} title="Shrink to middle third — proves the cut with no dragging">Test cut</button>}
         {section?.enabled && (
           <button className={(section?.solidCut ?? true) ? 'on' : ''} onClick={() => setSection({ solidCut: !(section?.solidCut ?? true) })} title="Fill cut faces solid (stencil caps) or leave hollow">Solid cut</button>
         )}
-        {ifc && <button className={ifcPick ? 'on' : ''} onClick={() => setIfcPick(!ifcPick)} title="Click IFC geometry to move the selected bar there">🎯 Pick pos</button>}
-        {ifc && <button onClick={refitIfc}>Fit IFC</button>}
+        <button className={ifcPick ? 'on' : ''} onClick={() => setIfcPick(!ifcPick)} title="Click IFC / concrete / bar surfaces to move the selected bar there">🎯 Pick pos</button>
+        {ifc && <button onClick={fitIfcLive}>Fit IFC</button>}
         <span className="vstat">{totalBars} bars · {totalW.toFixed(1)} kg</span>
       </div>
       <div className="overlay">
         drag = orbit · wheel = zoom · right-drag = pan · click bar = select
         {section?.enabled && <b> — drag ◼ face cubes to push/pull the section</b>}
-        {ifcPick && <b> — pick mode: click IFC geometry to place the selected bar</b>}
+        {ifcPick && <b> — pick mode: click IFC / concrete / bar to place the selected bar</b>}
+        {lastPick && <b> — placed ({lastPick.Pos_x}, {lastPick.Pos_y}, {lastPick.Pos_z})</b>}
         {sel && <b> — {sel.Bar_mark} · {sel.Rebar_Type} · Ø{sel.Dia} · {sel._copies} bars · cut {sel._cut} mm · {sel.Weight_kg} kg</b>}
       </div>
     </>
@@ -241,9 +258,29 @@ function BbsStrip() {
   );
 }
 
+function StatusBar() {
+  const perf = useStore((s) => s.perf);
+  const navMode = useStore((s) => s.navMode);
+  const bars = useStore((s) => s.bars);
+  const rows = bars.map(enrichBar);
+  const totalW = rows.reduce((a, r) => a + (r.Weight_kg || 0), 0);
+  const totalBars = rows.reduce((a, r) => a + (r._copies || 1), 0);
+  const dist = perf.dist >= 1
+    ? `${perf.dist.toFixed(1)} m`
+    : `${Math.round(perf.dist * 1000).toLocaleString('en-US')} mm`;
+  return (
+    <footer className="statusbar">
+      <span>{navMode === 'orbit' ? 'LMB orbit' : 'LMB select'} · MMB orbit · RMB pan · wheel zoom-to-cursor · Esc deselect IFC</span>
+      <span>{perf.fps} fps · cam {dist} · {totalBars} bars · {totalW.toFixed(1)} kg</span>
+    </footer>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState('rebar');
   const ifcActive = useStore((s) => s.ifcActive);
+  const leftOpen = useStore((s) => s.leftOpen);
+  const setLeftOpen = useStore((s) => s.setLeftOpen);
   // Headless/smoke hook: ?autotest=section drops the section box and cuts it.
   // &sample=1 also loads public/sample-concrete.ifc first (same path as upload).
   useEffect(() => {
@@ -270,13 +307,18 @@ export default function App() {
     <div className="app">
       <header><strong>barbending</strong><span>browser BBS · Three.js · FreeCAD-CSV compatible · {import.meta.env.DEV ? `dev-live (server ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'})` : `build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}`}</span></header>
       <div className="work">
+        {leftOpen ? (
         <aside className="side">
           <div className="tabs">
             <button className={tab === 'rebar' ? 'on' : ''} onClick={() => setTab('rebar')}>Rebar</button>
             <button className={tab === 'concrete' ? 'on' : ''} onClick={() => setTab('concrete')}>Concrete</button>
+            <button className="collapse" onClick={() => setLeftOpen(false)} title="Collapse panel">«</button>
           </div>
           <div className="sidebody">{tab === 'rebar' ? <BarEditor /> : <ConcreteEditor />}</div>
         </aside>
+        ) : (
+        <div className="rail"><button onClick={() => setLeftOpen(true)} title="Expand panel">»</button></div>
+        )}
         <section className="view"><Scene /><ViewportBar /></section>
         {ifcActive && (
           <aside className="rside">
@@ -286,6 +328,7 @@ export default function App() {
         )}
       </div>
       <BbsStrip />
+      <StatusBar />
     </div>
   );
 }
