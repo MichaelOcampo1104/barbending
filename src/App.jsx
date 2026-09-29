@@ -151,7 +151,7 @@ function BarEditor() {
         </>
       )}
       <div className="sect">🔗 Lap splice (EC2 bond table)</div>
-      <div className="distnote">This bar laps onto the anchor's end. Straight bars only; length from the smaller Ø (least size bar). Or arm 🔗 Lap above and click anchor, then a bar.</div>
+      <div className="distnote">This bar laps onto the anchor's end or start. Supports straight, bent, crank & double-crank bars; length from the smaller Ø (least size bar). Or arm 🔗 Lap above and click anchor, then a bar.</div>
       <div className="row2">
         <label className="fld"><span>Anchor bar</span>
           <select value={lapAnchor ?? ''} onChange={(e) => setLapAnchor(e.target.value === '' ? null : Number(e.target.value))}>
@@ -532,7 +532,7 @@ function ViewportBar() {
         <button className={ifcPick ? 'on' : ''} onClick={() => setIfcPick(!ifcPick)} title="Click IFC / concrete / bar surfaces to move the selected bar there">🎯 Pick pos</button>
         <button className={measure.active ? 'on' : ''} onClick={() => setMeasureActive(!measure.active)} title="Measure: LMB clicks drop points on surfaces, RMB removes last, Esc exits (view-only)">📏 Measure</button>
         <button className={snapEnabled !== false ? 'on' : ''} onClick={() => setSnapEnabled(!(snapEnabled !== false))} title="Snap magnet: pick & measure snap to nearby bar ends/corners (pink marker shows the target)">🧲 Snap</button>
-        <button className={lapArmed ? 'on' : ''} onClick={() => setLapArmed(!lapArmed)} title="Lap splice: click anchor bar, then lapping bar (EC2 table, straight bars)">🔗 Lap</button>
+        <button className={lapArmed ? 'on' : ''} onClick={() => setLapArmed(!lapArmed)} title="Lap splice: click anchor bar, then lapping bar (EC2 table, straight/bent/crank bars)">🔗 Lap</button>
         <label className="cover" title="Concrete cover (mm) — pick-to-place sinks the bar centreline this far + Ø/2 inside the clicked face">
           cover
           <input type="number" value={cover} min={0} onChange={(e) => setCover(Number(e.target.value))} />

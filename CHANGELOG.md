@@ -2,6 +2,11 @@
 
 ## Unreleased (working tree → next push)
 
+- **Multi-Type Lap Splice Support (Bent, Straight, Crank, Double-Crank)**:
+  - Extended auto-lapping from straight-only to all longitudinal rebar combinations (`straight`, `bent`, `crank`, `double_crank`).
+  - Added smart proximity detection: automatically splices onto the anchor's end or start depending on which side the lapping bar is closer to.
+  - Splicing along the main straight axis ensures bent hooks and cranks orient collinear and form the required EC2 lap overlap.
+  - Rendered dual splice point anchor markers in the 3D viewport.
 - **Lapping rule fix**: Lap splice length calculation now correctly uses the smaller (least size) bar diameter (`Math.min(diaA, diaB)`) per standard detailing code (Eurocode 2 §8.7.3) rather than the first picked/larger bar.
 - **FreeCAD Reinforcement Benchmark BBS CSV Export**:
   - Added dedicated `⤓ BBS Schedule CSV` toolbar and header actions exporting in FreeCAD Reinforcement benchmark / BS 8666 format with UTF-8 BOM.

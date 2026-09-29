@@ -158,6 +158,30 @@ export function barOverlapsBoxes(bar, boxes) {
     b.minZ <= h.maxZ && b.maxZ >= h.minZ,
   );
 }
+// Main straight run length (mm) of a longitudinal bar (straight, bent, crank, double_crank)
+export function barMainLength(bar) {
+  switch (bar?.Rebar_Type) {
+    case 'bent':
+    case 'straight':
+    default:
+      return Number(bar?.['Length of Bar'] || bar?.length || 3000);
+    case 'crank':
+      return Number(bar?.Long_length || 4000);
+    case 'double_crank':
+      return Number(bar?.DC_Lap_Start || 1000) + Number(bar?.DC_Lap_Mid || 2000) + Number(bar?.DC_Tail_Length || 1000);
+  }
+}
+
+// Splice endpoints along the main axis of a bar in app-mm (Pos + Pos_Rotation)
+export function barSpliceEnds(bar) {
+  const L = barMainLength(bar);
+  const t = (Number(bar.Pos_Rotation) || 0) * Math.PI / 180;
+  const c = Math.cos(t), s = Math.sin(t);
+  const px = Number(bar.Pos_x) || 0, py = Number(bar.Pos_y) || 0, pz = Number(bar.Pos_z) || 0;
+  const map = ([x, y, z]) => [px + x * c - y * s, py + x * s + y * c, pz + z];
+  return [map([0, 0, 0]), map([L, 0, 0])];
+}
+
 // Base [start, end] of a bar in app-mm (Pos + Pos_Rotation, no distribution
 // offsets — laps splice base geometry; identical grids stay consistent).
 // Rotation convention matches barAppBox/RebarMesh (about app Z/up).

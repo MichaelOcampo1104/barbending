@@ -3,7 +3,7 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, AdaptiveDpr, Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { genBarPoints, distOffsets, barOverlapsBoxes, rebarSnapNodes, concreteSnapNodes, allSnapNodes, barBaseEnds, MAX_RENDER_COPIES } from '../bbs/shapes.js';
+import { genBarPoints, distOffsets, barOverlapsBoxes, rebarSnapNodes, concreteSnapNodes, allSnapNodes, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES } from '../bbs/shapes.js';
 import FitIfc from './FitIfc.jsx';
 import AutoClipping from './AutoClipping.jsx';
 import SectionBox from './SectionBox.jsx';
@@ -720,11 +720,11 @@ export default function Scene() {
   const hiddenBoxes = concretes
     .filter((c) => c.visible === false)
     .map((c) => ({ minX: c.x, minY: c.y, minZ: c.z, maxX: c.x + c.lx, maxY: c.y + c.ly, maxZ: c.z + c.lz }));
-  // Lap anchor marker: green dot on the anchor bar's end while picking.
+  // Lap anchor markers: green/yellow dots on anchor bar splice ends while picking.
   const lapArmed = useStore((s) => s.lapArmed);
   const lapAnchor = useStore((s) => s.lapAnchor);
-  const lapAnchorEnd = (lapArmed && lapAnchor != null && bars[lapAnchor])
-    ? (() => { const [, e] = barBaseEnds(bars[lapAnchor]); return [e[0] * S, e[2] * S, -(e[1] * S)]; })()
+  const lapAnchorEnds = (lapArmed && lapAnchor != null && bars[lapAnchor])
+    ? barSpliceEnds(bars[lapAnchor]).map(([x, y, z]) => [x * S, z * S, -(y * S)])
     : null;
 
   return (
@@ -784,12 +784,12 @@ export default function Scene() {
       <MeasureHandler />
       <MeasureView />
       <SnapPreview />
-      {lapAnchorEnd && (
-        <mesh position={lapAnchorEnd} renderOrder={9999}>
-          <sphereGeometry args={[0.03, 12, 12]} />
-          <meshBasicMaterial color="#22c55e" depthTest={false} transparent opacity={0.95} />
+      {lapAnchorEnds && lapAnchorEnds.map((p, i) => (
+        <mesh key={`lap-anchor-${i}`} position={p} renderOrder={9999}>
+          <sphereGeometry args={[0.035, 12, 12]} />
+          <meshBasicMaterial color={i === 1 ? '#22c55e' : '#84cc16'} depthTest={false} transparent opacity={0.95} />
         </mesh>
-      )}
+      ))}
       {typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('autotest') && <AutotestDump />}
     </Canvas>
   );

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { defaultBar, genBarPoints } from './bbs/shapes.js';
+import { defaultBar, genBarPoints, barMainLength } from './bbs/shapes.js';
 import { lapLengthMm } from './bbs/calc.js';
 import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
 
@@ -95,11 +95,11 @@ export const useStore = create((set, get) => ({
     };
   }),
 
-  // Lap splice (straight bars): anchor bar A stays, lapping bar B moves so
-  // its start sits one lap length before A's end along A's axis, collinear
-  // (B inherits A's plan rotation). Lap length from the EC2 table by the
-  // smaller Ø (least size bar). Single history unit. Identical distribution grids stay
-  // consistent lap-for-lap.
+  // Lap splice (longitudinal bars: straight, bent, crank, double_crank):
+  // anchor bar A stays, lapping bar B moves so its main leg splices onto A's
+  // main leg by one lap length, collinear (B inherits A's plan rotation and level).
+  // Slices onto anchor end or start based on closest proximity. Lap length
+  // calculated from EC2 table by the smaller Ø (least size bar).
   bond: 'poor',
   setBond: (v) => set({ bond: v }),
   lapArmed: false,
@@ -112,31 +112,54 @@ export const useStore = create((set, get) => ({
     const A = s.bars[aIdx], B = s.bars[bIdx];
     if (!A || !B) return { ok: false, msg: 'Pick two bars first (🔗 Lap, then click anchor + lapping bar).' };
     if (aIdx === bIdx) return { ok: false, msg: 'Anchor and lapping bar must be different bars.' };
-    if (A.Rebar_Type !== 'straight' || B.Rebar_Type !== 'straight') {
-      return { ok: false, msg: 'Lap splice needs straight bars on both sides.' };
+
+    const validTypes = new Set(['straight', 'bent', 'crank', 'double_crank']);
+    if (!validTypes.has(A.Rebar_Type) || !validTypes.has(B.Rebar_Type)) {
+      return { ok: false, msg: 'Lap splice works with longitudinal bars (straight, bent, crank, double_crank).' };
     }
+
     const diaA = Number(A.Dia) || 0, diaB = Number(B.Dia) || 0;
     const dia = (diaA > 0 && diaB > 0) ? Math.min(diaA, diaB) : (diaA || diaB);
     const L = lapLengthMm(dia, s.bond);
     if (!L) return { ok: false, msg: `No lap length for Ø${dia}.` };
-    const g = genBarPoints(A);
+
     const t = (Number(A.Pos_Rotation) || 0) * Math.PI / 180;
-    const c = Math.cos(t), w = Math.sin(t);
-    const loc = ([x, y, z]) => [
-      (Number(A.Pos_x) || 0) + x * c - y * w,
-      (Number(A.Pos_y) || 0) + x * w + y * c,
-      (Number(A.Pos_z) || 0) + z,
-    ];
-    const S1 = loc(g.points[0]);
-    const E1 = loc(g.points[g.points.length - 1]);
-    const dx = E1[0] - S1[0], dy = E1[1] - S1[1], dz = E1[2] - S1[2];
-    const n = Math.hypot(dx, dy, dz);
-    if (!(n > 0)) return { ok: false, msg: 'Anchor bar has zero length.' };
-    const P = [E1[0] - (dx / n) * L, E1[1] - (dy / n) * L, E1[2] - (dz / n) * L];
+    const ux = Math.cos(t), uy = Math.sin(t);
+
+    const LA = barMainLength(A);
+    const LB = barMainLength(B);
+    if (!(LA > 0) || !(LB > 0)) return { ok: false, msg: 'Bars must have non-zero length.' };
+
+    const SA = [Number(A.Pos_x) || 0, Number(A.Pos_y) || 0, Number(A.Pos_z) || 0];
+    const EA = [SA[0] + ux * LA, SA[1] + uy * LA, SA[2]];
+
+    const curBX = Number(B.Pos_x) || 0, curBY = Number(B.Pos_y) || 0, curBZ = Number(B.Pos_z) || 0;
+    const distToStart = Math.hypot(curBX - SA[0], curBY - SA[1], curBZ - SA[2]);
+    const distToEnd = Math.hypot(curBX - EA[0], curBY - EA[1], curBZ - EA[2]);
+
+    let P;
+    if (distToStart < distToEnd) {
+      // Lap at anchor start: Bar B ends L mm after SA, extending backward
+      P = [
+        SA[0] + ux * L - ux * LB,
+        SA[1] + uy * L - uy * LB,
+        SA[2],
+      ];
+    } else {
+      // Lap at anchor end: Bar B starts L mm before EA, extending forward
+      P = [
+        EA[0] - ux * L,
+        EA[1] - uy * L,
+        EA[2],
+      ];
+    }
+
     set((s2) => withHist(s2, {
       bars: s2.bars.map((b, i) => (i === bIdx ? {
         ...b,
-        Pos_x: Math.round(P[0]), Pos_y: Math.round(P[1]), Pos_z: Math.round(P[2]),
+        Pos_x: Math.round(P[0] * 10) / 10,
+        Pos_y: Math.round(P[1] * 10) / 10,
+        Pos_z: Math.round(P[2] * 10) / 10,
         Pos_Rotation: A.Pos_Rotation,
       } : b)),
       selectedBar: bIdx,
