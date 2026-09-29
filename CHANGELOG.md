@@ -2,6 +2,11 @@
 
 ## Unreleased (working tree → next push)
 
+- **Rebar Plane Rotation & 3D Orientation Fix**:
+  - Connected `RebarMesh` tube geometry rendering to `transformBarLocalPoint`, ensuring 3D rebar reacts accurately to Plane (`XZ`, `YZ`, `XY`) and in-plane `Pos_Rotation` changes.
+  - Standardized local 2D shape coordinate definitions across all shapes (`bent`, `crank`, `double_crank`, `c_link`, `c_link_with_hook`, `straight`).
+  - Added Plane selector dropdown in the Rebar editor panel and updated stirrup `Fit to host` logic to respect host orientation.
+  - Aligned snapping, bounding box, lap splicing, and CSV parsing/exporting with multi-plane coordinates.
 - **Multi-Type Lap Splice Support (Bent, Straight, Crank, Double-Crank)**:
   - Extended auto-lapping from straight-only to all longitudinal rebar combinations (`straight`, `bent`, `crank`, `double_crank`).
   - Added smart proximity detection: automatically splices onto the anchor's end or start depending on which side the lapping bar is closer to.

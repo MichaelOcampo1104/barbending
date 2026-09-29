@@ -17,11 +17,11 @@ export function genBarPoints(bar) {
   const d = Number(bar.Dia || 16);
   switch (bar.Rebar_Type) {
     case 'bent': {
-      // L-shape: main leg L along X, bent leg H up (+Z) or down (−Z)
+      // L-shape: main leg L along local X, bent leg H along local Y (up/down)
       const L = Number(bar['Length of Bar'] || bar.length || 3000);
       const H = Number(bar.H || 800);
       const dir = String(bar.bent_up_down || 'up').toLowerCase() === 'down' ? -1 : 1;
-      const pts = [[0, 0, 0], [L, 0, 0], [L, 0, dir * H]];
+      const pts = [[0, 0, 0], [L, 0, 0], [L, dir * H, 0]];
       return finish(pts, 1, d);
     }
     case 'crank': {
@@ -29,7 +29,7 @@ export function genBarPoints(bar) {
       const L = Number(bar.Long_length || 4000);
       const s = Number(bar.Crank_step || 300);
       const a = L * 0.4, b = L * 0.6;
-      const pts = [[0, 0, 0], [a, 0, 0], [b, 0, s], [L, 0, s]];
+      const pts = [[0, 0, 0], [a, 0, 0], [b, s, 0], [L, s, 0]];
       return finish(pts, 2, d);
     }
     case 'double_crank': {
@@ -38,11 +38,11 @@ export function genBarPoints(bar) {
       const mid = Number(bar.DC_Lap_Mid || 2000);
       const tail = Number(bar.DC_Tail_Length || 1000);
       const s = Number(bar.Crank_step || 300);
-      const pts = [[0, 0, 0], [start, 0, 0], [start + mid, 0, s], [start + mid + tail, 0, s]];
+      const pts = [[0, 0, 0], [start, 0, 0], [start + mid, s, 0], [start + mid + tail, s, 0]];
       return finish(pts, 2, d);
     }
     case 'c_link': {
-      // Closed rectangular stirrup a x b in XY plane
+      // Closed rectangular stirrup a x b in local XY plane
       const a = Number(bar.c_length_a || 600);
       const b = Number(bar.c_length_b || 400);
       const pts = [[0, 0, 0], [a, 0, 0], [a, b, 0], [0, b, 0], [0, 0, 0]];
@@ -73,6 +73,7 @@ function finish(pts, bends90, dia) {
 
 // Default parameter sets per type (matches FreeCAD CSV columns loosely)
 export function defaultBar(type, tag = 1) {
+  const isStirrup = type === 'c_link' || type === 'c_link_with_hook';
   const base = {
     Rebar_tag: tag,
     Bar_mark: `B${tag}`,
@@ -81,7 +82,7 @@ export function defaultBar(type, tag = 1) {
     Pos_x: 0, Pos_y: 0, Pos_z: 0,
     Group: 'HRB3DB_bt',
     Pos_Rotation: 0,
-    Plane: 0,
+    Plane: isStirrup ? 'YZ' : 'XZ',
     qty: 1,
   };
   switch (type) {
@@ -117,20 +118,72 @@ export function applyTypeDefaults(bar, type) {
   return next;
 }
 
-// App-frame bounding box of a bar (mm), including Pos, Pos_Rotation (about
-// app Z/up) and every distribution copy. Mirrors RebarMesh placement exactly:
-// local (x, y, z) → plan rotation → + Pos + copy offsets. Pure math, no three.
+// Transforms a local bar coordinate [x, y, z] to rotated orientation based on Plane (XY, XZ, YZ),
+// in-plane Pos_Rotation, and plan_rotation (around global vertical Z).
+export function transformBarLocalPoint(bar, [x, y, z]) {
+  const planeRaw = String(bar?.Plane ?? 'XZ').toUpperCase().trim();
+  const plane = (planeRaw === '0' || planeRaw === 'XY' || planeRaw === 'TOP' || planeRaw === 'BOTTOM' || planeRaw === 'HORIZONTAL' || planeRaw === 'SLAB')
+    ? 'XY'
+    : (planeRaw === '2' || planeRaw === 'YZ' || planeRaw === 'SIDE' || planeRaw === 'CROSS')
+      ? 'YZ'
+      : 'XZ';
+
+  const posRot = Number(bar?.Pos_Rotation) || 0;
+  const planRot = Number(bar?.plan_rotation) || 0;
+
+  const theta = (posRot * Math.PI) / 180;
+  const cosT = Math.cos(theta);
+  const sinT = Math.sin(theta);
+
+  // In-plane 2D rotation of the local profile
+  const x0 = x * cosT - y * sinT;
+  const y0 = x * sinT + y * cosT;
+  const z0 = z;
+
+  let x1 = 0, y1 = 0, z1 = 0;
+
+  if (plane === 'XY') {
+    // Horizontal (Slab / Column cross-section): local X -> App X, local Y -> App Y, local Z -> App Z
+    x1 = x0;
+    y1 = y0;
+    z1 = z0;
+  } else if (plane === 'YZ') {
+    // Vertical YZ (Beam cross-section): local X -> App Y, local Y -> App Z (up), local Z -> App X
+    x1 = z0;
+    y1 = x0;
+    z1 = y0;
+  } else {
+    // Vertical XZ (Beam elevation X): local X -> App X, local Y -> App Z (up), local Z -> App Y
+    x1 = x0;
+    y1 = z0;
+    z1 = y0;
+  }
+
+  // Plan rotation (twist around global vertical Z-axis)
+  if (planRot !== 0) {
+    const phi = (planRot * Math.PI) / 180;
+    const cosP = Math.cos(phi);
+    const sinP = Math.sin(phi);
+    const rx = x1 * cosP - y1 * sinP;
+    const ry = x1 * sinP + y1 * cosP;
+    x1 = rx;
+    y1 = ry;
+  }
+
+  return [x1, y1, z1];
+}
+
+// App-frame bounding box of a bar (mm), including Pos, Plane, Pos_Rotation, plan_rotation
+// and every distribution copy. Pure math, no three.
 export function barAppBox(bar) {
   const g = genBarPoints(bar);
-  const t = (Number(bar.Pos_Rotation) || 0) * Math.PI / 180;
-  const c = Math.cos(t), s = Math.sin(t);
   let lx0 = Infinity, ly0 = Infinity, lz0 = Infinity;
   let lx1 = -Infinity, ly1 = -Infinity, lz1 = -Infinity;
-  for (const [x, y, z] of g.points) {
-    const rx = x * c - y * s, ry = x * s + y * c;
+  for (const pt of g.points) {
+    const [rx, ry, rz] = transformBarLocalPoint(bar, pt);
     if (rx < lx0) lx0 = rx; if (rx > lx1) lx1 = rx;
     if (ry < ly0) ly0 = ry; if (ry > ly1) ly1 = ry;
-    if (z < lz0) lz0 = z; if (z > lz1) lz1 = z;
+    if (rz < lz0) lz0 = rz; if (rz > lz1) lz1 = rz;
   }
   let ox0 = 0, oy0 = 0, oz0 = 0, ox1 = 0, oy1 = 0, oz1 = 0;
   let first = true;
@@ -158,6 +211,7 @@ export function barOverlapsBoxes(bar, boxes) {
     b.minZ <= h.maxZ && b.maxZ >= h.minZ,
   );
 }
+
 // Main straight run length (mm) of a longitudinal bar (straight, bent, crank, double_crank)
 export function barMainLength(bar) {
   switch (bar?.Rebar_Type) {
@@ -172,26 +226,28 @@ export function barMainLength(bar) {
   }
 }
 
-// Splice endpoints along the main axis of a bar in app-mm (Pos + Pos_Rotation)
+// Splice endpoints along the main axis of a bar in app-mm (Pos + Plane + Rotation)
 export function barSpliceEnds(bar) {
   const L = barMainLength(bar);
-  const t = (Number(bar.Pos_Rotation) || 0) * Math.PI / 180;
-  const c = Math.cos(t), s = Math.sin(t);
   const px = Number(bar.Pos_x) || 0, py = Number(bar.Pos_y) || 0, pz = Number(bar.Pos_z) || 0;
-  const map = ([x, y, z]) => [px + x * c - y * s, py + x * s + y * c, pz + z];
-  return [map([0, 0, 0]), map([L, 0, 0])];
+  const s0 = transformBarLocalPoint(bar, [0, 0, 0]);
+  const e0 = transformBarLocalPoint(bar, [L, 0, 0]);
+  return [
+    [px + s0[0], py + s0[1], pz + s0[2]],
+    [px + e0[0], py + e0[1], pz + e0[2]],
+  ];
 }
 
-// Base [start, end] of a bar in app-mm (Pos + Pos_Rotation, no distribution
-// offsets — laps splice base geometry; identical grids stay consistent).
-// Rotation convention matches barAppBox/RebarMesh (about app Z/up).
+// Base [start, end] of a bar in app-mm (Pos + Plane + Rotation)
 export function barBaseEnds(bar) {
   const g = genBarPoints(bar);
-  const t = (Number(bar.Pos_Rotation) || 0) * Math.PI / 180;
-  const c = Math.cos(t), s = Math.sin(t);
   const px = Number(bar.Pos_x) || 0, py = Number(bar.Pos_y) || 0, pz = Number(bar.Pos_z) || 0;
-  const map = ([x, y, z]) => [px + x * c - y * s, py + x * s + y * c, pz + z];
-  return [map(g.points[0]), map(g.points[g.points.length - 1])];
+  const p0 = transformBarLocalPoint(bar, g.points[0]);
+  const p1 = transformBarLocalPoint(bar, g.points[g.points.length - 1]);
+  return [
+    [px + p0[0], py + p0[1], pz + p0[2]],
+    [px + p1[0], py + p1[1], pz + p1[2]],
+  ];
 }
 
 // Centerline snap nodes of visible bars (app-mm [x, y, z]): every polyline
@@ -208,12 +264,11 @@ export function rebarSnapNodes(bars, concretes, excludeIdx = -1) {
     if (b.host && hiddenIds.has(b.host)) return;
     if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return;
     const g = genBarPoints(b);
-    const t = (Number(b.Pos_Rotation) || 0) * Math.PI / 180;
-    const c = Math.cos(t), s = Math.sin(t);
     const px = Number(b.Pos_x) || 0, py = Number(b.Pos_y) || 0, pz = Number(b.Pos_z) || 0;
+    const transformed = g.points.map((pt) => transformBarLocalPoint(b, pt));
     for (const [ox, oy, oz] of distOffsets(b).slice(0, MAX_RENDER_COPIES)) {
-      for (const [x, y, z] of g.points) {
-        nodes.push([px + ox + x * c - y * s, py + oy + x * s + y * c, pz + oz + z]);
+      for (const [tx, ty, tz] of transformed) {
+        nodes.push([px + ox + tx, py + oy + ty, pz + oz + tz]);
       }
     }
   });

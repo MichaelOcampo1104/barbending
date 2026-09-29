@@ -111,13 +111,19 @@ function BarEditor() {
         </label>
         <label className="chk"><input type="checkbox" checked={!!bar.hidden} onChange={(e) => set('hidden', e.target.checked || undefined)} /> Hide this bar</label>
       </div>
-      <div className="sect">Position (mm) · rotation (°) · cover (mm)</div>
+      <div className="sect">Position (mm) · rotation (°) · plane · cover (mm)</div>
       <div className="grid3">
         <Field label="Pos_x" value={bar.Pos_x} onChange={(v) => set('Pos_x', v)} />
         <Field label="Pos_y" value={bar.Pos_y} onChange={(v) => set('Pos_y', v)} />
         <Field label="Pos_z" value={bar.Pos_z} onChange={(v) => set('Pos_z', v)} />
         <Field label="Rotation" value={bar.Pos_Rotation} onChange={(v) => set('Pos_Rotation', v)} />
-        <Field label="Plane" value={bar.Plane} onChange={(v) => set('Plane', v)} />
+        <label className="fld"><span>Plane</span>
+          <select value={String(bar.Plane ?? 'XZ').toUpperCase()} onChange={(e) => set('Plane', e.target.value)}>
+            <option value="XZ">XZ (Vertical Front / Beam)</option>
+            <option value="YZ">YZ (Vertical Side / Stirrup)</option>
+            <option value="XY">XY (Horizontal / Slab)</option>
+          </select>
+        </label>
         <Field label="Cover" value={cover} onChange={(v) => setCover(v)} />
       </div>
       {(bar.Rebar_Type === 'c_link' || bar.Rebar_Type === 'c_link_with_hook') && concretes.length > 0 && (
@@ -137,15 +143,44 @@ function BarEditor() {
               const dia = Number(bar.Dia) || 16;
               const cv = Number(cover) || 0;
               const inset = cv + dia / 2;
-              updateBar(idx, {
-                host: host.id,
-                c_length_a: Math.max(dia * 2, Math.round(host.lx - 2 * cv - dia)),
-                c_length_b: Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia)),
-                Pos_x: Math.round((host.x + inset) * 10) / 10,
-                Pos_y: Math.round((host.y + inset) * 10) / 10,
-                Pos_z: Math.round((host.z + inset) * 10) / 10,
-                Pos_Rotation: 0,
-              });
+              const isBeamX = host.lx >= host.ly && host.lx >= host.lz;
+              const isColZ = host.lz > host.lx && host.lz > host.ly;
+              if (isBeamX) {
+                updateBar(idx, {
+                  host: host.id,
+                  Plane: 'YZ',
+                  c_length_a: Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia)),
+                  c_length_b: Math.max(dia * 2, Math.round(host.lz - 2 * cv - dia)),
+                  Pos_x: Math.round((host.x + inset) * 10) / 10,
+                  Pos_y: Math.round((host.y + inset) * 10) / 10,
+                  Pos_z: Math.round((host.z + inset) * 10) / 10,
+                  Pos_Rotation: 0,
+                  spacing_x: bar.spacing_x || 150,
+                  qty_x: Math.max(1, Math.floor((host.lx - 2 * cv) / (bar.spacing_x || 150))),
+                });
+              } else if (isColZ) {
+                updateBar(idx, {
+                  host: host.id,
+                  Plane: 'XY',
+                  c_length_a: Math.max(dia * 2, Math.round(host.lx - 2 * cv - dia)),
+                  c_length_b: Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia)),
+                  Pos_x: Math.round((host.x + inset) * 10) / 10,
+                  Pos_y: Math.round((host.y + inset) * 10) / 10,
+                  Pos_z: Math.round((host.z + inset) * 10) / 10,
+                  Pos_Rotation: 0,
+                });
+              } else {
+                updateBar(idx, {
+                  host: host.id,
+                  Plane: 'XZ',
+                  c_length_a: Math.max(dia * 2, Math.round(host.lx - 2 * cv - dia)),
+                  c_length_b: Math.max(dia * 2, Math.round(host.lz - 2 * cv - dia)),
+                  Pos_x: Math.round((host.x + inset) * 10) / 10,
+                  Pos_y: Math.round((host.y + inset) * 10) / 10,
+                  Pos_z: Math.round((host.z + inset) * 10) / 10,
+                  Pos_Rotation: 0,
+                });
+              }
             }}>Fit to host</button>
           </div>
         </>

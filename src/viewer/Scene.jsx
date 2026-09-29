@@ -3,7 +3,7 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, AdaptiveDpr, Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { genBarPoints, distOffsets, barOverlapsBoxes, rebarSnapNodes, concreteSnapNodes, allSnapNodes, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES } from '../bbs/shapes.js';
+import { genBarPoints, transformBarLocalPoint, distOffsets, barOverlapsBoxes, rebarSnapNodes, concreteSnapNodes, allSnapNodes, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES } from '../bbs/shapes.js';
 import FitIfc from './FitIfc.jsx';
 import AutoClipping from './AutoClipping.jsx';
 import SectionBox from './SectionBox.jsx';
@@ -626,8 +626,12 @@ const colorFor = (dia) => DIA_COLORS[dia] || '#f59e0b';
 function RebarMesh({ bar, selected, onClick }) {
   const tube = useMemo(() => {
     const g = genBarPoints(bar);
-    // mm -> m; local X = bar axis, local Y -> -Z (plan), local Z -> +Y (up)
-    const v3 = g.points.map(([x, y, z]) => new THREE.Vector3(x * S, z * S, -y * S));
+    // App coords in mm: [ax, ay, az] via transformBarLocalPoint(bar, pt)
+    // Scene coords in m: ThreeX = ax * S, ThreeY = az * S (up), ThreeZ = -ay * S (depth)
+    const v3 = g.points.map((pt) => {
+      const [ax, ay, az] = transformBarLocalPoint(bar, pt);
+      return new THREE.Vector3(ax * S, az * S, -ay * S);
+    });
     let curve;
     if (v3.length === 2) curve = new THREE.LineCurve3(v3[0], v3[1]);
     else curve = new THREE.CatmullRomCurve3(v3, false, 'catmullrom', 0.0);
@@ -652,12 +656,11 @@ function RebarMesh({ bar, selected, onClick }) {
   const bx = (Number(bar.Pos_x) || 0) * S;
   const bz = (Number(bar.Pos_z) || 0) * S;
   const by = -(Number(bar.Pos_y) || 0) * S;
-  const rot = THREE.MathUtils.degToRad(Number(bar.Pos_Rotation) || 0);
 
   return (
     <group userData-pickRoot="rebar" onClick={(e) => { e.stopPropagation(); onClick?.(); }}>
       {copies.map(([ox, oy, oz], i) => (
-        <group key={i} position={[bx + ox * S, bz + oz * S, by - oy * S]} rotation={[0, rot, 0]}>
+        <group key={i} position={[bx + ox * S, bz + oz * S, by - oy * S]}>
           {/* Selected bar draws on top (no depth test): snap-to-cover parks it
               inside opaque solids, and the white highlight alone can't show
               through. Unselected bars keep depth so the model reads normally.

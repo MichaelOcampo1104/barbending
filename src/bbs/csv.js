@@ -228,13 +228,18 @@ export function parseCsv(text) {
     const o = {};
     headers.forEach((h, i) => { o[h.trim()] = (cells[i] ?? '').trim(); });
     // numeric coercion for known fields
-    for (const k of ['Rebar_tag', 'Shape_Code', 'Dia', 'Pos_x', 'Pos_y', 'Pos_z', 'Pos_Rotation', 'Plane', 'qty',
+    for (const k of ['Rebar_tag', 'Shape_Code', 'Dia', 'Pos_x', 'Pos_y', 'Pos_z', 'Pos_Rotation', 'plan_rotation', 'qty',
       'qty_x', 'spacing_x', 'qty_y', 'spacing_y', 'offset_x', 'offset_y', 'offset_z',
       'Length of Bar', 'H', 'Long_length', 'Crank_step', 'Length of Lap',
       'DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length', 'c_length_a', 'c_length_b', 'length', 'double_hook',
       'Visible']) {
       if (o[k] !== '' && o[k] !== undefined && !isNaN(Number(o[k]))) o[k] = Number(o[k]);
     }
+    if (o.Plane === '0' || o.Plane === 0) o.Plane = 'XY';
+    else if (o.Plane === '1' || o.Plane === 1) o.Plane = 'XZ';
+    else if (o.Plane === '2' || o.Plane === 2) o.Plane = 'YZ';
+    else if (!o.Plane) o.Plane = (o.Rebar_Type === 'c_link' || o.Rebar_Type === 'c_link_with_hook') ? 'YZ' : 'XZ';
+
     if (Number(o.Visible) === 0) o.hidden = true;
     delete o.Visible;
     if (!o.Rebar_Type) o.Rebar_Type = 'straight';

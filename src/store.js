@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { defaultBar, genBarPoints, barMainLength } from './bbs/shapes.js';
+import { defaultBar, genBarPoints, barMainLength, barSpliceEnds } from './bbs/shapes.js';
 import { lapLengthMm } from './bbs/calc.js';
 import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
 
@@ -123,15 +123,14 @@ export const useStore = create((set, get) => ({
     const L = lapLengthMm(dia, s.bond);
     if (!L) return { ok: false, msg: `No lap length for Ø${dia}.` };
 
-    const t = (Number(A.Pos_Rotation) || 0) * Math.PI / 180;
-    const ux = Math.cos(t), uy = Math.sin(t);
-
     const LA = barMainLength(A);
     const LB = barMainLength(B);
     if (!(LA > 0) || !(LB > 0)) return { ok: false, msg: 'Bars must have non-zero length.' };
 
-    const SA = [Number(A.Pos_x) || 0, Number(A.Pos_y) || 0, Number(A.Pos_z) || 0];
-    const EA = [SA[0] + ux * LA, SA[1] + uy * LA, SA[2]];
+    const [SA, EA] = barSpliceEnds(A);
+    const ux = (EA[0] - SA[0]) / LA;
+    const uy = (EA[1] - SA[1]) / LA;
+    const uz = (EA[2] - SA[2]) / LA;
 
     const curBX = Number(B.Pos_x) || 0, curBY = Number(B.Pos_y) || 0, curBZ = Number(B.Pos_z) || 0;
     const distToStart = Math.hypot(curBX - SA[0], curBY - SA[1], curBZ - SA[2]);
@@ -143,14 +142,14 @@ export const useStore = create((set, get) => ({
       P = [
         SA[0] + ux * L - ux * LB,
         SA[1] + uy * L - uy * LB,
-        SA[2],
+        SA[2] + uz * L - uz * LB,
       ];
     } else {
       // Lap at anchor end: Bar B starts L mm before EA, extending forward
       P = [
         EA[0] - ux * L,
         EA[1] - uy * L,
-        EA[2],
+        EA[2] - uz * L,
       ];
     }
 
@@ -161,6 +160,8 @@ export const useStore = create((set, get) => ({
         Pos_y: Math.round(P[1] * 10) / 10,
         Pos_z: Math.round(P[2] * 10) / 10,
         Pos_Rotation: A.Pos_Rotation,
+        Plane: A.Plane,
+        plan_rotation: A.plan_rotation,
       } : b)),
       selectedBar: bIdx,
     }));
