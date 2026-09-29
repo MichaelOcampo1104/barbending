@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import Scene from './viewer/Scene.jsx';
+import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
 import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount } from './bbs/shapes.js';
 import { enrichBar, downloadCsv, parseCsv } from './bbs/csv.js';
+import { lapLengthMm } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
 // IFC load so the main bundle stays light. See IfcPanel handlers.
@@ -21,6 +23,17 @@ function Field({ label, value, onChange, type = 'number' }) {
   );
 }
 
+// Polyline length of app-mm measure points (mirrors MeasureView segments).
+function measureTotal(points) {
+  let t = 0;
+  for (let i = 1; i < points.length; i++) {
+    const [ax, ay, az] = points[i - 1];
+    const [bx, by, bz] = points[i];
+    t += Math.hypot(bx - ax, by - ay, bz - az);
+  }
+  return t;
+}
+
 const FIELDS_BY_TYPE = DIM_FIELDS_BY_TYPE;
 
 function BarEditor() {
@@ -34,6 +47,12 @@ function BarEditor() {
   const concretes = useStore((s) => s.concretes);
   const cover = useStore((s) => s.cover);
   const setCover = useStore((s) => s.setCover);
+  const bond = useStore((s) => s.bond);
+  const setBond = useStore((s) => s.setBond);
+  const lapAnchor = useStore((s) => s.lapAnchor);
+  const setLapAnchor = useStore((s) => s.setLapAnchor);
+  const applyLapSplice = useStore((s) => s.applyLapSplice);
+  const lastLap = useStore((s) => s.lastLap);
   const [hostId, setHostId] = useState(null);
   const bar = bars[idx];
   if (!bar) return <div className="panel"><p>No bars yet — pick a type below.</p><TypeGrid onAdd={addBar} /></div>;
@@ -82,6 +101,16 @@ function BarEditor() {
         <Field label="Offset Y" value={bar.offset_y ?? 0} onChange={(v) => set('offset_y', v)} />
         <Field label="Offset Z" value={bar.offset_z ?? 0} onChange={(v) => set('offset_z', v)} />
       </div>
+      <div className="sect">Host & visibility (view only — BBS + CSV stay complete)</div>
+      <div className="row2">
+        <label className="fld"><span>Host member — hides with it</span>
+          <select value={bar.host && concretes.some((c) => c.id === bar.host) ? bar.host : ''} onChange={(e) => set('host', e.target.value || null)}>
+            <option value="">— None —</option>
+            {concretes.map((c) => <option key={c.id} value={c.id}>{c.name}{c.visible === false ? ' (hidden)' : ''}</option>)}
+          </select>
+        </label>
+        <label className="chk"><input type="checkbox" checked={!!bar.hidden} onChange={(e) => set('hidden', e.target.checked || undefined)} /> Hide this bar</label>
+      </div>
       <div className="sect">Position (mm) · rotation (°) · cover (mm)</div>
       <div className="grid3">
         <Field label="Pos_x" value={bar.Pos_x} onChange={(v) => set('Pos_x', v)} />
@@ -109,6 +138,7 @@ function BarEditor() {
               const cv = Number(cover) || 0;
               const inset = cv + dia / 2;
               updateBar(idx, {
+                host: host.id,
                 c_length_a: Math.max(dia * 2, Math.round(host.lx - 2 * cv - dia)),
                 c_length_b: Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia)),
                 Pos_x: Math.round((host.x + inset) * 10) / 10,
@@ -120,8 +150,32 @@ function BarEditor() {
           </div>
         </>
       )}
-      <div className="sect">Add bar</div>
-      <TypeGrid onAdd={addBar} />
+      <div className="sect">🔗 Lap splice (EC2 bond table)</div>
+      <div className="distnote">This bar laps onto the anchor's end. Straight bars only; length from the larger Ø. Or arm 🔗 Lap above and click anchor, then a bar.</div>
+      <div className="row2">
+        <label className="fld"><span>Anchor bar</span>
+          <select value={lapAnchor ?? ''} onChange={(e) => setLapAnchor(e.target.value === '' ? null : Number(e.target.value))}>
+            <option value="">— Pick —</option>
+            {bars.map((b, i) => i !== idx && <option key={i} value={i}>{b.Bar_mark} · {b.Rebar_Type} · Ø{b.Dia}</option>)}
+          </select>
+        </label>
+        <label className="fld"><span>Bond (default poor = safe)</span>
+          <select value={bond} onChange={(e) => setBond(e.target.value)}>
+            <option value="good">good</option>
+            <option value="poor">poor</option>
+          </select>
+        </label>
+      </div>
+      <div className="crow">
+        <span className="hint">lap {lapLengthMm(Math.max(Number(bar.Dia) || 0, Number(bars[lapAnchor]?.Dia) || 0), bond).toLocaleString('en-US')} mm</span>
+        <button onClick={() => {
+          if (lapAnchor == null || bars[lapAnchor] === undefined) { alert('Pick an anchor bar first (dropdown or 🔗 Lap clicks).'); return; }
+          const r = applyLapSplice(lapAnchor, idx);
+          if (!r.ok) alert(r.msg);
+        }}>Lap onto anchor</button>
+      </div>
+      {lastLap && lastLap.b === bar.Bar_mark && <div className="distnote">Last: {lastLap.b} → {lastLap.a} · {lastLap.len.toLocaleString('en-US')} mm ({lastLap.bond} bond, Ø{lastLap.dia})</div>}
+      <div className="sect">Add bar</div>      <TypeGrid onAdd={addBar} />
       <button className="danger block" onClick={() => removeBar(idx)}>Delete this bar</button>
     </div>
   );
@@ -163,9 +217,10 @@ function ConcreteEditor() {
 
       <div className="sect">Concrete Elements ({concretes.length})</div>
       {concretes.map((c) => (
-        <div key={c.id} className="cbox">
+        <div key={c.id} className={c.visible === false ? 'cbox hidden' : 'cbox'}>
           <div className="crow">
             <input className="cname" value={c.name} onChange={(e) => updateConcrete(c.id, { name: e.target.value })} />
+            <button className="sm" title={c.visible === false ? 'Show (bars inside reappear)' : 'Hide (bars inside hide too)'} onClick={() => updateConcrete(c.id, { visible: c.visible === false ? true : false })}>{c.visible === false ? '🚫' : '👁'}</button>
             <button className="danger sm" onClick={() => removeConcrete(c.id)}>×</button>
           </div>
           <div className="grid3">
@@ -206,6 +261,14 @@ function ViewportBar() {
   const ifc = useStore((s) => s.ifc);
   const ifcPick = useStore((s) => s.ifcPick);
   const setIfcPick = useStore((s) => s.setIfcPick);
+  const measure = useStore((s) => s.measure);
+  const setMeasureActive = useStore((s) => s.setMeasureActive);
+  const snapEnabled = useStore((s) => s.snapEnabled);
+  const setSnapEnabled = useStore((s) => s.setSnapEnabled);
+  const lapArmed = useStore((s) => s.lapArmed);
+  const setLapArmed = useStore((s) => s.setLapArmed);
+  const lapAnchor = useStore((s) => s.lapAnchor);
+  const lastLap = useStore((s) => s.lastLap);
   const cover = useStore((s) => s.cover);
   const setCover = useStore((s) => s.setCover);
   const lastPick = useStore((s) => s.lastPick);
@@ -261,6 +324,9 @@ function ViewportBar() {
           <button className={(section?.solidCut ?? true) ? 'on' : ''} onClick={() => setSection({ solidCut: !(section?.solidCut ?? true) })} title="Fill cut faces solid (stencil caps) or leave hollow">Solid cut</button>
         )}
         <button className={ifcPick ? 'on' : ''} onClick={() => setIfcPick(!ifcPick)} title="Click IFC / concrete / bar surfaces to move the selected bar there">🎯 Pick pos</button>
+        <button className={measure.active ? 'on' : ''} onClick={() => setMeasureActive(!measure.active)} title="Measure: LMB clicks drop points on surfaces, RMB removes last, Esc exits (view-only)">📏 Measure</button>
+        <button className={snapEnabled !== false ? 'on' : ''} onClick={() => setSnapEnabled(!(snapEnabled !== false))} title="Snap magnet: pick & measure snap to nearby bar ends/corners (pink marker shows the target)">🧲 Snap</button>
+        <button className={lapArmed ? 'on' : ''} onClick={() => setLapArmed(!lapArmed)} title="Lap splice: click anchor bar, then lapping bar (EC2 table, straight bars)">🔗 Lap</button>
         <label className="cover" title="Concrete cover (mm) — pick-to-place sinks the bar centreline this far + Ø/2 inside the clicked face">
           cover
           <input type="number" value={cover} min={0} onChange={(e) => setCover(Number(e.target.value))} />
@@ -274,8 +340,11 @@ function ViewportBar() {
         {drawMode && drawStart && <b> — 📐 [{drawMode.toUpperCase()} TOOL] Click opposite corner/node to complete member · Esc to cancel</b>}
         {snapNode && <b> — 📍 Snapped: ({snapNode.x}, {snapNode.y}, {snapNode.z}) [{snapNode.type}]</b>}
         {section?.enabled && <b> — drag ◼ face cubes to push/pull the section</b>}
-        {ifcPick && <b> — pick mode: click IFC / concrete to place the selected bar (cover {cover}mm + Ø/2 inside the face)</b>}
-        {lastPick && <b> — placed ({lastPick.Pos_x}, {lastPick.Pos_y}, {lastPick.Pos_z})</b>}
+        {ifcPick && <b> — pick mode: click IFC / concrete to place the selected bar (cover {cover}mm + Ø/2 inside the face){snapEnabled !== false && ' · near a bar end snaps ⚓'}</b>}
+        {measure.active && <b> — 📏 {measure.points.length} pts{measure.points.length > 1 && ` · total ${fmtLen(measureTotal(measure.points))}`} · click surfaces{snapEnabled !== false && ' · snaps to bar ends'} · RMB removes last · Esc done</b>}
+        {lapArmed && <b> — 🔗 lap: click {lapAnchor == null ? 'anchor bar' : 'lapping bar'}{lapAnchor != null && bars[lapAnchor] ? ` (anchor ${bars[lapAnchor].Bar_mark})` : ''} · Esc cancels</b>}
+        {lastLap && <b> — 🔗 {lastLap.b} → {lastLap.a} · lap {lastLap.len.toLocaleString('en-US')} mm ({lastLap.bond} bond, Ø{lastLap.dia})</b>}
+        {lastPick && <b> — placed ({lastPick.Pos_x}, {lastPick.Pos_y}, {lastPick.Pos_z}){lastPick.snapped ? ' ⚓ rebar' : ''}</b>}
         {sel && <b> — {sel.Bar_mark} · {sel.Rebar_Type} · Ø{sel.Dia} · {sel._copies} bars · cut {sel._cut} mm · {sel.Weight_kg} kg</b>}
       </div>
     </>
@@ -285,6 +354,7 @@ function ViewportBar() {
 function BbsStrip() {
   const bars = useStore((s) => s.bars);
   const setBars = useStore((s) => s.setBars);
+  const updateBar = useStore((s) => s.updateBar);
   const selectBar = useStore((s) => s.selectBar);
   const selectedBar = useStore((s) => s.selectedBar);
   const fileRef = useRef(null);
@@ -317,10 +387,11 @@ function BbsStrip() {
       </div>
       <div className="tblwrap">
         <table>
-          <thead><tr><th>#</th><th>Mark</th><th>Type</th><th>Ø</th><th>Bars</th><th>Cut (mm)</th><th>Wt (kg)</th></tr></thead>
+          <thead><tr><th></th><th>#</th><th>Mark</th><th>Type</th><th>Ø</th><th>Bars</th><th>Cut (mm)</th><th>Wt (kg)</th></tr></thead>
           <tbody>
             {rows.map((r, i) => (
-              <tr key={i} className={i === selectedBar ? 'sel' : ''} onClick={() => selectBar(i)}>
+              <tr key={i} className={(i === selectedBar ? 'sel' : '') + (r.hidden ? ' hidden' : '')} onClick={() => selectBar(i)}>
+                <td onClick={(e) => e.stopPropagation()}><button className="ghost sm" title={r.hidden ? 'Show bar' : 'Hide bar (stays in BBS + CSV)'} onClick={() => updateBar(i, { hidden: r.hidden ? undefined : true })}>{r.hidden ? '🚫' : '👁'}</button></td>
                 <td>{r.Rebar_tag}</td><td>{r.Bar_mark}</td><td>{r.Rebar_Type}</td>
                 <td>{r.Dia}</td><td>{r._copies}</td><td>{r._cut}</td><td>{r.Weight_kg}</td>
               </tr>
@@ -350,11 +421,97 @@ function StatusBar() {
   );
 }
 
+function FileBar() {
+  const undo = useStore((s) => s.undo);
+  const redo = useStore((s) => s.redo);
+  const canUndo = useStore((s) => s.past.length > 0);
+  const canRedo = useStore((s) => s.future.length > 0);
+  const saveProject = useStore((s) => s.saveProject);
+  const saveStamp = useStore((s) => s.saveStamp);
+  const fileRef = useRef(null);
+
+  const downloadFile = () => {
+    const data = useStore.getState().exportProject();
+    const t = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const stamp = `${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}-${p(t.getHours())}${p(t.getMinutes())}`;
+    const blob = new Blob([data], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `barbending-project-${stamp}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  const onOpenFile = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const d = JSON.parse(String(rd.result));
+        if (!useStore.getState().importProject(d)) throw new Error('not a barbending project file (v1 with bars + concretes arrays)');
+        console.info(`[save] opened project file: ${f.name}`);
+      } catch (err) { alert('Project open failed: ' + err.message); }
+    };
+    rd.readAsText(f);
+    e.target.value = '';
+  };
+
+  return (
+    <>
+      <span className="hspacer" />
+      <button className="hbtn" disabled={!canUndo} onClick={undo} title="Undo (Ctrl+Z) — bars, concrete, cover">↶</button>
+      <button className="hbtn" disabled={!canRedo} onClick={redo} title="Redo (Ctrl+Y)">↷</button>
+      <button
+        className="hbtn" onClick={() => {
+          if (!saveProject()) alert('Save failed — browser storage unavailable or full.');
+        }}
+        title="Save bars + concrete in this browser (auto-restored on reload; IFC files reload by hand)"
+      >💾 Save</button>
+      <button
+        className="hbtn" onClick={downloadFile}
+        title="Download a project .json file (bars + concrete + cover) — reload it on any system via ⤒ Project"
+      >⤓ Project</button>
+      <button
+        className="hbtn" onClick={() => fileRef.current?.click()}
+        title="Open a project .json file — replaces current bars + concrete"
+      >⤒ Project</button>
+      <input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={onOpenFile} />
+      {saveStamp && <span className="saveinfo">saved {new Date(saveStamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+    </>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState('rebar');
   const ifcActive = useStore((s) => s.ifcActive);
   const leftOpen = useStore((s) => s.leftOpen);
   const setLeftOpen = useStore((s) => s.setLeftOpen);
+  // Restore browser save on boot (bars + concrete + cover; IFC reloads by hand).
+  useEffect(() => {
+    const t = setTimeout(() => useStore.getState().loadProject(), 50);
+    return () => clearTimeout(t);
+  }, []);
+  // App-level undo/redo. Text inputs, textareas and selects keep NATIVE
+  // text undo (store-backed number fields use app undo so the controlled
+  // inputs can't diverge from the store).
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = (e.key || '').toLowerCase();
+      const redoKey = k === 'y' || (k === 'z' && e.shiftKey);
+      if (k !== 'z' && !redoKey) return;
+      const t = e.target;
+      if (t && (t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' ||
+        (t.tagName === 'INPUT' && (t.type === 'text' || t.type === 'search')))) return;
+      e.preventDefault();
+      const st = useStore.getState();
+      if (redoKey) st.redo();
+      else st.undo();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   // Headless/smoke hook: ?autotest=section drops the section box and cuts it.
   // &sample=1 also loads public/sample-concrete.ifc first (same path as upload).
   useEffect(() => {
@@ -379,7 +536,7 @@ export default function App() {
   }, []);
   return (
     <div className="app">
-      <header><strong>barbending</strong><span>browser BBS · Three.js · FreeCAD-CSV compatible · {import.meta.env.DEV ? `dev-live (server ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'})` : `build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}`}</span></header>
+      <header><strong>barbending</strong><span>browser BBS · Three.js · FreeCAD-CSV compatible · {import.meta.env.DEV ? `dev-live (server ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'})` : `build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}`}</span><FileBar /></header>
       <div className="work">
         {leftOpen ? (
         <aside className="side">

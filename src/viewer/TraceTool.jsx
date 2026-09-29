@@ -9,6 +9,27 @@ const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
 
+// BBox cache: subsetBox() walks the whole element index — far too slow on
+// every pointermove for real-size models. Geometry is effectively static, so
+// cache per mesh and recompute only when the geometry object or world matrix
+// changes (covers dim edits + IFC placement offsets/rotations).
+const boxCache = new WeakMap();
+function cachedWorldBox(obj) {
+  const entry = boxCache.get(obj);
+  const el = obj.matrixWorld?.elements;
+  if (entry && entry.g === obj.geometry && el && entry.m.every((v, i) => v === el[i])) {
+    return entry.box;
+  }
+  let box;
+  try {
+    box = obj.userData?.ifcKey ? subsetBox(obj) : new THREE.Box3().setFromObject(obj);
+  } catch {
+    box = new THREE.Box3();
+  }
+  boxCache.set(obj, { box, g: obj.geometry, m: el ? [...el] : [] });
+  return box;
+}
+
 // Collects candidate snapping nodes (vertices, bounding box corners, edge midpoints)
 function getSnapCandidates(hit) {
   const candidates = [];
@@ -37,25 +58,23 @@ function getSnapCandidates(hit) {
     candidates.push({ pos: _v3.clone().add(_v1).multiplyScalar(0.5), type: 'Edge Midpoint' });
   }
 
-  // 2. Object bounding box corners
-  try {
-    const bb = obj.userData?.ifcKey ? subsetBox(obj) : new THREE.Box3().setFromObject(obj);
-    if (!bb.isEmpty()) {
-      const corners = [
-        new THREE.Vector3(bb.min.x, bb.min.y, bb.min.z),
-        new THREE.Vector3(bb.min.x, bb.min.y, bb.max.z),
-        new THREE.Vector3(bb.min.x, bb.max.y, bb.min.z),
-        new THREE.Vector3(bb.min.x, bb.max.y, bb.max.z),
-        new THREE.Vector3(bb.max.x, bb.min.y, bb.min.z),
-        new THREE.Vector3(bb.max.x, bb.min.y, bb.max.z),
-        new THREE.Vector3(bb.max.x, bb.max.y, bb.min.z),
-        new THREE.Vector3(bb.max.x, bb.max.y, bb.max.z),
-      ];
-      for (const pt of corners) {
-        candidates.push({ pos: pt, type: 'Corner Node' });
-      }
+  // 2. Object bounding box corners (cached: subsetBox walks the full index)
+  const bb = cachedWorldBox(obj);
+  if (!bb.isEmpty()) {
+    const corners = [
+      new THREE.Vector3(bb.min.x, bb.min.y, bb.min.z),
+      new THREE.Vector3(bb.min.x, bb.min.y, bb.max.z),
+      new THREE.Vector3(bb.min.x, bb.max.y, bb.min.z),
+      new THREE.Vector3(bb.min.x, bb.max.y, bb.max.z),
+      new THREE.Vector3(bb.max.x, bb.min.y, bb.min.z),
+      new THREE.Vector3(bb.max.x, bb.min.y, bb.max.z),
+      new THREE.Vector3(bb.max.x, bb.max.y, bb.min.z),
+      new THREE.Vector3(bb.max.x, bb.max.y, bb.max.z),
+    ];
+    for (const pt of corners) {
+      candidates.push({ pos: pt, type: 'Corner Node' });
     }
-  } catch { /* fallback */ }
+  }
 
   // 3. Fallback: exact surface hit point
   candidates.push({ pos: hit.point.clone(), type: 'Surface Point' });
@@ -86,17 +105,39 @@ export default function TraceTool() {
       if (e.key === 'Escape') {
         if (drawStart) setDrawStart(null);
         else if (drawMode) setDrawMode(null);
+        else {
+          const st = useStore.getState();
+          if (st.lapArmed) st.setLapArmed(false);
+        }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [drawMode, drawStart, setDrawMode, setDrawStart]);
 
-  // Pointer movement: perform fast node snapping
+  // Pointer movement: fast node snapping, rAF-throttled to one raycast per
+  // frame and fully idle when no draw/trace mode is active (an ungated
+  // full-scene raycast + bbox walk per mousemove saturates the main thread
+  // on real-size IFC models).
+  const liveSnapRef = useRef(null);
   useEffect(() => {
     const el = gl.domElement;
+    let raf = 0;
+    let lastEv = null;
 
-    const onPointerMove = (ev) => {
+    const clearSnap = () => {
+      if (liveSnapRef.current !== null) {
+        liveSnapRef.current = null;
+        setLiveSnap(null);
+        setSnapNode(null);
+      }
+    };
+
+    const doMove = () => {
+      raf = 0;
+      const ev = lastEv;
+      if (!ev) return;
+      if (!useStore.getState().drawMode) { clearSnap(); return; }
       const rect = el.getBoundingClientRect();
       mouse.current.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.current.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
@@ -116,8 +157,7 @@ export default function TraceTool() {
 
       const hits = raycaster.current.intersectObjects(targets, false);
       if (!hits.length) {
-        setLiveSnap(null);
-        setSnapNode(null);
+        clearSnap();
         return;
       }
 
@@ -149,12 +189,21 @@ export default function TraceTool() {
         hitObject: hit.object,
       };
 
+      liveSnapRef.current = appPos;
       setLiveSnap(appPos);
       setSnapNode(appPos);
     };
 
+    const onPointerMove = (ev) => {
+      lastEv = ev;
+      if (!raf) raf = requestAnimationFrame(doMove);
+    };
+
     el.addEventListener('pointermove', onPointerMove);
-    return () => el.removeEventListener('pointermove', onPointerMove);
+    return () => {
+      el.removeEventListener('pointermove', onPointerMove);
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, [gl, camera, scene, setSnapNode]);
 
   // Handle pointer down (Click to place/trace)
@@ -180,8 +229,9 @@ export default function TraceTool() {
       downPos = null;
       if (dx * dx + dy * dy > 25) return; // Ignore drags
 
-      const currentSnap = liveSnap;
+      const currentSnap = liveSnapRef.current;
       if (!currentSnap || !drawMode) return;
+      if (useStore.getState().measure?.active) return; // measuring owns clicks
 
       // MODE 1: 1-Click IFC Element Auto-Tracing
       if (drawMode === 'trace_ifc') {
@@ -291,7 +341,7 @@ export default function TraceTool() {
       el.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointerup', onUp);
     };
-  }, [gl, drawMode, drawStart, liveSnap, concretes, addConcrete, setDrawStart]);
+  }, [gl, scene, drawMode, drawStart, concretes, addConcrete, setDrawStart]);
 
   // Compute live bounding preview geometry for 2-point drawing
   const previewBox = useMemo(() => {
@@ -339,19 +389,15 @@ export default function TraceTool() {
   const ifcHoverBox = useMemo(() => {
     if (drawMode !== 'trace_ifc' || !liveSnap?.hitObject) return null;
     const obj = liveSnap.hitObject;
-    try {
-      const bb = obj.userData?.ifcKey ? subsetBox(obj) : new THREE.Box3().setFromObject(obj);
-      if (bb.isEmpty()) return null;
-      const sx = bb.max.x - bb.min.x;
-      const sy = bb.max.y - bb.min.y;
-      const sz = bb.max.z - bb.min.z;
-      const cx = (bb.min.x + bb.max.x) / 2;
-      const cy = (bb.min.y + bb.max.y) / 2;
-      const cz = (bb.min.z + bb.max.z) / 2;
-      return { cx, cy, cz, sx, sy, sz };
-    } catch {
-      return null;
-    }
+    const bb = cachedWorldBox(obj);
+    if (bb.isEmpty()) return null;
+    const sx = bb.max.x - bb.min.x;
+    const sy = bb.max.y - bb.min.y;
+    const sz = bb.max.z - bb.min.z;
+    const cx = (bb.min.x + bb.max.x) / 2;
+    const cy = (bb.min.y + bb.max.y) / 2;
+    const cz = (bb.min.z + bb.max.z) / 2;
+    return { cx, cy, cz, sx, sy, sz };
   }, [drawMode, liveSnap]);
 
   return (

@@ -42,8 +42,21 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
   bar, collapsible panels.
 - **Snap-to-cover** — global cover (mm); 🎯 pick on a concrete/IFC face places
   the bar centreline cover + Ø/2 inside; stirrups fit to their host with one click.
+- **Hide members & bars** — 👁 per concrete (hosted bars follow) and per bar;
+  view-only, the schedule and CSV stay complete.
+- **Measure** 📏 — click surfaces for points, live segment + total readouts,
+  RMB removes last, Esc exits (view-only).
+- **Snap on rebar** ⚓ — pick and measure snap to nearby bar ends/corners
+  within a 14 px aperture (hidden bars excluded); 🧲 toggles it, and a pink
+  magnet previews the exact landing spot on hover.
+- **Auto-lap splice** 🔗 — click anchor + lapping bar (or dropdown + Apply);
+  EC2 lap lengths by Ø and good/poor bond, collinear placement, one undo.
 - **BBS table + CSV** — live cut lengths (bend deductions) and `D²/162`
   weights; one-click `rebar_scheduling.csv` export, CSV re-import.
+- **Undo + save** — ↶ ↷ / Ctrl+Z / Ctrl+Y over bars, concrete and cover;
+  💾 Save keeps your work in the browser and restores it on reload (IFC
+  files reload by hand); ⤓/⤒ Project moves the project to another system
+  as a `.json` file.
 
 ## Typical workflows
 

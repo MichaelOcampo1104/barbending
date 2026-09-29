@@ -45,7 +45,17 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
 
 ## State (zustand `src/store.js`) + migrations
 
-- `bars`, `concretes`, `selectedBar`, `showConcrete`.
+- `bars` (optional `host` concrete-id, `hidden`), `concretes` (optional
+  `visible`), `selectedBar`, `showConcrete`, `cover`, undo stacks
+  `past`/`future` (model-only snapshots), `saveStamp`. All view flags are
+  optional → legacy sessions/CSVs default to visible. CSV `Visible` column
+  round-trips `hidden`; `host` is session-only (concretes aren't exported).
+  Project file = `{v:1, bars, concretes, cover, selectedBar}` JSON
+  (`exportProject`/`importProject`; browser save shares the shape).
+- `measure: {active, points[]}` is ephemeral (never saved); measuring owns
+  clicks — `PickHandler`, bar-select and `TraceTool` all step aside while
+  `measure.active`. `collectPickTargets(scene)` is the shared visible-mesh
+  collector for pick/measure hover paths.
 - `ifc` meta shape evolved: `{fileName, unit*, auto*, level, types[], elements[],
   opacity, bbox{center,radius,size}}`. Old in-memory sessions may lack
   `elements/size/level` → code MUST guard (`level !== 'element'` → type branch,

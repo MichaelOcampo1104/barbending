@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, lazy, Suspense } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, Grid, AdaptiveDpr } from '@react-three/drei';
+import { OrbitControls, Grid, AdaptiveDpr, Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { genBarPoints, distOffsets, MAX_RENDER_COPIES } from '../bbs/shapes.js';
+import { genBarPoints, distOffsets, barOverlapsBoxes, rebarSnapNodes, barBaseEnds, MAX_RENDER_COPIES } from '../bbs/shapes.js';
 import FitIfc from './FitIfc.jsx';
 import AutoClipping from './AutoClipping.jsx';
 import SectionBox from './SectionBox.jsx';
@@ -12,6 +12,56 @@ import { sectionPlanes } from './sectionPlanes.js';
 import { stencilMats } from './stencilMats.js';
 
 const noopStencilRaycast = () => null;
+const SNAP_PX = 14; // screen-space aperture for rebar-node snapping
+
+// Nearest visible rebar centerline node (app-mm [x,y,z]) within SNAP_PX of
+// the cursor, or null. nodes = rebarSnapNodes(...) app-mm points. Nodes
+// behind the camera are skipped (projection flips there).
+function snapToRebar(ev, camera, rect, nodes) {
+  if (!nodes?.length) return null;
+  const v = new THREE.Vector3();
+  const cam = new THREE.Vector3();
+  const cx = ev.clientX - rect.left, cy = ev.clientY - rect.top;
+  let best = null, bestD = SNAP_PX;
+  for (const [x, y, z] of nodes) {
+    v.set(x * S, z * S, -y * S);
+    cam.copy(v).applyMatrix4(camera.matrixWorldInverse);
+    if (cam.z > -1e-6) continue;
+    v.project(camera);
+    const d = Math.hypot((v.x * 0.5 + 0.5) * rect.width - cx, (-v.y * 0.5 + 0.5) * rect.height - cy);
+    if (d < bestD) { bestD = d; best = [x, y, z]; }
+  }
+  return best;
+}
+
+// Display length: "742 mm" or "12,400 mm (12.40 m)". Shared with the overlay.
+export function fmtLen(mm) {
+  const mms = `${Math.round(mm).toLocaleString('en-US')} mm`;
+  return Math.abs(mm) < 1000 ? mms : `${mms} (${(mm / 1000).toFixed(2)} m)`;
+}
+
+// Visible pickable meshes under the pick roots (IFC group, concrete boxes,
+// rebar tubes): skips hidden subtrees + stencil ghosts. Shared by PickHandler,
+// MeasureHandler and TraceTool-style hover.
+export function collectPickTargets(scene) {
+  const roots = [];
+  scene.traverse((o) => { if (o.userData?.pickRoot) roots.push(o); });
+  const isShown = (o) => {
+    let p = o;
+    while (p && p !== scene) { if (!p.visible) return false; p = p.parent; }
+    return true;
+  };
+  const targets = [];
+  for (const r of roots) {
+    if (!isShown(r)) continue;
+    if (r.userData.pickRoot === 'concrete') { if (r.isMesh) targets.push(r); continue; }
+    r.traverse((o) => {
+      if (!o.isMesh || !isShown(o) || o.userData?.stencil) return;
+      targets.push(o);
+    });
+  }
+  return targets;
+}
 
 // Blender-style direct picking: DOM pointer tracking + manual raycast against
 // pickable roots only (IFC group, concrete boxes, rebar tubes). Skips hidden
@@ -138,28 +188,13 @@ function PickHandler() {
       down = null;
       if (dx * dx + dy * dy > 25) return; // drag, not a click
       const st = useStore.getState();
-      if (st.drawMode) return; // Drawing / tracing active, bypass standard element select/pick
+      if (st.drawMode || st.measure?.active) return; // Drawing / tracing / measuring own their clicks
       const t0 = performance.now();
       const rect = el.getBoundingClientRect();
       const nx = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
       const ny = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.current.setFromCamera(new THREE.Vector2(nx, ny), camera);
-      const roots = [];
-      scene.traverse((o) => { if (o.userData?.pickRoot) roots.push(o); });
-      const isShown = (o) => {
-        let p = o;
-        while (p && p !== scene) { if (!p.visible) return false; p = p.parent; }
-        return true;
-      };
-      const targets = [];
-      for (const r of roots) {
-        if (!isShown(r)) continue;
-        if (r.userData.pickRoot === 'concrete') { if (r.isMesh) targets.push(r); continue; }
-        r.traverse((o) => {
-          if (!o.isMesh || !isShown(o) || o.userData?.stencil) return;
-          targets.push(o);
-        });
-      }
+      const targets = collectPickTargets(scene);
       const hits = raycaster.current.intersectObjects(targets, false);
       const ms = performance.now() - t0;
       // Always-on one-liner (remote diagnosis: slow raycast vs clean miss).
@@ -169,6 +204,23 @@ function PickHandler() {
       let root = h.object;
       while (root && root !== scene && !root.userData?.pickRoot) root = root.parent;
       if (st.ifcPick) {
+        // Snap on the rebar first: a visible bar end/corner near the cursor
+        // wins over the surface point (exact node, no cover offset — the node
+        // already lies on a bar centreline).
+        const snap = st.snapEnabled !== false
+          ? snapToRebar(ev, camera, rect, rebarSnapNodes(st.bars, st.concretes, st.selectedBar))
+          : null;
+        if (snap) {
+          const pos = {
+            Pos_x: Math.round(snap[0] * 10) / 10,
+            Pos_y: Math.round(snap[1] * 10) / 10,
+            Pos_z: Math.round(snap[2] * 10) / 10,
+          };
+          st.updateBar(st.selectedBar, pos);
+          st.setLastPick({ ...pos, snapped: 'rebar', at: Date.now() });
+          console.info('[pick] placed ' + JSON.stringify(pos) + ' (snapped rebar)');
+          return;
+        }
         // Snap-to-cover: push the placed point inside the clicked concrete/IFC
         // face along the inward face normal by cover + Dia/2 (bar centreline).
         // Rebar-on-rebar picks keep the exact hit point (no meaningful face).
@@ -205,6 +257,170 @@ function PickHandler() {
     };
   }, [gl, camera, scene]);
   return null;
+}
+
+// Measure tool: LMB drops surface points (exact hit, no cover offset),
+// RMB-click removes the last point, Esc exits. Ephemeral — never saved.
+function MeasureHandler() {
+  const gl = useThree((s) => s.gl);
+  const camera = useThree((s) => s.camera);
+  const scene = useThree((s) => s.scene);
+  const raycaster = useRef(null);
+  if (!raycaster.current) raycaster.current = new THREE.Raycaster();
+  useEffect(() => {
+    const el = gl.domElement;
+    let down = null;
+    const onDown = (ev) => {
+      if (ev.button === 0 || ev.button === 2) down = [ev.clientX, ev.clientY, ev.button];
+    };
+    const onUp = (ev) => {
+      if (!down) return;
+      const dx = ev.clientX - down[0];
+      const dy = ev.clientY - down[1];
+      const btn = down[2];
+      down = null;
+      if (dx * dx + dy * dy > 25) return; // drag (orbit/pan), not a click
+      const st = useStore.getState();
+      if (!st.measure?.active) return;
+      if (ev.button === 2) { st.popMeasurePoint(); return; } // right-click: drop last
+      if (ev.button !== 0 || btn !== 0) return;
+      const rect = el.getBoundingClientRect();
+      raycaster.current.setFromCamera(new THREE.Vector2(
+        ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+        -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+      ), camera);
+      const hits = raycaster.current.intersectObjects(collectPickTargets(scene), false);
+      if (!hits.length) return;
+      // Snap on the rebar first (all visible bars are fair game when measuring)
+      const snapped = st.snapEnabled !== false
+        ? snapToRebar(ev, camera, rect, rebarSnapNodes(st.bars, st.concretes))
+        : null;
+      if (snapped) {
+        st.pushMeasurePoint(snapped.map((v) => Math.round(v * 10) / 10));
+        return;
+      }
+      const h = hits[0];
+      let root = h.object;
+      while (root && root !== scene && !root.userData?.pickRoot) root = root.parent;
+      // app frame (mm), exact surface point
+      const wp = h.point;
+      let p;
+      if (root && root.userData.pickRoot === 'ifc') {
+        const u = st.ifc?.unitToMeters || 1;
+        const lp = root.worldToLocal(wp.clone());
+        p = [lp.x * u * 1000, -lp.z * u * 1000, lp.y * u * 1000];
+      } else {
+        p = [wp.x * 1000, -wp.z * 1000, wp.y * 1000];
+      }
+      st.pushMeasurePoint(p.map((v) => Math.round(v * 10) / 10));
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape' && useStore.getState().measure?.active) {
+        useStore.getState().setMeasureActive(false);
+      }
+    };
+    const noMenu = (e) => e.preventDefault(); // static right-click is "remove last", not a menu
+    el.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('keydown', onKey);
+    el.addEventListener('contextmenu', noMenu);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('keydown', onKey);
+      el.removeEventListener('contextmenu', noMenu);
+    };
+  }, [gl, camera, scene]);
+  return null;
+}
+
+// Snap magnet preview: while pick-to-place or measure is armed (and snap is
+// enabled), hovering near a visible bar end/corner shows exactly where a
+// click would snap. Local state only — no store churn per mousemove.
+function SnapPreview() {
+  const gl = useThree((s) => s.gl);
+  const camera = useThree((s) => s.camera);
+  const [hover, setHover] = useState(null);
+  useEffect(() => {
+    const el = gl.domElement;
+    const onMove = (ev) => {
+      const st = useStore.getState();
+      const inPick = st.ifcPick;
+      const inMeasure = !!st.measure?.active;
+      if (st.snapEnabled === false || (!inPick && !inMeasure)) {
+        setHover((h) => (h ? null : h));
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      const nodes = rebarSnapNodes(st.bars, st.concretes, inPick ? st.selectedBar : -1);
+      const sn = snapToRebar(ev, camera, rect, nodes);
+      setHover((h) => {
+        const key = sn ? sn.join(',') : '';
+        return (h?.join(',') ?? '') === key ? h : sn;
+      });
+    };
+    el.addEventListener('pointermove', onMove);
+    return () => el.removeEventListener('pointermove', onMove);
+  }, [gl, camera]);
+  useEffect(() => {
+    // clear the magnet when its mode disengages
+    const off = useStore.subscribe((s) => {
+      if ((!s.ifcPick && !s.measure?.active) || s.snapEnabled === false) setHover((h) => (h ? null : h));
+    });
+    return off;
+  }, []);
+  if (!hover) return null;
+  const [x, y, z] = hover;
+  const pos = [x * S, z * S, -y * S];
+  return (
+    <group position={pos}>
+      <mesh renderOrder={9999}>
+        <octahedronGeometry args={[0.05, 0]} />
+        <meshBasicMaterial color="#ec4899" wireframe depthTest={false} transparent opacity={0.95} />
+      </mesh>
+      <mesh renderOrder={10000}>
+        <sphereGeometry args={[0.014, 10, 10]} />
+        <meshBasicMaterial color="#ffffff" depthTest={false} />
+      </mesh>
+    </group>
+  );
+}
+
+function MeasureView() {  const points = useStore((s) => s.measure.points);
+  if (!points.length) return null;
+  const pts = points.map(([x, y, z]) => [x * S, z * S, -y * S]);
+  const segs = [];
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = new THREE.Vector3(...pts[i - 1]);
+    const b = new THREE.Vector3(...pts[i]);
+    const len = a.distanceTo(b) * 1000;
+    total += len;
+    segs.push({ mid: [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2], len });
+  }
+  return (
+    <group>
+      {pts.length > 1 && (
+        <Line points={pts} color="#22d3ee" lineWidth={2} transparent opacity={0.95} depthTest={false} />
+      )}
+      {pts.map((p, i) => (
+        <mesh key={i} position={p} renderOrder={9999}>
+          <sphereGeometry args={[0.02, 10, 10]} />
+          <meshBasicMaterial color={i === 0 ? '#22c55e' : '#f59e0b'} depthTest={false} transparent opacity={0.95} />
+        </mesh>
+      ))}
+      {segs.map((sg, i) => (
+        <Html key={`m${i}`} position={sg.mid} center zIndexRange={[30, 0]}>
+          <div className="measure-label">{fmtLen(sg.len)}</div>
+        </Html>
+      ))}
+      {pts.length > 2 && (
+        <Html position={pts[pts.length - 1]} center zIndexRange={[30, 0]}>
+          <div className="measure-label total">Σ {fmtLen(total)}</div>
+        </Html>
+      )}
+    </group>
+  );
 }
 
 // Headless hook (?autotest=section): drives the section + rewrites live renderer/
@@ -443,6 +659,19 @@ export default function Scene() {
   const showConcrete = useStore((s) => s.showConcrete);
   const ifcActive = useStore((s) => s.ifcActive);
   const navOrbit = useStore((s) => s.navMode === 'orbit');
+  // Ids of hidden concrete members — bars hosted on them hide too.
+  // Tiny array; recomputed per render, no memo needed.
+  const hiddenHosts = new Set(concretes.filter((c) => c.visible === false).map((c) => c.id));
+  // App-frame boxes of hidden members for spatial hiding (bars within hide too).
+  const hiddenBoxes = concretes
+    .filter((c) => c.visible === false)
+    .map((c) => ({ minX: c.x, minY: c.y, minZ: c.z, maxX: c.x + c.lx, maxY: c.y + c.ly, maxZ: c.z + c.lz }));
+  // Lap anchor marker: green dot on the anchor bar's end while picking.
+  const lapArmed = useStore((s) => s.lapArmed);
+  const lapAnchor = useStore((s) => s.lapAnchor);
+  const lapAnchorEnd = (lapArmed && lapAnchor != null && bars[lapAnchor])
+    ? (() => { const [, e] = barBaseEnds(bars[lapAnchor]); return [e[0] * S, e[2] * S, -(e[1] * S)]; })()
+    : null;
 
   return (
     <Canvas camera={{ position: [6, 4, -6], fov: 45 }} style={{ background: '#0f172a' }}
@@ -462,15 +691,35 @@ export default function Scene() {
       <AdaptiveDpr />
       <Grid infiniteGrid sectionColor="#334155" cellColor="#1e293b" position={[0, -0.01, 0]} />
       <SectionBox />
-      {showConcrete && concretes.map((c) => <ConcreteMesh key={c.id} c={c} />)}
+      {showConcrete && concretes.filter((c) => c.visible !== false).map((c) => <ConcreteMesh key={c.id} c={c} />)}
       {ifcActive && (
         <Suspense fallback={null}>
           <IfcModel />
         </Suspense>
       )}
-      {bars.map((b, i) => (
-        <RebarMesh key={i} bar={b} selected={i === selectedBar} onClick={() => selectBar(i)} />
-      ))}
+      {bars.map((b, i) => {
+        // View-only hiding: individually hidden bars, bars hosted on a hidden
+        // member, and bars spatially inside a hidden member (covers picked/
+        // positioned bars that were never assigned a host). Schedule stays whole.
+        if (b.hidden) return null;
+        if (b.host && hiddenHosts.has(b.host)) return null;
+        if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return null;
+        return <RebarMesh key={i} bar={b} selected={i === selectedBar} onClick={() => {
+          const st = useStore.getState();
+          if (st.measure?.active) return;
+          // Lap picking: first click anchors, second click laps + selects.
+          if (st.lapArmed) {
+            if (st.lapAnchor == null) { st.setLapAnchor(i); return; }
+            if (st.lapAnchor === i) return;
+            st.selectBar(i);
+            const r = st.applyLapSplice(st.lapAnchor, i);
+            if (!r.ok) alert(r.msg);
+            else { st.setLapAnchor(null); st.setLapArmed(false); }
+            return;
+          }
+          selectBar(i);
+        }} />;
+      })}
       <OrbitControls makeDefault enableDamping dampingFactor={0.08} panSpeed={1.8} screenSpacePanning enableZoom={false} minDistance={0} maxDistance={Infinity}
         mouseButtons={{ LEFT: navOrbit ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN }} />
       <FitIfc />
@@ -478,6 +727,15 @@ export default function Scene() {
       <DiveZoom />
       <TraceTool />
       <PickHandler />
+      <MeasureHandler />
+      <MeasureView />
+      <SnapPreview />
+      {lapAnchorEnd && (
+        <mesh position={lapAnchorEnd} renderOrder={9999}>
+          <sphereGeometry args={[0.03, 12, 12]} />
+          <meshBasicMaterial color="#22c55e" depthTest={false} transparent opacity={0.95} />
+        </mesh>
+      )}
       {typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('autotest') && <AutotestDump />}
     </Canvas>
   );

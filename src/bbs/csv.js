@@ -16,6 +16,9 @@ export const MASTER_HEADERS = [
   'qty_x', 'spacing_x', 'qty_y', 'spacing_y',
   'offset_x', 'offset_y', 'offset_z', 'plan_rotation', 'feature',
   'qty', 'Total Length', 'Weight_kg',
+  // Browser-only view flag (extra column ignored by FreeCAD's DictReader).
+  // Host membership is a live-session concern and is NOT exported.
+  'Visible',
 ];
 
 export function enrichBar(bar) {
@@ -23,6 +26,7 @@ export function enrichBar(bar) {
   const copies = distCount(bar); // qty (sets) × qty_x × qty_y
   return {
     ...bar,
+    Visible: bar.hidden ? 0 : 1,
     'Total Length': bar['Total Length'] || g.cutLengthMm,
     Weight_kg: +barWeightKg(Number(bar.Dia || 16), g.cutLengthMm, copies).toFixed(2),
     _cut: g.cutLengthMm,
@@ -64,9 +68,12 @@ export function parseCsv(text) {
     for (const k of ['Rebar_tag', 'Dia', 'Pos_x', 'Pos_y', 'Pos_z', 'Pos_Rotation', 'Plane', 'qty',
       'qty_x', 'spacing_x', 'qty_y', 'spacing_y', 'offset_x', 'offset_y', 'offset_z',
       'Length of Bar', 'H', 'Long_length', 'Crank_step', 'Length of Lap',
-      'DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length', 'c_length_a', 'c_length_b', 'length', 'double_hook']) {
+      'DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length', 'c_length_a', 'c_length_b', 'length', 'double_hook',
+      'Visible']) {
       if (o[k] !== '' && o[k] !== undefined && !isNaN(Number(o[k]))) o[k] = Number(o[k]);
     }
+    if (Number(o.Visible) === 0) o.hidden = true;
+    delete o.Visible;
     if (!o.Rebar_Type) o.Rebar_Type = 'straight';
     if (!o.qty) o.qty = 1;
     return o;

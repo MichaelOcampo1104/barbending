@@ -2,6 +2,53 @@
 
 ## Unreleased (working tree → next push)
 
+(nothing yet)
+
+## 2026-09-29 — pushed to `main`
+
+- **Auto-lap splice** 🔗 (EC2 §8.7 bond table): arm 🔗 Lap, click anchor then
+  lapping bar — or anchor dropdown + bond + Apply in the Rebar editor. Moves
+  the lap bar's start one lap length before the anchor's end, collinear
+  (inherits rotation); length from the larger Ø (good/poor tables for
+  13–50, interpolated/extrapolated, rounded up to 10 mm; default poor bond).
+  Straight bars only, single undo unit, footer confirmation. Verified:
+  store-level (1920,0,0) + headless editor flow with overlay proof.
+
+- **Snap on the rebar** ⚓: pick-to-place and measure snap to visible bar
+  ends/corners within 14 px (`rebarSnapNodes`: every polyline vertex × every
+  copy; hidden bars never attract; the bar being placed is excluded).
+  Exact node, no cover offset, ⚓ marker in the footer. Verified headlessly:
+  off-end click landed exactly (4500, 0, 0).
+- **Snap toggle + magnet preview** 🧲: toolbar toggle (default on, UI pref —
+  never saved); hovering a snap target shows a pink magnet glyph exactly
+  where the click would land. Verified: glyph on hover, toggle-off click
+  lands the surface point instead.
+
+- **Measure tool** 📏: click IFC/concrete/bar surfaces for points (exact hits,
+  no cover offset), per-segment midpoint labels + running total in the footer,
+  markers + on-top line. RMB-click removes last point, Esc exits. Ephemeral
+  view aid — never saved, never in BBS/CSV; measuring owns clicks (pick,
+  bar-select and trace step aside). Verified headlessly: 2 pts → 1,444 mm.
+
+- **Undo/redo + browser save**: ↶ ↷ header buttons + Ctrl+Z / Ctrl+Y
+  (text inputs keep native undo; number fields use app undo so controlled
+  inputs can't diverge). History covers bars, concrete, selection, cover
+  (50 steps; IFC/section excluded). 💾 Save persists bars + concrete + cover
+  to localStorage and auto-restores on boot (IFC files reload by hand).
+  Verified headlessly: add → undo → redo → save → reload restores.
+- **Project file transfer**: ⤓ Project downloads a dated
+  `barbending-project-*.json` (bars + concrete + cover); ⤒ Project opens it
+  on any system (replaces current model, validated v1). Verified: real file
+  download + upload round-trip headlessly.
+
+- **Hide members & bars (view-only)**: per-concrete 👁 in the Concrete tab —
+  hosted bars hide with their member, and any bar whose geometry overlaps a
+  hidden member hides too (no host assignment needed — fixes picked/positioned
+  bars staying visible); per-bar 👁 in the BBS strip + a Hide checkbox and
+  host-member dropdown in the Rebar editor (Fit-to-host assigns the host).
+  Hidden items stay in BBS totals and CSV; visibility round-trips via a
+  `Visible` CSV column FreeCAD ignores. Deleting a member unhosts.
+
 - **Blender-Style Unlimited Fluid Zoom & Fast Panning**:
   - Implemented exponential decay damping (`useFrame`) on wheel & trackpad pinch gestures for buttery-smooth 60/120fps glide.
   - Unlimited dive-zoom: smoothly advances camera and orbit pivot along the cursor ray when approaching geometry, eliminating the OrbitControls pivot wall / Zeno slowdown.
@@ -25,6 +72,12 @@
   snap-to-cover parks bars inside opaque IFC solids where the old depth-tested
   white highlight was invisible; unselected bars keep depth. Section clipping
   still applies.
+- **Trace tool perf (hang on real-size IFCs)**: the snap handler raycast the
+  full scene + walked whole element indexes on every mousemove even with the
+  tool off. Now idle without a draw mode, rAF-throttled to one raycast/frame,
+  element bboxes cached (recomputed only on geometry/matrix change), click
+  handler stabilized via ref mirror. Behavior identical on fixtures
+  (headless: auto-traced C1 400×400×3000, no errors).
 - **Viewport perf**: `AdaptiveDpr` (resolution drops under load, restores when
   smooth), pan speed 0.7 → 1.0 + zoom speed 1.4×, stencil mark meshes skipped
   for hidden IFC subsets and frustum-culled with the rest.
@@ -89,4 +142,4 @@
 - User acceptance on real project IFCs (cap fills on thin-shell-heavy models,
   pick behavior at site scale, navigation feel).
 - Possible follow-ups: hatch-pattern caps, BS 8666 shape codes + 2D bending
-  diagrams, snap-to-cover placement, DXF/SVG export.
+  diagrams, DXF/SVG export.

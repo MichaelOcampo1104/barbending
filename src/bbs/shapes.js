@@ -117,6 +117,85 @@ export function applyTypeDefaults(bar, type) {
   return next;
 }
 
+// App-frame bounding box of a bar (mm), including Pos, Pos_Rotation (about
+// app Z/up) and every distribution copy. Mirrors RebarMesh placement exactly:
+// local (x, y, z) → plan rotation → + Pos + copy offsets. Pure math, no three.
+export function barAppBox(bar) {
+  const g = genBarPoints(bar);
+  const t = (Number(bar.Pos_Rotation) || 0) * Math.PI / 180;
+  const c = Math.cos(t), s = Math.sin(t);
+  let lx0 = Infinity, ly0 = Infinity, lz0 = Infinity;
+  let lx1 = -Infinity, ly1 = -Infinity, lz1 = -Infinity;
+  for (const [x, y, z] of g.points) {
+    const rx = x * c - y * s, ry = x * s + y * c;
+    if (rx < lx0) lx0 = rx; if (rx > lx1) lx1 = rx;
+    if (ry < ly0) ly0 = ry; if (ry > ly1) ly1 = ry;
+    if (z < lz0) lz0 = z; if (z > lz1) lz1 = z;
+  }
+  let ox0 = 0, oy0 = 0, oz0 = 0, ox1 = 0, oy1 = 0, oz1 = 0;
+  let first = true;
+  for (const [ox, oy, oz] of distOffsets(bar)) {
+    if (first || ox < ox0) ox0 = ox; if (first || ox > ox1) ox1 = ox;
+    if (first || oy < oy0) oy0 = oy; if (first || oy > oy1) oy1 = oy;
+    if (first || oz < oz0) oz0 = oz; if (first || oz > oz1) oz1 = oz;
+    first = false;
+  }
+  const px = Number(bar.Pos_x) || 0, py = Number(bar.Pos_y) || 0, pz = Number(bar.Pos_z) || 0;
+  return {
+    minX: px + ox0 + lx0, minY: py + oy0 + ly0, minZ: pz + oz0 + lz0,
+    maxX: px + ox1 + lx1, maxY: py + oy1 + ly1, maxZ: pz + oz1 + lz1,
+  };
+}
+
+// True when the bar's bounding box overlaps any box in the list (each
+// {minX..maxZ}). NaN anywhere → false (garbage never hides).
+export function barOverlapsBoxes(bar, boxes) {
+  const b = barAppBox(bar);
+  if (![b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ].every(Number.isFinite)) return false;
+  return (boxes || []).some((h) =>
+    b.minX <= h.maxX && b.maxX >= h.minX &&
+    b.minY <= h.maxY && b.maxY >= h.minY &&
+    b.minZ <= h.maxZ && b.maxZ >= h.minZ,
+  );
+}
+// Base [start, end] of a bar in app-mm (Pos + Pos_Rotation, no distribution
+// offsets — laps splice base geometry; identical grids stay consistent).
+// Rotation convention matches barAppBox/RebarMesh (about app Z/up).
+export function barBaseEnds(bar) {
+  const g = genBarPoints(bar);
+  const t = (Number(bar.Pos_Rotation) || 0) * Math.PI / 180;
+  const c = Math.cos(t), s = Math.sin(t);
+  const px = Number(bar.Pos_x) || 0, py = Number(bar.Pos_y) || 0, pz = Number(bar.Pos_z) || 0;
+  const map = ([x, y, z]) => [px + x * c - y * s, py + x * s + y * c, pz + z];
+  return [map(g.points[0]), map(g.points[g.points.length - 1])];
+}
+
+// Centerline snap nodes of visible bars (app-mm [x, y, z]): every polyline
+// vertex of every rendered distribution copy. Drives pick/measure "snap on
+// the rebar". Hidden bars (flag, host-hidden link, or inside a hidden
+// member) never attract snaps; excludeIdx skips the bar being placed itself.
+export function rebarSnapNodes(bars, concretes, excludeIdx = -1) {
+  const hiddenIds = new Set((concretes || []).filter((c) => c.visible === false).map((c) => c.id));
+  const hiddenBoxes = (concretes || []).filter((c) => c.visible === false)
+    .map((c) => ({ minX: c.x, minY: c.y, minZ: c.z, maxX: c.x + c.lx, maxY: c.y + c.ly, maxZ: c.z + c.lz }));
+  const nodes = [];
+  (bars || []).forEach((b, bi) => {
+    if (bi === excludeIdx || b.hidden) return;
+    if (b.host && hiddenIds.has(b.host)) return;
+    if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return;
+    const g = genBarPoints(b);
+    const t = (Number(b.Pos_Rotation) || 0) * Math.PI / 180;
+    const c = Math.cos(t), s = Math.sin(t);
+    const px = Number(b.Pos_x) || 0, py = Number(b.Pos_y) || 0, pz = Number(b.Pos_z) || 0;
+    for (const [ox, oy, oz] of distOffsets(b).slice(0, MAX_RENDER_COPIES)) {
+      for (const [x, y, z] of g.points) {
+        nodes.push([px + ox + x * c - y * s, py + oy + x * s + y * c, pz + oz + z]);
+      }
+    }
+  });
+  return nodes;
+}
+
 // Distribution grid — mirrors FreeCAD parametric_utils.py place_c_link_*:
 // copies at (Pos_x + ix*spacing_x + offset_x, Pos_y + iy*spacing_y + offset_y,
 //            Pos_z + offset_z). Applies to ALL bar types in the browser so

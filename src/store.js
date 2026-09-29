@@ -1,8 +1,28 @@
 import { create } from 'zustand';
-import { defaultBar } from './bbs/shapes.js';
+import { defaultBar, genBarPoints } from './bbs/shapes.js';
+import { lapLengthMm } from './bbs/calc.js';
 import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
 
 let tagSeq = 1;
+
+const SAVE_KEY = 'barbending.save.v1';
+const HIST_MAX = 50;
+
+// Undo snapshot: the model (view-only flags ride along on their objects).
+// IFC reference state, section box, and UI toggles are NOT history.
+const snap = (s) => ({
+  bars: structuredClone(s.bars),
+  concretes: structuredClone(s.concretes),
+  selectedBar: s.selectedBar,
+  cover: s.cover,
+});
+// Push pre-mutation snapshot, drop redo branch. Called inside set() updaters
+// so the snapshot is atomic with the mutation.
+const withHist = (s, patch) => ({
+  ...patch,
+  past: [...s.past.slice(-(HIST_MAX - 1)), snap(s)],
+  future: [],
+});
 
 // IFC bbox is stored in raw model units; camera fit scales by the active unit
 // so unit overrides keep the view consistent.
@@ -22,30 +42,172 @@ export const useStore = create((set, get) => ({
   selectedBar: 0,
   showConcrete: true,
 
-  addConcrete: (c) => set((s) => ({ concretes: [...s.concretes, { id: `c${Date.now()}`, ...c }] })),
-  updateConcrete: (id, patch) => set((s) => ({
+  addConcrete: (c) => set((s) => withHist(s, { concretes: [...s.concretes, { id: `c${Date.now()}`, ...c }] })),
+  updateConcrete: (id, patch) => set((s) => withHist(s, {
     concretes: s.concretes.map((c) => (c.id === id ? { ...c, ...patch } : c)),
   })),
-  removeConcrete: (id) => set((s) => ({ concretes: s.concretes.filter((c) => c.id !== id) })),
+  removeConcrete: (id) => set((s) => withHist(s, {
+    concretes: s.concretes.filter((c) => c.id !== id),
+    // bars hosted on the removed member become unhosted (stay visible)
+    bars: s.bars.map((b) => (b.host === id ? { ...b, host: null } : b)),
+  })),
 
   addBar: (type) => {
     tagSeq = Math.max(tagSeq + 1, get().bars.length + 1);
-    set((s) => ({ bars: [...s.bars, defaultBar(type, tagSeq)], selectedBar: s.bars.length }));
+    set((s) => withHist(s, { bars: [...s.bars, defaultBar(type, tagSeq)], selectedBar: s.bars.length }));
   },
-  updateBar: (idx, patch) => set((s) => ({
+  updateBar: (idx, patch) => set((s) => withHist(s, {
     bars: s.bars.map((b, i) => (i === idx ? { ...b, ...patch } : b)),
   })),
   // Full replace (used for shape-type switch so stale dims are dropped)
-  replaceBar: (idx, bar) => set((s) => ({
+  replaceBar: (idx, bar) => set((s) => withHist(s, {
     bars: s.bars.map((b, i) => (i === idx ? bar : b)),
   })),
-  removeBar: (idx) => set((s) => ({
+  removeBar: (idx) => set((s) => withHist(s, {
     bars: s.bars.filter((_, i) => i !== idx),
     selectedBar: Math.max(0, s.selectedBar - 1),
   })),
-  setBars: (bars) => set({ bars, selectedBar: 0 }),
+  setBars: (bars) => set((s) => withHist(s, { bars, selectedBar: 0 })),
   selectBar: (idx) => set({ selectedBar: idx }),
   toggleConcrete: () => set((s) => ({ showConcrete: !s.showConcrete })),
+
+  // Undo/redo over the model (bars, concretes, selection, cover).
+  past: [],
+  future: [],
+  undo: () => set((s) => {
+    if (!s.past.length) return {};
+    const prev = s.past[s.past.length - 1];
+    return {
+      bars: prev.bars, concretes: prev.concretes,
+      selectedBar: prev.selectedBar, cover: prev.cover,
+      past: s.past.slice(0, -1),
+      future: [snap(s), ...s.future].slice(0, HIST_MAX),
+    };
+  }),
+  redo: () => set((s) => {
+    if (!s.future.length) return {};
+    const [next, ...rest] = s.future;
+    return {
+      bars: next.bars, concretes: next.concretes,
+      selectedBar: next.selectedBar, cover: next.cover,
+      past: [...s.past, snap(s)].slice(-HIST_MAX),
+      future: rest,
+    };
+  }),
+
+  // Lap splice (straight bars): anchor bar A stays, lapping bar B moves so
+  // its start sits one lap length before A's end along A's axis, collinear
+  // (B inherits A's plan rotation). Lap length from the EC2 table by the
+  // larger Ø. Single history unit. Identical distribution grids stay
+  // consistent lap-for-lap.
+  bond: 'poor',
+  setBond: (v) => set({ bond: v }),
+  lapArmed: false,
+  lapAnchor: null,
+  lastLap: null,
+  setLapArmed: (v) => set({ lapArmed: v, lapAnchor: v ? get().lapAnchor : null }),
+  setLapAnchor: (i) => set({ lapAnchor: i }),
+  applyLapSplice: (aIdx, bIdx) => {
+    const s = get();
+    const A = s.bars[aIdx], B = s.bars[bIdx];
+    if (!A || !B) return { ok: false, msg: 'Pick two bars first (🔗 Lap, then click anchor + lapping bar).' };
+    if (aIdx === bIdx) return { ok: false, msg: 'Anchor and lapping bar must be different bars.' };
+    if (A.Rebar_Type !== 'straight' || B.Rebar_Type !== 'straight') {
+      return { ok: false, msg: 'Lap splice needs straight bars on both sides.' };
+    }
+    const dia = Math.max(Number(A.Dia) || 0, Number(B.Dia) || 0);
+    const L = lapLengthMm(dia, s.bond);
+    if (!L) return { ok: false, msg: `No lap length for Ø${dia}.` };
+    const g = genBarPoints(A);
+    const t = (Number(A.Pos_Rotation) || 0) * Math.PI / 180;
+    const c = Math.cos(t), w = Math.sin(t);
+    const loc = ([x, y, z]) => [
+      (Number(A.Pos_x) || 0) + x * c - y * w,
+      (Number(A.Pos_y) || 0) + x * w + y * c,
+      (Number(A.Pos_z) || 0) + z,
+    ];
+    const S1 = loc(g.points[0]);
+    const E1 = loc(g.points[g.points.length - 1]);
+    const dx = E1[0] - S1[0], dy = E1[1] - S1[1], dz = E1[2] - S1[2];
+    const n = Math.hypot(dx, dy, dz);
+    if (!(n > 0)) return { ok: false, msg: 'Anchor bar has zero length.' };
+    const P = [E1[0] - (dx / n) * L, E1[1] - (dy / n) * L, E1[2] - (dz / n) * L];
+    set((s2) => withHist(s2, {
+      bars: s2.bars.map((b, i) => (i === bIdx ? {
+        ...b,
+        Pos_x: Math.round(P[0]), Pos_y: Math.round(P[1]), Pos_z: Math.round(P[2]),
+        Pos_Rotation: A.Pos_Rotation,
+      } : b)),
+      selectedBar: bIdx,
+    }));
+    set({ lastLap: { a: A.Bar_mark, b: B.Bar_mark, len: L, bond: s.bond, dia, at: Date.now() } });
+    console.info(`[lap] ${B.Bar_mark} → ${A.Bar_mark}: ${L} mm (${s.bond} bond, Ø${dia})`);
+    return { ok: true, len: L };
+  },
+  // Measure tool (ephemeral view aid — never saved, never in BBS/CSV).
+  // points: app-mm [x, y, z] surface picks.
+  measure: { active: false, points: [] },
+  setMeasureActive: (v) => set((s) => ({
+    measure: v ? { active: true, points: s.measure.points } : { active: false, points: [] },
+  })),
+  // Rebar snap magnet (pick + measure). UI pref: never saved, never in history.
+  snapEnabled: true,
+  setSnapEnabled: (v) => set({ snapEnabled: v }),
+  pushMeasurePoint: (p) => set((s) => s.measure.active
+    ? { measure: { active: true, points: [...s.measure.points, p].slice(-64) } }
+    : {}),
+  popMeasurePoint: () => set((s) => ({
+    measure: { active: s.measure.active, points: s.measure.points.slice(0, -1) },
+  })),
+  clearMeasure: () => set((s) => ({ measure: { active: s.measure.active, points: [] } })),
+  // Browser save + portable .json project file (bars + concrete + cover + bond).
+  // IFC files are view-only and must be reloaded by hand; section box is
+  // session state. Browser save auto-loads on boot; the file transfers
+  // the same payload to another system.
+  saveStamp: null,
+  _projectData: () => {
+    const s = get();
+    return {
+      v: 1, app: 'barbending', savedAt: Date.now(),
+      bars: s.bars, concretes: s.concretes,
+      cover: s.cover, bond: s.bond, selectedBar: s.selectedBar,
+    };
+  },
+  _applyProject: (d) => {
+    if (!d || d.v !== 1 || !Array.isArray(d.bars) || !Array.isArray(d.concretes)) return false;
+      set({
+        bars: d.bars, concretes: d.concretes,
+        cover: typeof d.cover === 'number' ? d.cover : 40,
+        bond: d.bond === 'good' || d.bond === 'poor' ? d.bond : 'poor',
+      selectedBar: Math.min(Number(d.selectedBar) || 0, Math.max(0, d.bars.length - 1)),
+      saveStamp: d.savedAt || null,
+      past: [], future: [],
+    });
+    return true;
+  },
+  saveProject: () => {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(get()._projectData()));
+      set({ saveStamp: Date.now() });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  loadProject: () => {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return false;
+      const ok = get()._applyProject(JSON.parse(raw));
+      if (ok) console.info('[save] restored browser project');
+      return ok;
+    } catch {
+      return false;
+    }
+  },
+  // Portable transfer (FileBar builds the Blob / reads the file around these).
+  exportProject: () => JSON.stringify(get()._projectData(), null, 2),
+  importProject: (d) => get()._applyProject(d),
 
   // IFC reference model (three.js objects live in ifc/session.js; metadata here)
   ifc: null,
