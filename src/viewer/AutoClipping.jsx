@@ -15,9 +15,12 @@ export default function AutoClipping() {
   useFrame(() => {
     if (!controls) return;
     const d = Math.max(camera.position.distanceTo(controls.target), 1e-6);
-    const near = Math.min(Math.max(d / 1000, 1e-6), 5);
-    const far = Math.max(d * 500, 60);
-    if (Math.abs(camera.near - near) / near > 0.25 || Math.abs(camera.far - far) / far > 0.25) {
+    // Constant depth precision at every scale: dive from site to a single bar
+    // without close surfaces clipping. Max near of 0.02m ensures close surfaces
+    // never clip when inspecting rebar bends, and far of 5000m keeps site context.
+    const near = Math.min(Math.max(d / 10000, 0.0001), 0.02);
+    const far = Math.max(d * 150, 5000);
+    if (Math.abs(camera.near - near) / (near || 1) > 0.1 || Math.abs(camera.far - far) / (far || 1) > 0.1) {
       camera.near = near;
       camera.far = far;
       camera.updateProjectionMatrix();

@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, lazy, Suspense } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
-import { OrbitControls, Grid } from '@react-three/drei';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
+import { OrbitControls, Grid, AdaptiveDpr } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
 import { genBarPoints, distOffsets, MAX_RENDER_COPIES } from '../bbs/shapes.js';
 import FitIfc from './FitIfc.jsx';
 import AutoClipping from './AutoClipping.jsx';
 import SectionBox from './SectionBox.jsx';
+import TraceTool from './TraceTool.jsx';
 import { sectionPlanes } from './sectionPlanes.js';
 import { stencilMats } from './stencilMats.js';
 
@@ -16,6 +17,106 @@ const noopStencilRaycast = () => null;
 // pickable roots only (IFC group, concrete boxes, rebar tubes). Skips hidden
 // subtrees and stencil ghosts, so big models stay interactive. Independent of
 // R3F event bubbling; tolerates small pointer drift.
+// Blender-style unlimited fluid zoom:
+//  - Wheel / trackpad pinch accumulates smooth momentum with exponential decay (fluid 60/120fps glide).
+//  - Zooms directly along the cursor ray into the 3D scene (zoom-to-cursor).
+//  - Walks both camera and pivot target forward when diving deep, so distance r never collapses
+//    to 0, eliminating the classic OrbitControls "brick wall" / Zeno slowdown.
+//  - Zoom-out smoothly expands compressed pivot radii, making escape from micro scale immediate.
+function DiveZoom() {
+  const gl = useThree((s) => s.gl);
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls);
+  const zoomVel = useRef(0);
+  const cursorNDC = useRef(new THREE.Vector2(0, 0));
+  const dir = useRef(new THREE.Vector3());
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const onWheel = (ev) => {
+      if (ev.target !== el) return;
+      ev.preventDefault();
+      const ctl = controls;
+      if (!ctl || ctl.enabled === false) return;
+
+      const rect = el.getBoundingClientRect();
+      cursorNDC.current.set(
+        ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+        -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+
+      let delta = ev.deltaY;
+      if (ev.deltaMode === 1) delta *= 16;
+      else if (ev.deltaMode === 2) delta *= 100;
+
+      // Trackpad pinch-zoom multiplier
+      if (ev.ctrlKey) delta *= 2.5;
+
+      // Cap extreme delta spikes to keep motion continuous
+      const clamped = Math.max(-250, Math.min(250, delta));
+      zoomVel.current += clamped * 0.0022;
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [gl, controls]);
+
+  useFrame((_, deltaSec) => {
+    const ctl = controls;
+    if (!ctl || Math.abs(zoomVel.current) < 1e-5) {
+      zoomVel.current = 0;
+      return;
+    }
+
+    const decay = Math.exp(-20 * Math.min(deltaSec, 0.1));
+    const step = zoomVel.current * (1 - decay);
+    zoomVel.current *= decay;
+
+    dir.current.set(cursorNDC.current.x, cursorNDC.current.y, 1)
+      .unproject(camera)
+      .sub(camera.position)
+      .normalize();
+
+    const d = dir.current;
+    const r = Math.max(camera.position.distanceTo(ctl.target), 0.005);
+
+    if (step < 0) {
+      // Zoom in towards cursor
+      const speed = Math.max(r * 0.5, 0.02);
+      const move = -step * speed;
+      camera.position.addScaledVector(d, move);
+
+      // Unlimited dive: if camera approaches pivot, glide pivot forward along ray
+      const newR = camera.position.distanceTo(ctl.target);
+      const toTgt = new THREE.Vector3().subVectors(ctl.target, camera.position);
+      const forwardDot = toTgt.dot(d);
+
+      if (forwardDot < 0.1 || newR < Math.max(r * 0.4, 0.05)) {
+        ctl.target.addScaledVector(d, move);
+      }
+    } else {
+      // Zoom out away from cursor
+      const speed = Math.max(r * 0.55, 0.04);
+      const move = step * speed;
+      camera.position.addScaledVector(d, -move);
+
+      // Re-inflate target if we backed out from a sub-mm micro inspection
+      const newR = camera.position.distanceTo(ctl.target);
+      if (newR < 0.1) {
+        ctl.target.copy(camera.position).addScaledVector(d, 0.4);
+      }
+    }
+
+    ctl.update();
+
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('autotest')) {
+      console.info(`[dive] r=${r.toFixed(3)} vel=${zoomVel.current.toFixed(3)} cam=[${camera.position.toArray().map((v) => +v.toFixed(3)).join(',')}] tgt=[${ctl.target.toArray().map((v) => +v.toFixed(3)).join(',')}]`);
+    }
+  });
+
+  return null;
+}
+
 function PickHandler() {
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
@@ -37,6 +138,8 @@ function PickHandler() {
       down = null;
       if (dx * dx + dy * dy > 25) return; // drag, not a click
       const st = useStore.getState();
+      if (st.drawMode) return; // Drawing / tracing active, bypass standard element select/pick
+      const t0 = performance.now();
       const rect = el.getBoundingClientRect();
       const nx = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
       const ny = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
@@ -58,23 +161,37 @@ function PickHandler() {
         });
       }
       const hits = raycaster.current.intersectObjects(targets, false);
-      if (autotest) console.info('[pick] up: targets=' + targets.length + ' hits=' + hits.length + ' pick=' + st.ifcPick);
+      const ms = performance.now() - t0;
+      // Always-on one-liner (remote diagnosis: slow raycast vs clean miss).
+      console.info(`[pick] targets=${targets.length} hits=${hits.length} raycast=${ms < 10 ? ms.toFixed(1) : Math.round(ms)}ms pick=${st.ifcPick}`);
       if (!hits.length) return;
       const h = hits[0];
       let root = h.object;
       while (root && root !== scene && !root.userData?.pickRoot) root = root.parent;
       if (st.ifcPick) {
+        // Snap-to-cover: push the placed point inside the clicked concrete/IFC
+        // face along the inward face normal by cover + Dia/2 (bar centreline).
+        // Rebar-on-rebar picks keep the exact hit point (no meaningful face).
+        let wp = h.point.clone();
+        const faceN = h.face?.normal;
+        if (faceN && root && (root.userData.pickRoot === 'ifc' || root.userData.pickRoot === 'concrete')) {
+          const inward = faceN.clone().transformDirection(h.object.matrixWorld).negate();
+          const bar = st.bars[st.selectedBar];
+          const offM = ((Number(st.cover) || 0) + (Number(bar?.Dia) || 0) / 2) / 1000;
+          wp.addScaledVector(inward, offM);
+        }
         let pos;
         if (root && root.userData.pickRoot === 'ifc') {
           const u = st.ifc?.unitToMeters || 1;
-          const lp = root.worldToLocal(h.point.clone());
+          const lp = root.worldToLocal(wp);
           pos = { Pos_x: Math.round(lp.x * u * 1000), Pos_y: Math.round(-lp.z * u * 1000), Pos_z: Math.round(lp.y * u * 1000) };
         } else {
           // app frame (mm): x right, y plan, z up; scene is metres, Y-up
-          pos = { Pos_x: Math.round(h.point.x * 1000), Pos_y: Math.round(-h.point.z * 1000), Pos_z: Math.round(h.point.y * 1000) };
+          pos = { Pos_x: Math.round(wp.x * 1000), Pos_y: Math.round(-wp.z * 1000), Pos_z: Math.round(wp.y * 1000) };
         }
         st.updateBar(st.selectedBar, pos);
         st.setLastPick({ ...pos, at: Date.now() });
+        console.info('[pick] placed ' + JSON.stringify(pos));
       } else {
         const key = h.object.userData?.ifcKey || null;
         if (key) st.setIfcSelected(key === st.ifcSelected ? null : key);
@@ -225,6 +342,11 @@ function AutotestDump() {
 // web-ifc (~6 MB) loads only after the first IFC file is opened.
 const IfcModel = lazy(() => import('./IfcModel.jsx'));
 
+// preserveDrawingBuffer (screenshot/pixel reads) only pays off under ?autotest;
+// production gets the faster swap path. powerPreference nudges hybrid laptops
+// onto the discrete GPU.
+const AUTOTEST = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('autotest');
+
 // Scene units: 1 unit = 1 mm, scaled down by 0.001 inside group for viewing.
 const S = 0.001;
 
@@ -266,8 +388,12 @@ function RebarMesh({ bar, selected, onClick }) {
     <group userData-pickRoot="rebar" onClick={(e) => { e.stopPropagation(); onClick?.(); }}>
       {copies.map(([ox, oy, oz], i) => (
         <group key={i} position={[bx + ox * S, bz + oz * S, by - oy * S]} rotation={[0, rot, 0]}>
-          <mesh geometry={tube}>
-            <meshStandardMaterial color={colorFor(Number(bar.Dia))} roughness={0.4} metalness={0.4} emissive={selected ? '#ffffff' : '#000000'} emissiveIntensity={selected ? 0.35 : 0} clippingPlanes={sectionPlanes} />
+          {/* Selected bar draws on top (no depth test): snap-to-cover parks it
+              inside opaque solids, and the white highlight alone can't show
+              through. Unselected bars keep depth so the model reads normally.
+              Clipping planes still apply, so section cuts stay correct. */}
+          <mesh geometry={tube} renderOrder={selected ? 999 : 0}>
+            <meshStandardMaterial color={colorFor(Number(bar.Dia))} roughness={0.4} metalness={0.4} emissive={selected ? '#ffffff' : '#000000'} emissiveIntensity={selected ? 0.35 : 0} clippingPlanes={sectionPlanes} depthTest={selected ? false : true} />
           </mesh>
         </group>
       ))}
@@ -282,17 +408,22 @@ function RebarMesh({ bar, selected, onClick }) {
 }
 
 function ConcreteMesh({ c }) {
-  const [lx, ly, lz] = [c.lx * S, c.lz * S, c.ly * S];
-  const geom = useMemo(() => new THREE.BoxGeometry(lx, lz, ly), [lx, ly, lz]);
+  // Scene mapping (shared with rebar + pick): scene = (appX, appZ, −appY) × S.
+  // Box spans app [x,x+lx] × [y,y+ly] × [z,z+lz] (mm); ly = plan depth, lz = height.
+  const sx = c.lx * S, sy = c.lz * S, sz = c.ly * S;
+  const cx = (c.x + c.lx / 2) * S, cy = (c.z + c.lz / 2) * S, cz = -((c.y + c.ly / 2) * S);
+  const geom = useMemo(() => new THREE.BoxGeometry(sx, sy, sz), [sx, sy, sz]);
   const capsOn = useStore((s) => !!(s.section?.enabled && (s.section?.solidCut ?? true)));
+  const isWireframe = useStore((s) => s.shading === 'wireframe');
   const xray = useStore((s) => s.shading === 'xray');
+  const opacity = isWireframe ? 0.08 : xray ? 0.1 : 0.22;
   const noMarks = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('nomarks') === '1';
   return (
-    <mesh userData-pickRoot="concrete" position={[(c.x * S) + lx / 2, (c.z * S) + lz / 2, -((c.y * S) + ly / 2)]} geometry={geom}>
-      <meshStandardMaterial color="#9ca3af" transparent opacity={xray ? 0.1 : 0.22} roughness={0.9} depthWrite={false} clippingPlanes={sectionPlanes} />
+    <mesh userData-pickRoot="concrete" position={[cx, cy, cz]} geometry={geom}>
+      <meshStandardMaterial color="#9ca3af" transparent opacity={opacity} roughness={0.9} depthWrite={false} clippingPlanes={sectionPlanes} />
       <lineSegments>
-        <edgesGeometry args={[new THREE.BoxGeometry(lx, lz, ly)]} />
-        <lineBasicMaterial color="#6b7280" />
+        <edgesGeometry args={[new THREE.BoxGeometry(sx, sy, sz)]} />
+        <lineBasicMaterial color={isWireframe ? "#38bdf8" : "#6b7280"} />
       </lineSegments>
       {capsOn && !noMarks && [0, 1, 2, 3, 4, 5].map((i) => (
         <group key={i}>
@@ -316,7 +447,7 @@ export default function Scene() {
   return (
     <Canvas camera={{ position: [6, 4, -6], fov: 45 }} style={{ background: '#0f172a' }}
       dpr={[1, 1.75]}
-      gl={{ preserveDrawingBuffer: true }}
+      gl={{ preserveDrawingBuffer: AUTOTEST, powerPreference: 'high-performance' }}
       onCreated={({ gl }) => {
         gl.localClippingEnabled = true;
         try {
@@ -327,6 +458,8 @@ export default function Scene() {
       <ambientLight intensity={0.7} />
       <hemisphereLight args={['#ffffff', '#475569', 0.55]} />
       <directionalLight position={[8, 10, 6]} intensity={1.2} />
+      {/* Drops render resolution under load, restores when smooth (fill-bound GPUs) */}
+      <AdaptiveDpr />
       <Grid infiniteGrid sectionColor="#334155" cellColor="#1e293b" position={[0, -0.01, 0]} />
       <SectionBox />
       {showConcrete && concretes.map((c) => <ConcreteMesh key={c.id} c={c} />)}
@@ -338,10 +471,12 @@ export default function Scene() {
       {bars.map((b, i) => (
         <RebarMesh key={i} bar={b} selected={i === selectedBar} onClick={() => selectBar(i)} />
       ))}
-      <OrbitControls makeDefault zoomToCursor minDistance={0} maxDistance={Infinity} panSpeed={0.7}
+      <OrbitControls makeDefault enableDamping dampingFactor={0.08} panSpeed={1.8} screenSpacePanning enableZoom={false} minDistance={0} maxDistance={Infinity}
         mouseButtons={{ LEFT: navOrbit ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN }} />
       <FitIfc />
       <AutoClipping />
+      <DiveZoom />
+      <TraceTool />
       <PickHandler />
       {typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('autotest') && <AutotestDump />}
     </Canvas>

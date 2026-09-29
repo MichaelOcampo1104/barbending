@@ -40,6 +40,8 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
 - **Blender-style viewport** — unlimited zoom (dynamic clip planes +
   zoom-to-cursor), Solid / X-ray shading, FPS + camera readout in the status
   bar, collapsible panels.
+- **Snap-to-cover** — global cover (mm); 🎯 pick on a concrete/IFC face places
+  the bar centreline cover + Ø/2 inside; stirrups fit to their host with one click.
 - **BBS table + CSV** — live cut lengths (bend deductions) and `D²/162`
   weights; one-click `rebar_scheduling.csv` export, CSV re-import.
 

@@ -88,6 +88,10 @@ export const useStore = create((set, get) => ({
   // last click-to-place result (diagnostics + UI feedback)
   lastPick: null,
   setLastPick: (v) => set({ lastPick: v }),
+  // Snap-to-cover: pick-to-place pushes the bar origin inside the clicked
+  // face by cover + Dia/2 along the inward face normal (mm).
+  cover: 40,
+  setCover: (v) => set({ cover: v }),
   // section box (Revit-style): center/size/quat in scene units (metres).
   // mode: 'faces' (push/pull) | 'translate' (move gizmo) | 'rotate' (rotate gizmo)
   section: null,
@@ -148,4 +152,11 @@ export const useStore = create((set, get) => ({
   })),
   // camera focus on an explicit scene-unit box (zoom-to-element)
   setIfcFitBox: (center, radius) => set({ ifcFit: { center, radius, n: Date.now() } }),
+  // Concrete tracing and drawing tool ('beam' | 'column' | 'slab' | 'box' | 'trace_ifc' | null)
+  drawMode: null,
+  setDrawMode: (mode) => set({ drawMode: mode, drawStart: null }),
+  drawStart: null,
+  setDrawStart: (pt) => set({ drawStart: pt }),
+  snapNode: null,
+  setSnapNode: (node) => set({ snapNode: node }),
 }));

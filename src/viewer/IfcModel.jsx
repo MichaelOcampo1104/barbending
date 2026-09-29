@@ -7,7 +7,7 @@ import { stencilMats } from './stencilMats.js';
 
 // Highlight material for the selected element (opacity synced with ghost).
 let hlMat = null;
-function highlightMaterial(opacity) {
+function highlightMaterial(opacity, isWireframe = false) {
   if (!hlMat) {
     hlMat = new THREE.MeshStandardMaterial({
       color: '#f59e0b', emissive: '#7c2d12', emissiveIntensity: 0.7,
@@ -15,10 +15,10 @@ function highlightMaterial(opacity) {
       clippingPlanes: sectionPlanes,
     });
   }
+  hlMat.wireframe = isWireframe;
   hlMat.opacity = opacity;
   hlMat.transparent = opacity < 0.999;
   hlMat.depthWrite = opacity >= 0.999;
-  hlMat.needsUpdate = false;
   return hlMat;
 }
 
@@ -29,7 +29,9 @@ export default function IfcModel() {
   const rev = useStore((s) => s.ifcRev);
   const selected = useStore((s) => s.ifcSelected);
   const capsOn = useStore((s) => !!(s.section?.enabled && (s.section?.solidCut ?? true)));
-  const xray = useStore((s) => s.shading === 'xray');
+  const shading = useStore((s) => s.shading);
+  const isWireframe = shading === 'wireframe';
+  const xray = shading === 'xray';
   const xform = useStore((s) => s.ifcXform);
   const group = ifcSession.group;
   void rev;
@@ -43,19 +45,20 @@ export default function IfcModel() {
     const d = Math.PI / 180;
     group.position.set(p[0] / 1000, p[1] / 1000, p[2] / 1000);
     group.rotation.set(r[0] * d, r[1] * d, r[2] * d);
-    // X-ray shading overrides the per-model opacity (Blender-style see-through).
-    const o = xray ? 0.15 : (ifc.opacity ?? 1);
+    // Shading mode: Wireframe, X-ray, or Solid
+    const o = isWireframe ? 0.9 : xray ? 0.15 : (ifc.opacity ?? 1);
     if (ifcSession.material) {
       const m = ifcSession.material;
+      m.wireframe = isWireframe;
       m.opacity = o;
       m.transparent = o < 0.999;
-      m.depthWrite = o >= 0.999;
+      m.depthWrite = o >= 0.999 && !isWireframe;
       m.clippingPlanes = sectionPlanes;
       m.needsUpdate = true;
     }
     const applyHL = (mesh, on) => {
       if (!mesh) return;
-      mesh.material = on ? highlightMaterial(o) : ifcSession.material;
+      mesh.material = on ? highlightMaterial(o, isWireframe) : ifcSession.material;
     };
     if (ifc.level === 'element') {
       for (const e of ifc.elements) {
@@ -98,17 +101,20 @@ export default function IfcModel() {
     const added = [];
     for (const key of solidKeys) {
       const src = ifcSession.meshes[key];
-      if (!src || !src.geometry) continue;
+      // Hidden subsets need no marks (effect re-runs on visibility toggles).
+      // Marks share src geometry (now tight spheres), so frustum culling
+      // decides identically for src and marks — safe to cull both.
+      if (!src || !src.geometry || !src.visible) continue;
       for (let i = 0; i < 6; i++) {
         const b = new THREE.Mesh(src.geometry, stencilMats[i].back);
         b.renderOrder = 3 * i;
         b.userData.stencil = true;
-        b.frustumCulled = false;
+        b.frustumCulled = true;
         b.raycast = () => null;
         const f = new THREE.Mesh(src.geometry, stencilMats[i].front);
         f.renderOrder = 3 * i + 1;
         f.userData.stencil = true;
-        f.frustumCulled = false;
+        f.frustumCulled = true;
         f.raycast = () => null;
         src.add(b, f);
         added.push(b, f);

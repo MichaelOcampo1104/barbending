@@ -237,6 +237,21 @@ export default function IfcPanel() {
           </label>
           <div className="btnrow">
             <button onClick={() => zoomTo(sel.key)}>Zoom to</button>
+            <button onClick={async () => {
+              const { ifcSession, subsetBox } = await import('./session.js');
+              const mesh = ifcSession.meshes[sel.key];
+              if (!mesh) return;
+              const bb = subsetBox(mesh);
+              if (bb.isEmpty() || !Number.isFinite(bb.min.x + bb.max.x)) return;
+              const x = Math.round(bb.min.x * 1000);
+              const y = Math.round(-bb.max.z * 1000);
+              const z = Math.round(bb.min.y * 1000);
+              const lx = Math.max(Math.round((bb.max.x - bb.min.x) * 1000), 50);
+              const ly = Math.max(Math.round((bb.max.z - bb.min.z) * 1000), 50);
+              const lz = Math.max(Math.round((bb.max.y - bb.min.y) * 1000), 50);
+              const name = sel.name || `${sel.typeLabel || 'Concrete'} ${concretes.length + 1}`;
+              useStore.getState().addConcrete({ name, lx, ly, lz, x, y, z });
+            }} title="Convert this IFC element into a concrete member with exact dimensions">⚡ Trace Concrete</button>
             <button onClick={() => solo(sel.key)}>Isolate</button>
             <button onClick={() => toggleIfcElement(sel.key)}>{sel.visible ? 'Hide' : 'Show'}</button>
             <button className="danger" onClick={() => setSelected(null)}>Clear</button>

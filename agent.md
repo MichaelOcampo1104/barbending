@@ -64,6 +64,14 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
    index → `Box3.setFromObject`/`computeBoundingBox` return the WHOLE model box.
    Always use index-aware `subsetBox()` (`src/ifc/session.js`).
 3. Subset filtering itself works (`getExpressId` sampling verified).
+4. **Tight `boundingSphere` per subset is assigned at load** (`subsetLocalSphere`,
+   index-aware, NaN-skipping): subset geometries share the full-model position
+   buffer, so three's `computeBoundingSphere` returns the whole-model sphere
+   (raycast + frustum culling then test every triangle of every subset — hangs
+   real-size models) or NaN on degenerate exporter geometry (early-out misses).
+   Only assigned when the subset mesh transform is identity (always true from
+   `createSubset`); the sphere is a conservative box-sphere so it can't
+   wrongly exclude.
 4. `mesh.onAfterRender` MUST be assigned imperatively via ref — R3F does not
    reliably forward the `onAfterRender` prop, and without per-face stencil
    clears the caps accumulate into full grey faces.
@@ -71,6 +79,9 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
    pointer capture (which silently swallowed drags on the user's machine).
 6. `useMemo` geometry deps for rebar tubes key on the whole `bar` object —
    a manual field list previously swallowed `bent_up_down` updates.
+7. Pick raycast runs against subset meshes directly (no BVH dep): kept fast by
+   the tight per-subset spheres in (4); every pick click logs
+   `[pick] targets/hits/ms` + `[pick] placed` to the console for remote diagnosis.
 
 ## Code-splitting (keep the parser lazy)
 

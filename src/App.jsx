@@ -31,6 +31,10 @@ function BarEditor() {
   const addBar = useStore((s) => s.addBar);
   const removeBar = useStore((s) => s.removeBar);
   const selectBar = useStore((s) => s.selectBar);
+  const concretes = useStore((s) => s.concretes);
+  const cover = useStore((s) => s.cover);
+  const setCover = useStore((s) => s.setCover);
+  const [hostId, setHostId] = useState(null);
   const bar = bars[idx];
   if (!bar) return <div className="panel"><p>No bars yet — pick a type below.</p><TypeGrid onAdd={addBar} /></div>;
   const set = (k, v) => updateBar(idx, { [k]: v });
@@ -78,14 +82,44 @@ function BarEditor() {
         <Field label="Offset Y" value={bar.offset_y ?? 0} onChange={(v) => set('offset_y', v)} />
         <Field label="Offset Z" value={bar.offset_z ?? 0} onChange={(v) => set('offset_z', v)} />
       </div>
-      <div className="sect">Position (mm) · rotation (°)</div>
+      <div className="sect">Position (mm) · rotation (°) · cover (mm)</div>
       <div className="grid3">
         <Field label="Pos_x" value={bar.Pos_x} onChange={(v) => set('Pos_x', v)} />
         <Field label="Pos_y" value={bar.Pos_y} onChange={(v) => set('Pos_y', v)} />
         <Field label="Pos_z" value={bar.Pos_z} onChange={(v) => set('Pos_z', v)} />
         <Field label="Rotation" value={bar.Pos_Rotation} onChange={(v) => set('Pos_Rotation', v)} />
         <Field label="Plane" value={bar.Plane} onChange={(v) => set('Plane', v)} />
+        <Field label="Cover" value={cover} onChange={(v) => setCover(v)} />
       </div>
+      {(bar.Rebar_Type === 'c_link' || bar.Rebar_Type === 'c_link_with_hook') && concretes.length > 0 && (
+        <>
+          <div className="sect">Snap to cover — fit stirrup inside host</div>
+          <div className="distnote">Sizes the stirrup centreline to host − 2·cover − Ø and drops its corner at cover + Ø/2 inside the host. Resets rotation to 0° (fit assumes axis alignment).</div>
+          <div className="crow">
+            <select
+              className="cname"
+              value={hostId && concretes.some((c) => c.id === hostId) ? hostId : concretes[0].id}
+              onChange={(e) => setHostId(e.target.value)}
+            >
+              {concretes.map((c) => <option key={c.id} value={c.id}>{c.name} · {c.lx}×{c.ly}×{c.lz}</option>)}
+            </select>
+            <button onClick={() => {
+              const host = concretes.find((c) => c.id === hostId) || concretes[0];
+              const dia = Number(bar.Dia) || 16;
+              const cv = Number(cover) || 0;
+              const inset = cv + dia / 2;
+              updateBar(idx, {
+                c_length_a: Math.max(dia * 2, Math.round(host.lx - 2 * cv - dia)),
+                c_length_b: Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia)),
+                Pos_x: Math.round((host.x + inset) * 10) / 10,
+                Pos_y: Math.round((host.y + inset) * 10) / 10,
+                Pos_z: Math.round((host.z + inset) * 10) / 10,
+                Pos_Rotation: 0,
+              });
+            }}>Fit to host</button>
+          </div>
+        </>
+      )}
       <div className="sect">Add bar</div>
       <TypeGrid onAdd={addBar} />
       <button className="danger block" onClick={() => removeBar(idx)}>Delete this bar</button>
@@ -106,10 +140,28 @@ function ConcreteEditor() {
   const addConcrete = useStore((s) => s.addConcrete);
   const updateConcrete = useStore((s) => s.updateConcrete);
   const removeConcrete = useStore((s) => s.removeConcrete);
+  const drawMode = useStore((s) => s.drawMode);
+  const setDrawMode = useStore((s) => s.setDrawMode);
+  const setShading = useStore((s) => s.setShading);
+
   return (
     <>
     <IfcLoadButton />
     <div className="panel">
+      <div className="sect flush">Trace & Draw from IFC / Snapping</div>
+      <div className="btnrow inline">
+        <button className={drawMode === 'beam' ? 'on' : ''} onClick={() => { setDrawMode(drawMode === 'beam' ? null : 'beam'); setShading('wireframe'); }}>✏️ Draw Beam</button>
+        <button className={drawMode === 'column' ? 'on' : ''} onClick={() => { setDrawMode(drawMode === 'column' ? null : 'column'); setShading('wireframe'); }}>✏️ Draw Column</button>
+        <button className={drawMode === 'slab' ? 'on' : ''} onClick={() => { setDrawMode(drawMode === 'slab' ? null : 'slab'); setShading('wireframe'); }}>✏️ Draw Slab</button>
+        <button className={drawMode === 'trace_ifc' ? 'on' : ''} onClick={() => { setDrawMode(drawMode === 'trace_ifc' ? null : 'trace_ifc'); setShading('wireframe'); }}>⚡ Auto-Trace IFC</button>
+      </div>
+      <div className="distnote" style={{ marginTop: 6 }}>
+        {drawMode
+          ? '🎯 Snap to nodes/joints on the IFC wireframe and click to trace.'
+          : 'Tip: Switch to Wireframe mode to see internal joints, nodes, and frames clearly.'}
+      </div>
+
+      <div className="sect">Concrete Elements ({concretes.length})</div>
       {concretes.map((c) => (
         <div key={c.id} className="cbox">
           <div className="crow">
@@ -133,9 +185,9 @@ function ConcreteEditor() {
         </div>
       ))}
       <div className="btnrow">
-        <button onClick={() => addConcrete({ name: 'Beam', lx: 6000, ly: 400, lz: 600, x: 0, y: 0, z: 0 })}>+ Beam</button>
-        <button onClick={() => addConcrete({ name: 'Slab', lx: 6000, ly: 4000, lz: 200, x: 0, y: 0, z: 0 })}>+ Slab</button>
-        <button onClick={() => addConcrete({ name: 'Column', lx: 400, ly: 400, lz: 3000, x: 0, y: 0, z: 0 })}>+ Column</button>
+        <button onClick={() => addConcrete({ name: 'Beam', lx: 6000, ly: 400, lz: 600, x: 0, y: 0, z: 0 })}>+ Preset Beam</button>
+        <button onClick={() => addConcrete({ name: 'Slab', lx: 6000, ly: 4000, lz: 200, x: 0, y: 0, z: 0 })}>+ Preset Slab</button>
+        <button onClick={() => addConcrete({ name: 'Column', lx: 400, ly: 400, lz: 3000, x: 0, y: 0, z: 0 })}>+ Preset Column</button>
       </div>
     </div>
     </>
@@ -154,6 +206,8 @@ function ViewportBar() {
   const ifc = useStore((s) => s.ifc);
   const ifcPick = useStore((s) => s.ifcPick);
   const setIfcPick = useStore((s) => s.setIfcPick);
+  const cover = useStore((s) => s.cover);
+  const setCover = useStore((s) => s.setCover);
   const lastPick = useStore((s) => s.lastPick);
   const shading = useStore((s) => s.shading);
   const setShading = useStore((s) => s.setShading);
@@ -165,13 +219,26 @@ function ViewportBar() {
   const thirdSection = useStore((s) => s.thirdSection);
   const setSection = useStore((s) => s.setSection);
   const showBox = section?.showBox ?? true;
+
+  const drawMode = useStore((s) => s.drawMode);
+  const setDrawMode = useStore((s) => s.setDrawMode);
+  const drawStart = useStore((s) => s.drawStart);
+  const snapNode = useStore((s) => s.snapNode);
+
   return (
     <>
       <div className="vptools">
         <button className={showConcrete ? 'on' : ''} onClick={toggleConcrete}>◧ Concrete</button>
-        <span className="seg">
-          <button className={shading === 'solid' ? 'on' : ''} onClick={() => setShading('solid')} title="Solid shading (Blender)">Solid</button>
-          <button className={shading === 'xray' ? 'on' : ''} onClick={() => setShading('xray')} title="X-ray: see-through concrete (Blender)">X-ray</button>
+        <span className="seg" title="Shading modes">
+          <button className={shading === 'solid' ? 'on' : ''} onClick={() => setShading('solid')} title="Solid shading">Solid</button>
+          <button className={shading === 'xray' ? 'on' : ''} onClick={() => setShading('xray')} title="X-ray: see-through concrete">X-ray</button>
+          <button className={shading === 'wireframe' ? 'on' : ''} onClick={() => setShading('wireframe')} title="Wireframe mode (snap nodes & joints)">Wireframe</button>
+        </span>
+        <span className="seg" title="Trace & draw concrete members from IFC or scene">
+          <button className={drawMode === 'beam' ? 'on' : ''} onClick={() => setDrawMode(drawMode === 'beam' ? null : 'beam')} title="Draw Beam: snap two corner/joint nodes">✏️ Beam</button>
+          <button className={drawMode === 'column' ? 'on' : ''} onClick={() => setDrawMode(drawMode === 'column' ? null : 'column')} title="Draw Column: snap two corner/joint nodes">✏️ Column</button>
+          <button className={drawMode === 'slab' ? 'on' : ''} onClick={() => setDrawMode(drawMode === 'slab' ? null : 'slab')} title="Draw Slab: snap two corner/joint nodes">✏️ Slab</button>
+          <button className={drawMode === 'trace_ifc' ? 'on' : ''} onClick={() => setDrawMode(drawMode === 'trace_ifc' ? null : 'trace_ifc')} title="1-Click Auto-Trace: click any IFC beam/column/slab to convert it">⚡ Auto-Trace</button>
         </span>
         <span className="seg" title="Left-mouse behavior (middle-drag always orbits)">
           <button className={navMode === 'select' ? 'on' : ''} onClick={() => setNavMode('select')} title="LMB selects bars/IFC (orbit with MMB)">Select</button>
@@ -194,13 +261,20 @@ function ViewportBar() {
           <button className={(section?.solidCut ?? true) ? 'on' : ''} onClick={() => setSection({ solidCut: !(section?.solidCut ?? true) })} title="Fill cut faces solid (stencil caps) or leave hollow">Solid cut</button>
         )}
         <button className={ifcPick ? 'on' : ''} onClick={() => setIfcPick(!ifcPick)} title="Click IFC / concrete / bar surfaces to move the selected bar there">🎯 Pick pos</button>
+        <label className="cover" title="Concrete cover (mm) — pick-to-place sinks the bar centreline this far + Ø/2 inside the clicked face">
+          cover
+          <input type="number" value={cover} min={0} onChange={(e) => setCover(Number(e.target.value))} />
+        </label>
         {ifc && <button onClick={fitIfcLive}>Fit IFC</button>}
         <span className="vstat">{totalBars} bars · {totalW.toFixed(1)} kg</span>
       </div>
       <div className="overlay">
         drag = orbit · wheel = zoom · right-drag = pan · click bar = select
+        {drawMode && !drawStart && <b> — 📐 [{drawMode.toUpperCase()} TOOL] Click 1st corner/node (snapping active) · Esc to cancel</b>}
+        {drawMode && drawStart && <b> — 📐 [{drawMode.toUpperCase()} TOOL] Click opposite corner/node to complete member · Esc to cancel</b>}
+        {snapNode && <b> — 📍 Snapped: ({snapNode.x}, {snapNode.y}, {snapNode.z}) [{snapNode.type}]</b>}
         {section?.enabled && <b> — drag ◼ face cubes to push/pull the section</b>}
-        {ifcPick && <b> — pick mode: click IFC / concrete / bar to place the selected bar</b>}
+        {ifcPick && <b> — pick mode: click IFC / concrete to place the selected bar (cover {cover}mm + Ø/2 inside the face)</b>}
         {lastPick && <b> — placed ({lastPick.Pos_x}, {lastPick.Pos_y}, {lastPick.Pos_z})</b>}
         {sel && <b> — {sel.Bar_mark} · {sel.Rebar_Type} · Ø{sel.Dia} · {sel._copies} bars · cut {sel._cut} mm · {sel.Weight_kg} kg</b>}
       </div>

@@ -2,6 +2,50 @@
 
 ## Unreleased (working tree → next push)
 
+- **Blender-Style Unlimited Fluid Zoom & Fast Panning**:
+  - Implemented exponential decay damping (`useFrame`) on wheel & trackpad pinch gestures for buttery-smooth 60/120fps glide.
+  - Unlimited dive-zoom: smoothly advances camera and orbit pivot along the cursor ray when approaching geometry, eliminating the OrbitControls pivot wall / Zeno slowdown.
+  - Zoom-out dynamically re-inflates compressed radii so backing out from micro-inspection is instantaneous.
+  - Fast, responsive panning with `panSpeed={1.8}`, `screenSpacePanning`, and native `Shift + MMB` / `RMB` support.
+  - Dynamic adaptive near clipping ($0.1\,\text{mm}$) and expanded far plane ($5000\,\text{m}$) for zero foreground clipping.
+
+- **IFC Wireframe Mode & Structural Tracing Tools**:
+  - Added **Wireframe** shading mode alongside Solid and X-ray to expose interior joints, frames, and vertices of IFC models.
+  - **Smart Node & Joint Snapping Engine**: Raycast-driven vertex, corner node, and edge midpoint snapping with 3D glowing snap glyphs and coordinate HUD.
+  - **1-Click Auto-Trace**: Click any IFC beam, column, slab, footing, or wall in viewport (with real-time hover bounding preview) or via the IFC properties panel to instantly extract exact 3D bounding geometry, dimensions, and structural member names into concrete elements.
+  - **Interactive 2-Point Snapped Tracing**: Draw custom beams, columns, and slabs by snapping between start and opposite corner nodes with real-time 3D bounding box dimensions preview.
+- **Fix**: scratch concrete boxes rendered with plan-depth (Ly) and height (Hz)
+  swapped (a 6000×400×600 beam drew 400 tall × 600 deep); now matches the data,
+  the pick mapping, and the stirrup fit.
+- **IFC pick perf**: per-subset tight bounding spheres at load (subset buffers
+  are shared whole-model, which defeated raycast/frustum culling — every click
+  tested every triangle, freezing real-size models so clicks died as drags).
+  Plus an always-on `[pick] targets/hits/ms` console line for remote diagnosis.
+- **Selected bar renders on top** (`depthTest` off, high render order):
+  snap-to-cover parks bars inside opaque IFC solids where the old depth-tested
+  white highlight was invisible; unselected bars keep depth. Section clipping
+  still applies.
+- **Viewport perf**: `AdaptiveDpr` (resolution drops under load, restores when
+  smooth), pan speed 0.7 → 1.0 + zoom speed 1.4×, stencil mark meshes skipped
+  for hidden IFC subsets and frustum-culled with the rest.
+- **Nav + zoom**: zoom speed 2×, near/far retuned for constant depth precision
+  (dive from site scale to a single bar — close faces no longer clip, distant
+  faces don't z-fight), `high-performance` GPU hint for hybrid laptops,
+  buffer-preserving canvas only under `?autotest`. Zoom range itself was and
+  stays unlimited (0 … ∞, zoom-to-cursor).
+- **Dive-zoom**: stock orbit parks the camera at its pivot, so wheel-in dies
+  whenever the pivot isn't on the surface you're approaching (and the
+  collapsed radius then starves zoom-out too). Wheel-in now walks the pivot
+  forward along the cursor ray; wheel-out pulls the camera back past stock
+  dolly with a floor that re-inflates collapsed radii. Verified headlessly:
+  240 wheel-ins fly through the old pivot without stalling, 10 wheel-outs
+  recover 3 m. Touch pinch keeps stock behavior.
+- **Dive-zoom calibration**: first cut flew 22 m past the target (model lost)
+  and the tight far plane clipped distant context on close dives. Now gentler
+  tracking (3%/notch, 5 cm cap, 2 mm anti-stall floor), zoom speed 1.5×, far
+  floor 200 m. Verified: 9.4 m → 1.5 m in 20 notches, glides through arrival
+  without stalling, 10 wheel-outs recover. Fast travel, controlled arrival.
+
 - **IFC placement**: per-model X/Y/Z offset (mm) + Rx/Ry/Rz (deg, Y-up) with
   one-click reset to 0,0,0 + 0°; camera fit, click-place and zoom-to-element
   follow the moved model.

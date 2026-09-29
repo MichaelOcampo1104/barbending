@@ -23,19 +23,56 @@ const val = (v) => (v && typeof v === 'object' && 'value' in v ? v.value : v);
 // index — so Box3.setFromObject / computeBoundingBox (which ignore the index)
 // wrongly return the whole-model box. Walk the referenced verts instead.
 const _sv = new THREE.Vector3();
+// Tight index-aware bounding sphere in GEOMETRY-LOCAL coords, skipping
+// non-finite verts. Subset geometries share the full model's position buffer,
+// so three's computeBoundingSphere returns the whole-model sphere (raycast +
+// frustum culling test every triangle of every subset on every click —
+// seconds-long freezes on real-size models, and clicks get discarded as
+// drags) — or NaN when an exporter emits degenerate verts (raycast/frustum
+// early-out then misses the mesh entirely). Assigned at load; conservative
+// (box sphere) so it can never wrongly exclude.
+const _sbox = new THREE.Box3();
+export function subsetLocalSphere(mesh) {
+  const sphere = new THREE.Sphere();
+  const g = mesh?.geometry;
+  const pos = g?.attributes?.position;
+  if (!pos) { sphere.radius = 0; return sphere; }
+  _sbox.makeEmpty();
+  const idx = g.index;
+  const n = idx ? idx.count : pos.count;
+  for (let i = 0; i < n; i++) {
+    _sv.fromBufferAttribute(pos, idx ? idx.getX(i) : i);
+    if (Number.isFinite(_sv.x + _sv.y + _sv.z)) _sbox.expandByPoint(_sv);
+  }
+  if (_sbox.isEmpty()) { sphere.radius = 0; return sphere; }
+  return _sbox.getBoundingSphere(sphere);
+}
+
+const IDENT = new THREE.Matrix4();
 export function subsetBox(mesh) {
   const g = mesh.geometry;
-  const pos = g.attributes.position;
-  const idx = g.index;
+  const pos = g?.attributes?.position;
+  const idx = g?.index;
   const bb = new THREE.Box3();
   mesh.updateWorldMatrix(true, false);
-  if (pos && idx) {
+  if (pos && idx && idx.count > 0) {
     for (let i = 0; i < idx.count; i++) {
-      _sv.fromBufferAttribute(pos, idx.getX(i)).applyMatrix4(mesh.matrixWorld);
-      bb.expandByPoint(_sv);
+      _sv.fromBufferAttribute(pos, idx.getX(i));
+      if (Number.isFinite(_sv.x + _sv.y + _sv.z)) {
+        _sv.applyMatrix4(mesh.matrixWorld);
+        bb.expandByPoint(_sv);
+      }
+    }
+  } else if (pos && pos.count > 0) {
+    for (let i = 0; i < pos.count; i++) {
+      _sv.fromBufferAttribute(pos, i);
+      if (Number.isFinite(_sv.x + _sv.y + _sv.z)) {
+        _sv.applyMatrix4(mesh.matrixWorld);
+        bb.expandByPoint(_sv);
+      }
     }
   } else {
-    bb.setFromObject(mesh);
+    try { bb.setFromObject(mesh); } catch { /* empty */ }
   }
   return bb;
 }
@@ -225,6 +262,12 @@ export async function loadIfc(file) {
   group.updateMatrixWorld(true);
   const bb = new THREE.Box3();
   group.traverse((o) => { if (o.isMesh) bb.union(subsetBox(o)); });
+  // Tight per-subset bounding spheres (see subsetLocalSphere): subset meshes
+  // carry identity transforms, so geometry-local verts are mesh-local.
+  group.traverse((o) => {
+    if (!o.isMesh || !o.geometry || !o.matrix.equals(IDENT)) return;
+    o.geometry.boundingSphere = subsetLocalSphere(o);
+  });
   const center = bb.getCenter(new THREE.Vector3());
   const bsz = bb.getSize(new THREE.Vector3());
   const radius = bsz.length() / 2;
