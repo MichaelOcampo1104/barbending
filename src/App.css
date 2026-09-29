@@ -110,7 +110,79 @@ tbody tr.hidden { opacity: 0.45; }
 tbody tr.hidden.sel { background: #17295c; }
 .cbox.hidden { opacity: 0.55; }
 .measure-label { font-size: 11px; color: #a5f3fc; background: rgba(8,47,73,.9); border: 1px solid #22d3ee; padding: 2px 7px; border-radius: 6px; white-space: nowrap; pointer-events: none; }
+.measure-label.vector { background: rgba(14, 116, 144, 0.92); border-color: #06b6d4; color: #ffffff; font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,0.4); }
+.measure-label.dx { background: rgba(153, 27, 27, 0.9); border-color: #f87171; color: #fecaca; }
+.measure-label.dy { background: rgba(22, 101, 52, 0.9); border-color: #4ade80; color: #bbf7d0; }
+.measure-label.dz { background: rgba(30, 64, 175, 0.9); border-color: #60a5fa; color: #bfdbfe; }
 .measure-label.total { color: #fef3c7; border-color: #f59e0b; background: rgba(69,26,3,.9); font-weight: 700; }
+
+/* Floating Measure HUD & Rebar Controller Card */
+.measure-hud {
+  position: absolute;
+  top: 48px;
+  right: 12px;
+  width: 320px;
+  background: rgba(15, 27, 51, 0.96);
+  border: 1px solid #38bdf8;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  border-radius: 8px;
+  padding: 10px 12px;
+  z-index: 50;
+  backdrop-filter: blur(8px);
+  color: #e2e8f0;
+}
+.measure-hud-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #243352;
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  color: #38bdf8;
+}
+.measure-hud-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 6px 0;
+}
+.measure-stat-box {
+  background: #0b1528;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  padding: 4px 6px;
+  text-align: center;
+}
+.measure-stat-label {
+  font-size: 10px;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
+.measure-stat-val {
+  font-size: 12px;
+  font-weight: 700;
+}
+.measure-stat-val.vector { color: #38bdf8; }
+.measure-stat-val.dx { color: #f87171; }
+.measure-stat-val.dy { color: #4ade80; }
+.measure-stat-val.dz { color: #60a5fa; }
+.measure-ctrl-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.measure-ctrl-row input {
+  width: 65px;
+  background: #0b1528;
+  color: #e2e8f0;
+  border: 1px solid #2b3d63;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
 
 @media (max-width: 900px) {
   body { overflow: auto; }

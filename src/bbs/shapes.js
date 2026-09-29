@@ -196,6 +196,40 @@ export function rebarSnapNodes(bars, concretes, excludeIdx = -1) {
   return nodes;
 }
 
+// Bounding box corners, edge midpoints, and face centers of visible concrete members
+export function concreteSnapNodes(concretes) {
+  const nodes = [];
+  (concretes || []).forEach((c) => {
+    if (c.visible === false) return;
+    const x0 = Number(c.x) || 0, y0 = Number(c.y) || 0, z0 = Number(c.z) || 0;
+    const lx = Number(c.lx) || 0, ly = Number(c.ly) || 0, lz = Number(c.lz) || 0;
+    // 8 bounding corners
+    for (const dx of [0, lx]) {
+      for (const dy of [0, ly]) {
+        for (const dz of [0, lz]) {
+          nodes.push([x0 + dx, y0 + dy, z0 + dz]);
+        }
+      }
+    }
+    // 6 face centers
+    nodes.push([x0 + lx / 2, y0 + ly / 2, z0]);
+    nodes.push([x0 + lx / 2, y0 + ly / 2, z0 + lz]);
+    nodes.push([x0, y0 + ly / 2, z0 + lz / 2]);
+    nodes.push([x0 + lx, y0 + ly / 2, z0 + lz / 2]);
+    nodes.push([x0 + lx / 2, y0, z0 + lz / 2]);
+    nodes.push([x0 + lx / 2, y0 + ly, z0 + lz / 2]);
+  });
+  return nodes;
+}
+
+// All snap nodes (rebar + concrete)
+export function allSnapNodes(bars, concretes, excludeIdx = -1, includeConcrete = true) {
+  const rNodes = rebarSnapNodes(bars, concretes, excludeIdx);
+  if (!includeConcrete) return rNodes;
+  const cNodes = concreteSnapNodes(concretes);
+  return [...rNodes, ...cNodes];
+}
+
 // Distribution grid — mirrors FreeCAD parametric_utils.py place_c_link_*:
 // copies at (Pos_x + ix*spacing_x + offset_x, Pos_y + iy*spacing_y + offset_y,
 //            Pos_z + offset_z). Applies to ALL bar types in the browser so

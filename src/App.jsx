@@ -3,7 +3,7 @@ import Scene from './viewer/Scene.jsx';
 import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
 import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount } from './bbs/shapes.js';
-import { enrichBar, downloadCsv, parseCsv } from './bbs/csv.js';
+import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES } from './bbs/csv.js';
 import { lapLengthMm } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
@@ -151,7 +151,7 @@ function BarEditor() {
         </>
       )}
       <div className="sect">🔗 Lap splice (EC2 bond table)</div>
-      <div className="distnote">This bar laps onto the anchor's end. Straight bars only; length from the larger Ø. Or arm 🔗 Lap above and click anchor, then a bar.</div>
+      <div className="distnote">This bar laps onto the anchor's end. Straight bars only; length from the smaller Ø (least size bar). Or arm 🔗 Lap above and click anchor, then a bar.</div>
       <div className="row2">
         <label className="fld"><span>Anchor bar</span>
           <select value={lapAnchor ?? ''} onChange={(e) => setLapAnchor(e.target.value === '' ? null : Number(e.target.value))}>
@@ -167,7 +167,11 @@ function BarEditor() {
         </label>
       </div>
       <div className="crow">
-        <span className="hint">lap {lapLengthMm(Math.max(Number(bar.Dia) || 0, Number(bars[lapAnchor]?.Dia) || 0), bond).toLocaleString('en-US')} mm</span>
+        <span className="hint">lap {(() => {
+          const diaA = Number(bar.Dia) || 0, diaB = Number(bars[lapAnchor]?.Dia) || 0;
+          const dia = (diaA > 0 && diaB > 0) ? Math.min(diaA, diaB) : (diaA || diaB);
+          return lapLengthMm(dia, bond).toLocaleString('en-US');
+        })()} mm</span>
         <button onClick={() => {
           if (lapAnchor == null || bars[lapAnchor] === undefined) { alert('Pick an anchor bar first (dropdown or 🔗 Lap clicks).'); return; }
           const r = applyLapSplice(lapAnchor, idx);
@@ -246,6 +250,208 @@ function ConcreteEditor() {
       </div>
     </div>
     </>
+  );
+}
+
+function MeasureHud() {
+  const measure = useStore((s) => s.measure);
+  const setMeasureActive = useStore((s) => s.setMeasureActive);
+  const clearMeasure = useStore((s) => s.clearMeasure);
+  const bars = useStore((s) => s.bars);
+  const selectedBar = useStore((s) => s.selectedBar);
+  const selectBar = useStore((s) => s.selectBar);
+  const adjustBarFromMeasure = useStore((s) => s.adjustBarFromMeasure);
+  const cover = useStore((s) => s.cover);
+
+  const [targetX, setTargetX] = useState('');
+  const [targetY, setTargetY] = useState('');
+  const [targetZ, setTargetZ] = useState('');
+  const [targetVec, setTargetVec] = useState('');
+  const [ctrlBarIdx, setCtrlBarIdx] = useState(selectedBar ?? 0);
+
+  useEffect(() => {
+    if (selectedBar != null && selectedBar !== ctrlBarIdx) {
+      setCtrlBarIdx(selectedBar);
+    }
+  }, [selectedBar]);
+
+  if (!measure?.active) return null;
+
+  const pts = measure.points || [];
+  const p1 = pts[0];
+  const p2 = pts[1];
+
+  let dx = 0, dy = 0, dz = 0, len = 0;
+  if (p1 && p2) {
+    dx = p2[0] - p1[0];
+    dy = p2[1] - p1[1];
+    dz = p2[2] - p1[2];
+    len = Math.hypot(dx, dy, dz);
+  }
+
+  const activeBar = bars[ctrlBarIdx] || bars[selectedBar] || bars[0];
+
+  const applyShiftX = (desiredDist) => {
+    if (!p1 || !p2 || !activeBar) return;
+    const target = Number(desiredDist);
+    if (!Number.isFinite(target)) return;
+    const sign = dx < 0 ? -1 : 1;
+    const targetDx = sign * Math.abs(target);
+    const shiftX = targetDx - dx;
+    const newP2 = [p1[0] + targetDx, p2[1], p2[2]];
+    adjustBarFromMeasure(ctrlBarIdx, shiftX, 0, 0, newP2);
+  };
+
+  const applyShiftY = (desiredDist) => {
+    if (!p1 || !p2 || !activeBar) return;
+    const target = Number(desiredDist);
+    if (!Number.isFinite(target)) return;
+    const sign = dy < 0 ? -1 : 1;
+    const targetDy = sign * Math.abs(target);
+    const shiftY = targetDy - dy;
+    const newP2 = [p2[0], p1[1] + targetDy, p2[2]];
+    adjustBarFromMeasure(ctrlBarIdx, 0, shiftY, 0, newP2);
+  };
+
+  const applyShiftZ = (desiredDist) => {
+    if (!p1 || !p2 || !activeBar) return;
+    const target = Number(desiredDist);
+    if (!Number.isFinite(target)) return;
+    const sign = dz < 0 ? -1 : 1;
+    const targetDz = sign * Math.abs(target);
+    const shiftZ = targetDz - dz;
+    const newP2 = [p2[0], p2[1], p1[2] + targetDz];
+    adjustBarFromMeasure(ctrlBarIdx, 0, 0, shiftZ, newP2);
+  };
+
+  const applyShiftVec = (desiredLen) => {
+    if (!p1 || !p2 || !activeBar) return;
+    const target = Number(desiredLen);
+    if (!Number.isFinite(target) || !(len > 0.001)) return;
+    const scale = target / len;
+    const targetDx = dx * scale;
+    const targetDy = dy * scale;
+    const targetDz = dz * scale;
+    const shiftX = targetDx - dx;
+    const shiftY = targetDy - dy;
+    const shiftZ = targetDz - dz;
+    const newP2 = [p1[0] + targetDx, p1[1] + targetDy, p1[2] + targetDz];
+    adjustBarFromMeasure(ctrlBarIdx, shiftX, shiftY, shiftZ, newP2);
+  };
+
+  return (
+    <div className="measure-hud">
+      <div className="measure-hud-header">
+        <span>📏 Measure & Clearance Inspector</span>
+        <span style={{ display: 'flex', gap: 4 }}>
+          {pts.length > 0 && <button className="ghost sm" onClick={clearMeasure} title="Clear measured points">Clear</button>}
+          <button className="ghost sm" onClick={() => setMeasureActive(false)} title="Close measure tool (Esc)">✕</button>
+        </span>
+      </div>
+
+      {pts.length < 2 ? (
+        <div className="distnote">
+          {pts.length === 0
+            ? 'Click 1st point on Concrete, Rebar, or IFC surface (magnet snapping active).'
+            : `Point 1 (Ref): (${p1[0]}, ${p1[1]}, ${p1[2]}) mm. Click 2nd point on Rebar or Concrete.`}
+        </div>
+      ) : (
+        <>
+          <div className="measure-stat-box" style={{ marginBottom: 6 }}>
+            <div className="measure-stat-label">3D Vector Distance</div>
+            <div className="measure-stat-val vector" style={{ fontSize: 15 }}>{fmtLen(len)}</div>
+          </div>
+          <div className="measure-hud-grid">
+            <div className="measure-stat-box">
+              <div className="measure-stat-label">ΔX (Width)</div>
+              <div className="measure-stat-val dx">{fmtLen(Math.abs(dx))}</div>
+            </div>
+            <div className="measure-stat-box">
+              <div className="measure-stat-label">ΔY (Depth)</div>
+              <div className="measure-stat-val dy">{fmtLen(Math.abs(dy))}</div>
+            </div>
+            <div className="measure-stat-box">
+              <div className="measure-stat-label">ΔZ (Height)</div>
+              <div className="measure-stat-val dz">{fmtLen(Math.abs(dz))}</div>
+            </div>
+          </div>
+
+          {activeBar && (
+            <div style={{ marginTop: 8, borderTop: '1px solid #243352', paddingTop: 6 }}>
+              <div style={{ fontSize: 11, color: '#93c5fd', fontWeight: 600, marginBottom: 4 }}>
+                Control Rebar Distance against Ref:
+              </div>
+              <label className="fld" style={{ marginBottom: 6 }}>
+                <select value={ctrlBarIdx} onChange={(e) => {
+                  const bi = Number(e.target.value);
+                  setCtrlBarIdx(bi);
+                  selectBar(bi);
+                }}>
+                  {bars.map((b, i) => (
+                    <option key={i} value={i}>{b.Bar_mark} · {b.Rebar_Type} · Ø{b.Dia}</option>
+                  ))}
+                </select>
+              </label>
+
+              {/* Vector control */}
+              <div className="measure-ctrl-row">
+                <span style={{ width: 55, fontSize: 11, color: '#38bdf8' }}>Vector:</span>
+                <input
+                  type="number"
+                  placeholder={`${Math.round(len)}`}
+                  value={targetVec}
+                  onChange={(e) => setTargetVec(e.target.value)}
+                />
+                <button className="sm" onClick={() => applyShiftVec(targetVec || len)}>Set</button>
+                <button className="ghost sm" onClick={() => applyShiftVec(cover)} title={`Set to cover ${cover}mm`}>Cover</button>
+              </div>
+
+              {/* X control */}
+              <div className="measure-ctrl-row">
+                <span style={{ width: 55, fontSize: 11, color: '#f87171' }}>Dist X:</span>
+                <input
+                  type="number"
+                  placeholder={`${Math.round(Math.abs(dx))}`}
+                  value={targetX}
+                  onChange={(e) => setTargetX(e.target.value)}
+                />
+                <button className="sm" onClick={() => applyShiftX(targetX || Math.abs(dx))}>Set X</button>
+                <button className="ghost sm" onClick={() => applyShiftX(cover)} title={`Set X to cover ${cover}mm`}>{cover}</button>
+                <button className="ghost sm" onClick={() => applyShiftX(0)} title="Zero ΔX">0</button>
+              </div>
+
+              {/* Y control */}
+              <div className="measure-ctrl-row">
+                <span style={{ width: 55, fontSize: 11, color: '#4ade80' }}>Dist Y:</span>
+                <input
+                  type="number"
+                  placeholder={`${Math.round(Math.abs(dy))}`}
+                  value={targetY}
+                  onChange={(e) => setTargetY(e.target.value)}
+                />
+                <button className="sm" onClick={() => applyShiftY(targetY || Math.abs(dy))}>Set Y</button>
+                <button className="ghost sm" onClick={() => applyShiftY(cover)} title={`Set Y to cover ${cover}mm`}>{cover}</button>
+                <button className="ghost sm" onClick={() => applyShiftY(0)} title="Zero ΔY">0</button>
+              </div>
+
+              {/* Z control */}
+              <div className="measure-ctrl-row">
+                <span style={{ width: 55, fontSize: 11, color: '#60a5fa' }}>Dist Z:</span>
+                <input
+                  type="number"
+                  placeholder={`${Math.round(Math.abs(dz))}`}
+                  value={targetZ}
+                  onChange={(e) => setTargetZ(e.target.value)}
+                />
+                <button className="sm" onClick={() => applyShiftZ(targetZ || Math.abs(dz))}>Set Z</button>
+                <button className="ghost sm" onClick={() => applyShiftZ(cover)} title={`Set Z to cover ${cover}mm`}>{cover}</button>
+                <button className="ghost sm" onClick={() => applyShiftZ(0)} title="Zero ΔZ">0</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -353,6 +559,7 @@ function ViewportBar() {
 
 function BbsStrip() {
   const bars = useStore((s) => s.bars);
+  const concretes = useStore((s) => s.concretes);
   const setBars = useStore((s) => s.setBars);
   const updateBar = useStore((s) => s.updateBar);
   const selectBar = useStore((s) => s.selectBar);
@@ -379,20 +586,22 @@ function BbsStrip() {
       <div className="bbstool">
         <strong>BBS · {rows.length} rows · {totalBars} bars · {totalW.toFixed(1)} kg</strong>
         <span className="btnrow inline">
-          <button onClick={() => downloadCsv(bars)}>⤓ rebar_scheduling.csv</button>
-          <button onClick={() => fileRef.current?.click()}>⤒ Import</button>
+          <button style={{ background: '#059669', fontWeight: 600 }} onClick={() => downloadBbsCsv(bars, concretes)} title="Generate BBS Schedule CSV (FreeCAD Reinforcement benchmark / BS 8666 format with shape codes 20, 37, 38, 85, 41, 43)">⤓ BBS Schedule CSV</button>
+          <button onClick={() => downloadCsv(bars)} title="Export FreeCAD parametric template CSV (rebar_scheduling.csv)">⤓ rebar_scheduling.csv</button>
+          <button onClick={() => fileRef.current?.click()} title="Import CSV">⤒ Import</button>
           <input ref={fileRef} type="file" accept=".csv" hidden onChange={onImport} />
         </span>
-        <span className="hint">CSV loads straight into FreeCAD <code>rebar_detailing.py</code></span>
+        <span className="hint">Shape codes: 20=straight, 37=bent, 38=clink, 85=c_link_with_hook, 41=crank, 43=double_crank</span>
       </div>
       <div className="tblwrap">
         <table>
-          <thead><tr><th></th><th>#</th><th>Mark</th><th>Type</th><th>Ø</th><th>Bars</th><th>Cut (mm)</th><th>Wt (kg)</th></tr></thead>
+          <thead><tr><th></th><th>#</th><th>Mark</th><th>Type</th><th>Shape</th><th>Ø</th><th>Bars</th><th>Cut (mm)</th><th>Wt (kg)</th></tr></thead>
           <tbody>
             {rows.map((r, i) => (
               <tr key={i} className={(i === selectedBar ? 'sel' : '') + (r.hidden ? ' hidden' : '')} onClick={() => selectBar(i)}>
                 <td onClick={(e) => e.stopPropagation()}><button className="ghost sm" title={r.hidden ? 'Show bar' : 'Hide bar (stays in BBS + CSV)'} onClick={() => updateBar(i, { hidden: r.hidden ? undefined : true })}>{r.hidden ? '🚫' : '👁'}</button></td>
                 <td>{r.Rebar_tag}</td><td>{r.Bar_mark}</td><td>{r.Rebar_Type}</td>
+                <td><span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: 4, fontWeight: 600, color: '#67e8f9' }}>{SHAPE_CODES[(r.Rebar_Type || '').toLowerCase()] || 20}</span></td>
                 <td>{r.Dia}</td><td>{r._copies}</td><td>{r._cut}</td><td>{r.Weight_kg}</td>
               </tr>
             ))}
@@ -468,6 +677,10 @@ function FileBar() {
         }}
         title="Save bars + concrete in this browser (auto-restored on reload; IFC files reload by hand)"
       >💾 Save</button>
+      <button
+        className="hbtn" onClick={() => downloadBbsCsv(useStore.getState().bars, useStore.getState().concretes)}
+        title="Generate BBS Schedule CSV (FreeCAD benchmark / BS 8666 format with shape codes 20, 37, 38, 85, 41, 43)"
+      >⤓ BBS CSV</button>
       <button
         className="hbtn" onClick={downloadFile}
         title="Download a project .json file (bars + concrete + cover) — reload it on any system via ⤒ Project"
@@ -550,7 +763,7 @@ export default function App() {
         ) : (
         <div className="rail"><button onClick={() => setLeftOpen(true)} title="Expand panel">»</button></div>
         )}
-        <section className="view"><Scene /><ViewportBar /></section>
+        <section className="view"><Scene /><ViewportBar /><MeasureHud /></section>
         {ifcActive && (
           <aside className="rside">
             <div className="rsidehead">IFC control</div>

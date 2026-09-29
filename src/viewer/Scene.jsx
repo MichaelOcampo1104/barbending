@@ -3,7 +3,7 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, AdaptiveDpr, Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { genBarPoints, distOffsets, barOverlapsBoxes, rebarSnapNodes, barBaseEnds, MAX_RENDER_COPIES } from '../bbs/shapes.js';
+import { genBarPoints, distOffsets, barOverlapsBoxes, rebarSnapNodes, concreteSnapNodes, allSnapNodes, barBaseEnds, MAX_RENDER_COPIES } from '../bbs/shapes.js';
 import FitIfc from './FitIfc.jsx';
 import AutoClipping from './AutoClipping.jsx';
 import SectionBox from './SectionBox.jsx';
@@ -291,9 +291,9 @@ function MeasureHandler() {
       ), camera);
       const hits = raycaster.current.intersectObjects(collectPickTargets(scene), false);
       if (!hits.length) return;
-      // Snap on the rebar first (all visible bars are fair game when measuring)
+      // Snap on rebar or concrete nodes (all visible elements are fair game when measuring)
       const snapped = st.snapEnabled !== false
-        ? snapToRebar(ev, camera, rect, rebarSnapNodes(st.bars, st.concretes))
+        ? snapToRebar(ev, camera, rect, allSnapNodes(st.bars, st.concretes))
         : null;
       if (snapped) {
         st.pushMeasurePoint(snapped.map((v) => Math.round(v * 10) / 10));
@@ -335,7 +335,7 @@ function MeasureHandler() {
 }
 
 // Snap magnet preview: while pick-to-place or measure is armed (and snap is
-// enabled), hovering near a visible bar end/corner shows exactly where a
+// enabled), hovering near a visible bar or concrete end/corner shows exactly where a
 // click would snap. Local state only — no store churn per mousemove.
 function SnapPreview() {
   const gl = useThree((s) => s.gl);
@@ -352,7 +352,9 @@ function SnapPreview() {
         return;
       }
       const rect = el.getBoundingClientRect();
-      const nodes = rebarSnapNodes(st.bars, st.concretes, inPick ? st.selectedBar : -1);
+      const nodes = inMeasure
+        ? allSnapNodes(st.bars, st.concretes)
+        : rebarSnapNodes(st.bars, st.concretes, inPick ? st.selectedBar : -1);
       const sn = snapToRebar(ev, camera, rect, nodes);
       setHover((h) => {
         const key = sn ? sn.join(',') : '';
@@ -386,7 +388,8 @@ function SnapPreview() {
   );
 }
 
-function MeasureView() {  const points = useStore((s) => s.measure.points);
+function MeasureView() {
+  const points = useStore((s) => s.measure.points);
   if (!points.length) return null;
   const pts = points.map(([x, y, z]) => [x * S, z * S, -y * S]);
   const segs = [];
@@ -396,13 +399,64 @@ function MeasureView() {  const points = useStore((s) => s.measure.points);
     const b = new THREE.Vector3(...pts[i]);
     const len = a.distanceTo(b) * 1000;
     total += len;
-    segs.push({ mid: [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2], len });
+
+    const p1 = points[i - 1];
+    const p2 = points[i];
+    const dx = p2[0] - p1[0];
+    const dy = p2[1] - p1[1];
+    const dz = p2[2] - p1[2];
+
+    const p1Scene = [p1[0] * S, p1[2] * S, -p1[1] * S];
+    const p1xScene = [p2[0] * S, p1[2] * S, -p1[1] * S];
+    const p1xyScene = [p2[0] * S, p1[2] * S, -p2[1] * S];
+    const p2Scene = [p2[0] * S, p2[2] * S, -p2[1] * S];
+
+    const midX = [(p1[0] + p2[0]) / 2 * S, p1[2] * S, -p1[1] * S];
+    const midY = [p2[0] * S, p1[2] * S, -(p1[1] + p2[1]) / 2 * S];
+    const midZ = [p2[0] * S, (p1[2] + p2[2]) / 2 * S, -p2[1] * S];
+
+    segs.push({
+      mid: [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2],
+      len,
+      dx, dy, dz,
+      p1Scene, p1xScene, p1xyScene, p2Scene,
+      midX, midY, midZ,
+      showDeltas: (Math.abs(dx) > 1 || Math.abs(dy) > 1 || Math.abs(dz) > 1) && (pts.length === 2 || i === 1),
+    });
   }
   return (
     <group>
       {pts.length > 1 && (
-        <Line points={pts} color="#22d3ee" lineWidth={2} transparent opacity={0.95} depthTest={false} />
+        <Line points={pts} color="#22d3ee" lineWidth={2.5} transparent opacity={0.95} depthTest={false} />
       )}
+      {segs.map((sg, i) => sg.showDeltas && (
+        <group key={`deltas-${i}`}>
+          {Math.abs(sg.dx) > 1 && (
+            <>
+              <Line points={[sg.p1Scene, sg.p1xScene]} color="#ef4444" lineWidth={1.5} dashed dashScale={12} depthTest={false} transparent opacity={0.8} />
+              <Html position={sg.midX} center zIndexRange={[30, 0]}>
+                <div className="measure-label dx">ΔX: {fmtLen(Math.abs(sg.dx))}</div>
+              </Html>
+            </>
+          )}
+          {Math.abs(sg.dy) > 1 && (
+            <>
+              <Line points={[sg.p1xScene, sg.p1xyScene]} color="#22c55e" lineWidth={1.5} dashed dashScale={12} depthTest={false} transparent opacity={0.8} />
+              <Html position={sg.midY} center zIndexRange={[30, 0]}>
+                <div className="measure-label dy">ΔY: {fmtLen(Math.abs(sg.dy))}</div>
+              </Html>
+            </>
+          )}
+          {Math.abs(sg.dz) > 1 && (
+            <>
+              <Line points={[sg.p1xyScene, sg.p2Scene]} color="#3b82f6" lineWidth={1.5} dashed dashScale={12} depthTest={false} transparent opacity={0.8} />
+              <Html position={sg.midZ} center zIndexRange={[30, 0]}>
+                <div className="measure-label dz">ΔZ: {fmtLen(Math.abs(sg.dz))}</div>
+              </Html>
+            </>
+          )}
+        </group>
+      ))}
       {pts.map((p, i) => (
         <mesh key={i} position={p} renderOrder={9999}>
           <sphereGeometry args={[0.02, 10, 10]} />
@@ -411,7 +465,7 @@ function MeasureView() {  const points = useStore((s) => s.measure.points);
       ))}
       {segs.map((sg, i) => (
         <Html key={`m${i}`} position={sg.mid} center zIndexRange={[30, 0]}>
-          <div className="measure-label">{fmtLen(sg.len)}</div>
+          <div className="measure-label vector">Vector: {fmtLen(sg.len)}</div>
         </Html>
       ))}
       {pts.length > 2 && (

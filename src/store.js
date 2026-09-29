@@ -98,7 +98,7 @@ export const useStore = create((set, get) => ({
   // Lap splice (straight bars): anchor bar A stays, lapping bar B moves so
   // its start sits one lap length before A's end along A's axis, collinear
   // (B inherits A's plan rotation). Lap length from the EC2 table by the
-  // larger Ø. Single history unit. Identical distribution grids stay
+  // smaller Ø (least size bar). Single history unit. Identical distribution grids stay
   // consistent lap-for-lap.
   bond: 'poor',
   setBond: (v) => set({ bond: v }),
@@ -115,7 +115,8 @@ export const useStore = create((set, get) => ({
     if (A.Rebar_Type !== 'straight' || B.Rebar_Type !== 'straight') {
       return { ok: false, msg: 'Lap splice needs straight bars on both sides.' };
     }
-    const dia = Math.max(Number(A.Dia) || 0, Number(B.Dia) || 0);
+    const diaA = Number(A.Dia) || 0, diaB = Number(B.Dia) || 0;
+    const dia = (diaA > 0 && diaB > 0) ? Math.min(diaA, diaB) : (diaA || diaB);
     const L = lapLengthMm(dia, s.bond);
     if (!L) return { ok: false, msg: `No lap length for Ø${dia}.` };
     const g = genBarPoints(A);
@@ -160,6 +161,27 @@ export const useStore = create((set, get) => ({
     measure: { active: s.measure.active, points: s.measure.points.slice(0, -1) },
   })),
   clearMeasure: () => set((s) => ({ measure: { active: s.measure.active, points: [] } })),
+  updateMeasurePoint: (idx, pt) => set((s) => ({
+    measure: {
+      ...s.measure,
+      points: s.measure.points.map((p, i) => i === idx ? pt : p),
+    },
+  })),
+  adjustBarFromMeasure: (barIdx, shiftX = 0, shiftY = 0, shiftZ = 0, targetP2 = null) => {
+    const s = get();
+    const bar = s.bars[barIdx];
+    if (!bar) return;
+    const newX = Math.round(((Number(bar.Pos_x) || 0) + shiftX) * 10) / 10;
+    const newY = Math.round(((Number(bar.Pos_y) || 0) + shiftY) * 10) / 10;
+    const newZ = Math.round(((Number(bar.Pos_z) || 0) + shiftZ) * 10) / 10;
+    set((s2) => withHist(s2, {
+      bars: s2.bars.map((b, i) => i === barIdx ? { ...b, Pos_x: newX, Pos_y: newY, Pos_z: newZ } : b),
+      measure: (targetP2 && s2.measure.points.length >= 2) ? {
+        ...s2.measure,
+        points: s2.measure.points.map((p, i) => i === 1 ? targetP2 : p),
+      } : s2.measure,
+    }));
+  },
   // Browser save + portable .json project file (bars + concrete + cover + bond).
   // IFC files are view-only and must be reloaded by hand; section box is
   // session state. Browser save auto-loads on boot; the file transfers
