@@ -2,6 +2,38 @@
 
 ## Unreleased (working tree → next push)
 
+- **Measure controller bar/ref roles fix**:
+  - Root cause: the HUD always assumed Point 1 = fixed ref and Point 2 = on the
+    bar, so clicking rebar-first (or measuring an unselected bar) moved the
+    wrong bar and rewrote the beam point — the dimension jumped while the
+    rebar stayed put.
+  - Each new measure point is now tested against visible bars (`distToBar`
+    within tube surface + 8 mm; hidden bars never attract); the point on the
+    rebar becomes the bar-side point and that bar becomes the controlled one
+    regardless of click order (`barPointIdx` / `measureBarIdx` in store,
+    preserved across pop/clear/deactivate).
+  - HUD computes deltas bar-minus-ref, Set pins the ref point and moves only
+    the bar-side point, with a ⇄ Swap override when auto-detect guesses wrong.
+  - Verified: 13-assertion Node store test (both click orders, bar moves /
+    ref stays / other bars untouched, swap) + `npm run build`.
+- **Blender-style navigation**:
+  - Axis gizmo top-right of the viewport (`GizmoHelper` + `GizmoViewport`,
+    no new deps): click an axis tip for Top/Bottom/Left/Right/Front/Back,
+    drag to orbit.
+  - Toolbar `view ▾` preset picker (Top/Bottom/Front/Back/Left/Right/Iso)
+    mapped to the app frame; keeps the orbit target so focus never jumps
+    (`viewReq` in store, `ViewPreset` driver in Scene).
+- **Restored `distOffsets`** in `src/bbs/shapes.js`: the ref-lines WIP had
+  replaced it with `distToBar` while `Scene.jsx` still imports it (viewport
+  could not load from source). Both now coexist.
+- **Reference lines parented to concrete (WIP in this push)**:
+  - `refLines` in store (undoable, saved in project file, removed with host);
+    draw via 📏 Draw Ref Line trace tool with live preview; 3D group with
+    select highlight, length tag, Delete-key removal; hide with hidden host.
+  - Snap/measure/hover paths (`allSnapNodes`, `MeasureHandler`,
+    `SnapPreview`) include ref-line nodes; per-member row in the Concrete
+    editor with + Centerline / + Cover Line helpers, rename, color, show/hide.
+
 - **Rebar Plane Rotation & 3D Orientation Fix**:
   - Connected `RebarMesh` tube geometry rendering to `transformBarLocalPoint`, ensuring 3D rebar reacts accurately to Plane (`XZ`, `YZ`, `XY`) and in-plane `Pos_Rotation` changes.
   - Standardized local 2D shape coordinate definitions across all shapes (`bent`, `crank`, `double_crank`, `c_link`, `c_link_with_hook`, `straight`).

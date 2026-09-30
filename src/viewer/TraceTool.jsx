@@ -1,13 +1,28 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { useThree } from '@react-three/fiber';
+import { Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
 import { subsetBox } from '../ifc/session.js';
+import { fmtLen } from './Scene.jsx';
 
 const S = 0.001;
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
+
+function resolveConcreteHostId(snapPos, hitObject, concretes) {
+  if (hitObject?.userData?.concreteId) return hitObject.userData.concreteId;
+  for (const c of concretes || []) {
+    const margin = 80;
+    if (snapPos.x >= c.x - margin && snapPos.x <= c.x + c.lx + margin &&
+        snapPos.y >= c.y - margin && snapPos.y <= c.y + c.ly + margin &&
+        snapPos.z >= c.z - margin && snapPos.z <= c.z + c.lz + margin) {
+      return c.id;
+    }
+  }
+  return concretes?.[0]?.id || null;
+}
 
 // BBox cache: subsetBox() walks the whole element index — far too slow on
 // every pointermove for real-size models. Geometry is effectively static, so
@@ -95,6 +110,9 @@ export default function TraceTool() {
   const addConcrete = useStore((s) => s.addConcrete);
   const concretes = useStore((s) => s.concretes);
 
+  const addRefLine = useStore((s) => s.addRefLine);
+  const selectedConcrete = useStore((s) => s.selectedConcrete);
+
   const raycaster = useRef(new THREE.Raycaster());
   const mouse = useRef(new THREE.Vector2());
   const [liveSnap, setLiveSnap] = useState(null);
@@ -115,10 +133,7 @@ export default function TraceTool() {
     return () => window.removeEventListener('keydown', onKey);
   }, [drawMode, drawStart, setDrawMode, setDrawStart]);
 
-  // Pointer movement: fast node snapping, rAF-throttled to one raycast per
-  // frame and fully idle when no draw/trace mode is active (an ungated
-  // full-scene raycast + bbox walk per mousemove saturates the main thread
-  // on real-size IFC models).
+  // Pointer movement: fast node snapping
   const liveSnapRef = useRef(null);
   useEffect(() => {
     const el = gl.domElement;
@@ -282,7 +297,36 @@ export default function TraceTool() {
         return;
       }
 
-      // MODE 2: 2-Point Snapped Drawing (Beam / Column / Slab / Box)
+      // MODE 2: Draw Reference Line attached to Concrete Elements
+      if (drawMode === 'ref_line') {
+        const hostId = resolveConcreteHostId(currentSnap, currentSnap.hitObject, concretes) || selectedConcrete || (concretes[0]?.id);
+        if (!drawStart) {
+          setDrawStart({
+            x: currentSnap.x,
+            y: currentSnap.y,
+            z: currentSnap.z,
+            worldPos: currentSnap.worldPos,
+            hostId,
+          });
+        } else {
+          const p1 = [drawStart.x, drawStart.y, drawStart.z];
+          const p2 = [currentSnap.x, currentSnap.y, currentSnap.z];
+          const targetHost = drawStart.hostId || hostId;
+          const len = Math.round(Math.hypot(p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]));
+          addRefLine({
+            host: targetHost,
+            p1,
+            p2,
+            name: `Ref ${len}mm`,
+            color: '#f59e0b',
+          });
+          console.info(`[TraceTool] Added RefLine ${len}mm parented to host ${targetHost}`);
+          setDrawStart(null);
+        }
+        return;
+      }
+
+      // MODE 3: 2-Point Snapped Drawing (Beam / Column / Slab / Box)
       if (!drawStart) {
         // Step 1: Set Start Point
         setDrawStart({
@@ -341,11 +385,11 @@ export default function TraceTool() {
       el.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointerup', onUp);
     };
-  }, [gl, scene, drawMode, drawStart, concretes, addConcrete, setDrawStart]);
+  }, [gl, scene, drawMode, drawStart, concretes, selectedConcrete, addConcrete, addRefLine, setDrawStart]);
 
   // Compute live bounding preview geometry for 2-point drawing
   const previewBox = useMemo(() => {
-    if (!drawMode || !drawStart || !liveSnap) return null;
+    if (!drawMode || drawMode === 'ref_line' || !drawStart || !liveSnap) return null;
     const p1 = drawStart;
     const p2 = liveSnap;
 
@@ -400,6 +444,23 @@ export default function TraceTool() {
     return { cx, cy, cz, sx, sy, sz };
   }, [drawMode, liveSnap]);
 
+  // Live ref_line preview
+  const refLinePreview = useMemo(() => {
+    if (drawMode !== 'ref_line' || !drawStart || !liveSnap) return null;
+    const p1 = drawStart;
+    const p2 = liveSnap;
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const dz = p2.z - p1.z;
+    const len = Math.round(Math.hypot(dx, dy, dz));
+    const mid = [
+      (p1.worldPos[0] + p2.worldPos[0]) / 2,
+      (p1.worldPos[1] + p2.worldPos[1]) / 2,
+      (p1.worldPos[2] + p2.worldPos[2]) / 2,
+    ];
+    return { p1World: p1.worldPos, p2World: p2.worldPos, mid, len };
+  }, [drawMode, drawStart, liveSnap]);
+
   return (
     <group>
       {/* 3D Snap Indicator Glyph */}
@@ -428,6 +489,25 @@ export default function TraceTool() {
             <sphereGeometry args={[0.015, 8, 8]} />
             <meshBasicMaterial color="#22c55e" depthTest={false} />
           </mesh>
+        </group>
+      )}
+
+      {/* Live Ref Line Preview */}
+      {refLinePreview && (
+        <group>
+          <Line
+            points={[refLinePreview.p1World, refLinePreview.p2World]}
+            color="#f59e0b"
+            lineWidth={3}
+            dashed
+            dashScale={18}
+            depthTest={false}
+            transparent
+            opacity={0.95}
+          />
+          <Html position={refLinePreview.mid} center zIndexRange={[50, 0]}>
+            <div className="refline-badge preview">📏 {fmtLen(refLinePreview.len)}</div>
+          </Html>
         </group>
       )}
 

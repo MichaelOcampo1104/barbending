@@ -596,12 +596,33 @@ export function concreteSnapNodes(concretes) {
   return nodes;
 }
 
-// All snap nodes (rebar + concrete)
-export function allSnapNodes(bars, concretes, excludeIdx = -1, includeConcrete = true) {
+// Centerline, endpoint, and midpoint snap nodes of visible reference lines attached to visible concrete
+export function refLineSnapNodes(refLines = [], concretes = []) {
+  const hiddenConcreteIds = new Set((concretes || []).filter((c) => c.visible === false).map((c) => c.id));
+  const nodes = [];
+  for (const l of refLines || []) {
+    if (l.visible === false) continue;
+    if (l.host && hiddenConcreteIds.has(l.host)) continue;
+    if (l.p1) nodes.push(l.p1);
+    if (l.p2) nodes.push(l.p2);
+    if (l.p1 && l.p2) {
+      nodes.push([
+        (l.p1[0] + l.p2[0]) / 2,
+        (l.p1[1] + l.p2[1]) / 2,
+        (l.p1[2] + l.p2[2]) / 2,
+      ]);
+    }
+  }
+  return nodes;
+}
+
+// All snap nodes (rebar + concrete + reference lines)
+export function allSnapNodes(bars, concretes, refLines = [], excludeIdx = -1, includeConcrete = true) {
   const rNodes = rebarSnapNodes(bars, concretes, excludeIdx);
-  if (!includeConcrete) return rNodes;
+  const refNodes = refLineSnapNodes(refLines, concretes);
+  if (!includeConcrete) return [...rNodes, ...refNodes];
   const cNodes = concreteSnapNodes(concretes);
-  return [...rNodes, ...cNodes];
+  return [...rNodes, ...cNodes, ...refNodes];
 }
 
 // Distribution grid — mirrors FreeCAD parametric_utils.py place_c_link_*:
@@ -639,4 +660,42 @@ export function distOffsets(bar) {
       for (let iy = 0; iy < ny; iy++)
         out.push([ox + ix * sx, oy + iy * sy, oz]);
   return out;
+}
+
+// Distance calculation from a 3D point (app-mm) to a rebar's centerline/geometry
+export function distToBar(pt, bar) {
+  if (!bar || !pt) return Infinity;
+  const px = Number(bar.Pos_x) || 0;
+  const py = Number(bar.Pos_y) || 0;
+  const pz = Number(bar.Pos_z) || 0;
+  const g = genBarPoints(bar);
+  const transformed = g.points.map((p) => transformBarLocalPoint(bar, p));
+  let minD = Infinity;
+
+  const offsets = distOffsets(bar).slice(0, 100);
+  for (const [ox, oy, oz] of offsets) {
+    for (let i = 0; i < transformed.length; i++) {
+      const v1 = [px + ox + transformed[i][0], py + oy + transformed[i][1], pz + oz + transformed[i][2]];
+      const d = Math.hypot(pt[0] - v1[0], pt[1] - v1[1], pt[2] - v1[2]);
+      if (d < minD) minD = d;
+
+      if (i > 0) {
+        const v0 = [px + ox + transformed[i - 1][0], py + oy + transformed[i - 1][1], pz + oz + transformed[i - 1][2]];
+        const segD = distToSegment3D(pt, v0, v1);
+        if (segD < minD) minD = segD;
+      }
+    }
+  }
+  return minD;
+}
+
+function distToSegment3D(p, a, b) {
+  const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+  const ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+  if (ab2 === 0) return Math.hypot(ap[0], ap[1], ap[2]);
+  let t = (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab2;
+  t = Math.max(0, Math.min(1, t));
+  const proj = [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]];
+  return Math.hypot(p[0] - proj[0], p[1] - proj[1], p[2] - proj[2]);
 }

@@ -291,9 +291,9 @@ function MeasureHandler() {
       ), camera);
       const hits = raycaster.current.intersectObjects(collectPickTargets(scene), false);
       if (!hits.length) return;
-      // Snap on rebar or concrete nodes (all visible elements are fair game when measuring)
+      // Snap on rebar, concrete, or reference line nodes
       const snapped = st.snapEnabled !== false
-        ? snapToRebar(ev, camera, rect, allSnapNodes(st.bars, st.concretes))
+        ? snapToRebar(ev, camera, rect, allSnapNodes(st.bars, st.concretes, st.refLines))
         : null;
       if (snapped) {
         st.pushMeasurePoint(snapped.map((v) => Math.round(v * 10) / 10));
@@ -335,7 +335,7 @@ function MeasureHandler() {
 }
 
 // Snap magnet preview: while pick-to-place or measure is armed (and snap is
-// enabled), hovering near a visible bar or concrete end/corner shows exactly where a
+// enabled), hovering near a visible bar, concrete, or reference line corner shows exactly where a
 // click would snap. Local state only — no store churn per mousemove.
 function SnapPreview() {
   const gl = useThree((s) => s.gl);
@@ -353,7 +353,7 @@ function SnapPreview() {
       }
       const rect = el.getBoundingClientRect();
       const nodes = inMeasure
-        ? allSnapNodes(st.bars, st.concretes)
+        ? allSnapNodes(st.bars, st.concretes, st.refLines)
         : rebarSnapNodes(st.bars, st.concretes, inPick ? st.selectedBar : -1);
       const sn = snapToRebar(ev, camera, rect, nodes);
       setHover((h) => {
@@ -696,7 +696,7 @@ function ConcreteMesh({ c }) {
   const noMarks = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('nomarks') === '1';
   const requestFit = useStore((s) => s.requestFit);
   return (
-    <mesh userData-pickRoot="concrete" position={[cx, cy, cz]} geometry={geom} onDoubleClick={(e) => {
+    <mesh userData-pickRoot="concrete" userData-concreteId={c.id} position={[cx, cy, cz]} geometry={geom} onDoubleClick={(e) => {
       e.stopPropagation();
       requestFit('concrete', c.id);
     }}>
@@ -712,6 +712,136 @@ function ConcreteMesh({ c }) {
         </group>
       ))}
     </mesh>
+  );
+}
+
+// Reference lines parented to concrete elements:
+// Automatically hidden if the parent concrete element is toggled off or hidden.
+function RefLinesGroup() {
+  const refLines = useStore((s) => s.refLines);
+  const concretes = useStore((s) => s.concretes);
+  const showConcrete = useStore((s) => s.showConcrete);
+  const selectedRefLine = useStore((s) => s.selectedRefLine);
+  const selectRefLine = useStore((s) => s.selectRefLine);
+  const removeRefLine = useStore((s) => s.removeRefLine);
+  const updateRefLine = useStore((s) => s.updateRefLine);
+  const selectConcrete = useStore((s) => s.selectConcrete);
+
+  // Keyboard shortcut: Press Delete or Backspace to delete selected reference line
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = (e.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) return;
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const st = useStore.getState();
+        if (st.selectedRefLine) {
+          e.preventDefault();
+          st.removeRefLine(st.selectedRefLine);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  if (!showConcrete || !refLines?.length) return null;
+
+  const hiddenHostIds = new Set((concretes || []).filter((c) => c.visible === false).map((c) => c.id));
+  const concMap = new Map((concretes || []).map((c) => [c.id, c]));
+
+  return (
+    <group>
+      {refLines.map((line) => {
+        if (line.visible === false) return null;
+        if (line.host && hiddenHostIds.has(line.host)) return null;
+        const hostConc = line.host ? concMap.get(line.host) : null;
+        if (line.host && !hostConc) return null;
+
+        const isSelected = line.id === selectedRefLine;
+
+        const p1 = line.p1 || [0, 0, 0];
+        const p2 = line.p2 || [0, 0, 0];
+        const dx = p2[0] - p1[0];
+        const dy = p2[1] - p1[1];
+        const dz = p2[2] - p1[2];
+        const len = Math.round(Math.hypot(dx, dy, dz));
+
+        const p1Scene = [p1[0] * S, p1[2] * S, -p1[1] * S];
+        const p2Scene = [p2[0] * S, p2[2] * S, -p2[1] * S];
+        const midScene = [
+          (p1Scene[0] + p2Scene[0]) / 2,
+          (p1Scene[1] + p2Scene[1]) / 2,
+          (p1Scene[2] + p2Scene[2]) / 2,
+        ];
+
+        const baseColor = line.color || '#f59e0b';
+        const renderColor = isSelected ? '#38bdf8' : baseColor;
+
+        return (
+          <group
+            key={line.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              selectRefLine(line.id);
+              if (line.host) selectConcrete(line.host);
+            }}
+          >
+            <Line
+              points={[p1Scene, p2Scene]}
+              color={renderColor}
+              lineWidth={isSelected ? 4 : 2.5}
+              dashed={!isSelected && line.dashed !== false}
+              dashScale={16}
+              depthTest={false}
+              transparent
+              opacity={isSelected ? 1 : 0.9}
+            />
+            {/* Endpoints */}
+            <mesh position={p1Scene} renderOrder={9995}>
+              <sphereGeometry args={[isSelected ? 0.026 : 0.018, 10, 10]} />
+              <meshBasicMaterial color={renderColor} depthTest={false} />
+            </mesh>
+            <mesh position={p2Scene} renderOrder={9995}>
+              <sphereGeometry args={[isSelected ? 0.026 : 0.018, 10, 10]} />
+              <meshBasicMaterial color={renderColor} depthTest={false} />
+            </mesh>
+            {/* Dimension / Name Interactive Badge */}
+            <Html position={midScene} center zIndexRange={[35, 0]}>
+              <div
+                className={`refline-badge ${isSelected ? 'selected' : ''}`}
+                title={`Attached to: ${hostConc?.name || 'Concrete'} · Click to select · Press Delete to remove`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  selectRefLine(line.id);
+                  if (line.host) selectConcrete(line.host);
+                }}
+              >
+                <span className="refline-icon">📏</span>
+                <span className="refline-text">{line.name ? `${line.name} (${fmtLen(len)})` : fmtLen(len)}</span>
+                {isSelected && (
+                  <span className="refline-badge-actions" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      className="refline-badge-btn"
+                      title="Hide line"
+                      onClick={() => updateRefLine(line.id, { visible: false })}
+                    >
+                      👁
+                    </button>
+                    <button
+                      className="refline-badge-btn del"
+                      title="Delete reference line (Hotkey: Delete)"
+                      onClick={() => removeRefLine(line.id)}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                )}
+              </div>
+            </Html>
+          </group>
+        );
+      })}
+    </group>
   );
 }
 
@@ -929,6 +1059,7 @@ export default function Scene() {
       <Grid infiniteGrid sectionColor="#334155" cellColor="#1e293b" position={[0, -0.01, 0]} />
       <SectionBox />
       {showConcrete && concretes.filter((c) => c.visible !== false).map((c) => <ConcreteMesh key={c.id} c={c} />)}
+      <RefLinesGroup />
       {ifcActive && (
         <Suspense fallback={null}>
           <IfcModel />

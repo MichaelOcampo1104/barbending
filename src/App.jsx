@@ -269,54 +269,165 @@ function ConcreteEditor() {
   const drawMode = useStore((s) => s.drawMode);
   const setDrawMode = useStore((s) => s.setDrawMode);
   const setShading = useStore((s) => s.setShading);
+  const refLines = useStore((s) => s.refLines || []);
+  const selectedRefLine = useStore((s) => s.selectedRefLine);
+  const selectRefLine = useStore((s) => s.selectRefLine);
+  const addRefLine = useStore((s) => s.addRefLine);
+  const updateRefLine = useStore((s) => s.updateRefLine);
+  const removeRefLine = useStore((s) => s.removeRefLine);
+  const cover = useStore((s) => s.cover);
+
+  const addCenterline = (c) => {
+    const isColZ = c.lz > c.lx && c.lz > c.ly;
+    let p1, p2;
+    if (isColZ) {
+      p1 = [c.x + c.lx / 2, c.y + c.ly / 2, c.z];
+      p2 = [c.x + c.lx / 2, c.y + c.ly / 2, c.z + c.lz];
+    } else {
+      p1 = [c.x, c.y + c.ly / 2, c.z + c.lz / 2];
+      p2 = [c.x + c.lx, c.y + c.ly / 2, c.z + c.lz / 2];
+    }
+    addRefLine({
+      host: c.id,
+      name: `${c.name} Centerline`,
+      p1,
+      p2,
+      color: '#38bdf8',
+    });
+  };
+
+  const addCoverLine = (c) => {
+    const cv = Number(cover) || 40;
+    const isColZ = c.lz > c.lx && c.lz > c.ly;
+    let p1, p2;
+    if (isColZ) {
+      p1 = [c.x + cv, c.y + cv, c.z + cv];
+      p2 = [c.x + cv, c.y + cv, c.z + c.lz - cv];
+    } else {
+      p1 = [c.x + cv, c.y + cv, c.z + c.lz - cv];
+      p2 = [c.x + c.lx - cv, c.y + cv, c.z + c.lz - cv];
+    }
+    addRefLine({
+      host: c.id,
+      name: `${c.name} Top Cover (${cv}mm)`,
+      p1,
+      p2,
+      color: '#f59e0b',
+    });
+  };
 
   return (
     <>
     <IfcLoadButton />
     <div className="panel">
-      <div className="sect flush">Trace & Draw from IFC / Snapping</div>
+      <div className="sect flush">Trace & Draw / Reference Lines</div>
       <div className="btnrow inline">
+        <button className={drawMode === 'ref_line' ? 'on' : ''} onClick={() => setDrawMode(drawMode === 'ref_line' ? null : 'ref_line')} title="Click two points on concrete to draw a parented reference line">📏 Draw Ref Line</button>
         <button className={drawMode === 'beam' ? 'on' : ''} onClick={() => { setDrawMode(drawMode === 'beam' ? null : 'beam'); setShading('wireframe'); }}>✏️ Draw Beam</button>
         <button className={drawMode === 'column' ? 'on' : ''} onClick={() => { setDrawMode(drawMode === 'column' ? null : 'column'); setShading('wireframe'); }}>✏️ Draw Column</button>
         <button className={drawMode === 'slab' ? 'on' : ''} onClick={() => { setDrawMode(drawMode === 'slab' ? null : 'slab'); setShading('wireframe'); }}>✏️ Draw Slab</button>
         <button className={drawMode === 'trace_ifc' ? 'on' : ''} onClick={() => { setDrawMode(drawMode === 'trace_ifc' ? null : 'trace_ifc'); setShading('wireframe'); }}>⚡ Auto-Trace IFC</button>
       </div>
       <div className="distnote" style={{ marginTop: 6 }}>
-        {drawMode
-          ? '🎯 Snap to nodes/joints on the IFC wireframe and click to trace.'
-          : 'Tip: Switch to Wireframe mode to see internal joints, nodes, and frames clearly.'}
+        {drawMode === 'ref_line'
+          ? '📏 Click Start & End points on concrete to draw a reference line. Ref lines parent to the concrete member and hide with it.'
+          : drawMode
+            ? '🎯 Snap to nodes/joints on the IFC wireframe and click to trace.'
+            : 'Tip: Reference lines attach to concrete members and provide snap guides for rebar alignment & checking clearance.'}
       </div>
 
       <div className="sect">Concrete Elements ({concretes.length})</div>
-      {concretes.map((c) => (
-        <div
-          key={c.id}
-          className={(c.visible === false ? 'cbox hidden' : 'cbox') + (c.id === selectedConcrete ? ' sel' : '')}
-          onClick={() => selectConcrete(c.id)}
-          style={{ borderColor: c.id === selectedConcrete ? '#38bdf8' : undefined }}
-        >
-          <div className="crow">
-            <input className="cname" value={c.name} onChange={(e) => updateConcrete(c.id, { name: e.target.value })} />
-            <button className="sm ghost" title="Zoom to element" onClick={(e) => { e.stopPropagation(); selectConcrete(c.id); requestFit('concrete', c.id); }}>🎯</button>
-            <button className="sm" title={c.visible === false ? 'Show (bars inside reappear)' : 'Hide (bars inside hide too)'} onClick={(e) => { e.stopPropagation(); updateConcrete(c.id, { visible: c.visible === false ? true : false }); }}>{c.visible === false ? '🚫' : '👁'}</button>
-            <button className="danger sm" onClick={(e) => { e.stopPropagation(); removeConcrete(c.id); }}>×</button>
+      {concretes.map((c) => {
+        const memberRefLines = refLines.filter((l) => l.host === c.id);
+        return (
+          <div
+            key={c.id}
+            className={(c.visible === false ? 'cbox hidden' : 'cbox') + (c.id === selectedConcrete ? ' sel' : '')}
+            onClick={() => selectConcrete(c.id)}
+            style={{ borderColor: c.id === selectedConcrete ? '#38bdf8' : undefined }}
+          >
+            <div className="crow">
+              <input className="cname" value={c.name} onChange={(e) => updateConcrete(c.id, { name: e.target.value })} />
+              <button className="sm ghost" title="Zoom to element" onClick={(e) => { e.stopPropagation(); selectConcrete(c.id); requestFit('concrete', c.id); }}>🎯</button>
+              <button className="sm" title={c.visible === false ? 'Show (bars and ref lines inside reappear)' : 'Hide (bars and ref lines inside hide too)'} onClick={(e) => { e.stopPropagation(); updateConcrete(c.id, { visible: c.visible === false ? true : false }); }}>{c.visible === false ? '🚫' : '👁'}</button>
+              <button className="danger sm" onClick={(e) => { e.stopPropagation(); removeConcrete(c.id); }}>×</button>
+            </div>
+            <div className="grid3">
+              {[['lx', 'Lx'], ['ly', 'Ly'], ['lz', 'Hz']].map(([k, l]) => (
+                <label key={k} className="fld"><span>{l}</span>
+                  <input type="number" value={c[k]} onChange={(e) => updateConcrete(c.id, { [k]: Number(e.target.value) })} />
+                </label>
+              ))}
+            </div>
+            <div className="grid3">
+              {[['x', 'X'], ['y', 'Y'], ['z', 'Z']].map(([k, l]) => (
+                <label key={k} className="fld"><span>{l}</span>
+                  <input type="number" value={c[k]} onChange={(e) => updateConcrete(c.id, { [k]: Number(e.target.value) })} />
+                </label>
+              ))}
+            </div>
+
+            {/* Quick Ref Line Helpers & Attached Ref Lines */}
+            <div className="refline-section" onClick={(e) => e.stopPropagation()}>
+              <div className="refline-header">
+                <span>📏 Reference Lines ({memberRefLines.length})</span>
+                <span style={{ display: 'flex', gap: 4 }}>
+                  <button className="ghost sm" onClick={() => addCenterline(c)} title="Add centerline guide along this member">+ Centerline</button>
+                  <button className="ghost sm" onClick={() => addCoverLine(c)} title={`Add ${cover}mm cover offset guide`}>+ Cover Line</button>
+                </span>
+              </div>
+              {memberRefLines.map((l) => {
+                const len = Math.round(Math.hypot((l.p2?.[0] || 0) - (l.p1?.[0] || 0), (l.p2?.[1] || 0) - (l.p1?.[1] || 0), (l.p2?.[2] || 0) - (l.p1?.[2] || 0)));
+                const isSel = l.id === selectedRefLine;
+                return (
+                  <div
+                    key={l.id}
+                    className={`refline-row ${isSel ? 'sel' : ''}`}
+                    onClick={() => selectRefLine(l.id)}
+                  >
+                    <input
+                      type="color"
+                      className="refline-color-picker"
+                      value={l.color || '#f59e0b'}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => updateRefLine(l.id, { color: e.target.value })}
+                      title="Line color"
+                    />
+                    <input
+                      className="refline-name-input"
+                      value={l.name || ''}
+                      placeholder="Line name"
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => updateRefLine(l.id, { name: e.target.value })}
+                    />
+                    <span className="refline-len-badge">{fmtLen(len)}</span>
+                    <button
+                      className="ghost sm"
+                      title={l.visible === false ? 'Show reference line' : 'Hide reference line'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        updateRefLine(l.id, { visible: l.visible === false ? true : false });
+                      }}
+                    >
+                      {l.visible === false ? '🚫' : '👁'}
+                    </button>
+                    <button
+                      className="danger sm"
+                      title="Delete reference line (or press Delete in 3D)"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeRefLine(l.id);
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           </div>
-          <div className="grid3">
-            {[['lx', 'Lx'], ['ly', 'Ly'], ['lz', 'Hz']].map(([k, l]) => (
-              <label key={k} className="fld"><span>{l}</span>
-                <input type="number" value={c[k]} onChange={(e) => updateConcrete(c.id, { [k]: Number(e.target.value) })} />
-              </label>
-            ))}
-          </div>
-          <div className="grid3">
-            {[['x', 'X'], ['y', 'Y'], ['z', 'Z']].map(([k, l]) => (
-              <label key={k} className="fld"><span>{l}</span>
-                <input type="number" value={c[k]} onChange={(e) => updateConcrete(c.id, { [k]: Number(e.target.value) })} />
-              </label>
-            ))}
-          </div>
-        </div>
-      ))}
+        );
+      })}
       <div className="btnrow">
         <button onClick={() => addConcrete({ name: 'Beam', lx: 6000, ly: 400, lz: 600, x: 0, y: 0, z: 0 })}>+ Preset Beam</button>
         <button onClick={() => addConcrete({ name: 'Slab', lx: 6000, ly: 4000, lz: 200, x: 0, y: 0, z: 0 })}>+ Preset Slab</button>
@@ -335,6 +446,7 @@ function MeasureHud() {
   const selectedBar = useStore((s) => s.selectedBar);
   const selectBar = useStore((s) => s.selectBar);
   const adjustBarFromMeasure = useStore((s) => s.adjustBarFromMeasure);
+  const setMeasureBarPoint = useStore((s) => s.setMeasureBarPoint);
   const cover = useStore((s) => s.cover);
 
   const [targetX, setTargetX] = useState('');
@@ -348,58 +460,72 @@ function MeasureHud() {
       setCtrlBarIdx(selectedBar);
     }
   }, [selectedBar]);
+  // Auto-detected bar under the clicked point wins: the Set buttons move the
+  // bar you actually measured, whichever click order you used.
+  const detectedBarIdx = measure?.measureBarIdx;
+  const pointCount = measure?.points?.length ?? 0;
+  useEffect(() => {
+    if (detectedBarIdx != null && detectedBarIdx !== ctrlBarIdx) {
+      setCtrlBarIdx(detectedBarIdx);
+      selectBar(detectedBarIdx);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detectedBarIdx, pointCount]);
 
   if (!measure?.active) return null;
 
   const pts = measure.points || [];
-  const p1 = pts[0];
-  const p2 = pts[1];
+  // Roles: the point on the rebar moves with the bar; the other stays as ref.
+  const barPointIdx = pts.length > 1 ? (measure.barPointIdx === 0 ? 0 : 1) : 1;
+  const refIdx = 1 - barPointIdx;
+  const ref = pts[refIdx];
+  const barPt = pts[barPointIdx];
 
   let dx = 0, dy = 0, dz = 0, len = 0;
-  if (p1 && p2) {
-    dx = p2[0] - p1[0];
-    dy = p2[1] - p1[1];
-    dz = p2[2] - p1[2];
+  if (ref && barPt) {
+    dx = barPt[0] - ref[0];
+    dy = barPt[1] - ref[1];
+    dz = barPt[2] - ref[2];
     len = Math.hypot(dx, dy, dz);
   }
 
   const activeBar = bars[ctrlBarIdx] || bars[selectedBar] || bars[0];
 
   const applyShiftX = (desiredDist) => {
-    if (!p1 || !p2 || !activeBar) return;
+    if (!ref || !barPt || !activeBar) return;
     const target = Number(desiredDist);
     if (!Number.isFinite(target)) return;
     const sign = dx < 0 ? -1 : 1;
     const targetDx = sign * Math.abs(target);
     const shiftX = targetDx - dx;
-    const newP2 = [p1[0] + targetDx, p2[1], p2[2]];
-    adjustBarFromMeasure(ctrlBarIdx, shiftX, 0, 0, newP2);
+    const newBarPt = [ref[0] + targetDx, barPt[1], barPt[2]];
+    adjustBarFromMeasure(ctrlBarIdx, shiftX, 0, 0, newBarPt, barPointIdx);
   };
 
   const applyShiftY = (desiredDist) => {
-    if (!p1 || !p2 || !activeBar) return;
+    if (!ref || !barPt || !activeBar) return;
     const target = Number(desiredDist);
     if (!Number.isFinite(target)) return;
     const sign = dy < 0 ? -1 : 1;
     const targetDy = sign * Math.abs(target);
     const shiftY = targetDy - dy;
-    const newP2 = [p2[0], p1[1] + targetDy, p2[2]];
-    adjustBarFromMeasure(ctrlBarIdx, 0, shiftY, 0, newP2);
+    const newBarPt = [barPt[0], ref[1] + targetDy, barPt[2]];
+    adjustBarFromMeasure(ctrlBarIdx, 0, shiftY, 0, newBarPt, barPointIdx);
   };
 
   const applyShiftZ = (desiredDist) => {
-    if (!p1 || !p2 || !activeBar) return;
+    if (!ref || !barPt || !activeBar) return;
     const target = Number(desiredDist);
     if (!Number.isFinite(target)) return;
     const sign = dz < 0 ? -1 : 1;
     const targetDz = sign * Math.abs(target);
     const shiftZ = targetDz - dz;
-    const newP2 = [p2[0], p2[1], p1[2] + targetDz];
-    adjustBarFromMeasure(ctrlBarIdx, 0, 0, shiftZ, newP2);
+    const newBarPt = [barPt[0], barPt[1], ref[2] + targetDz];
+    adjustBarFromMeasure(ctrlBarIdx, 0, 0, shiftZ, newBarPt, barPointIdx);
   };
 
   const applyShiftVec = (desiredLen) => {
-    if (!p1 || !p2 || !activeBar) return;
+    if (!ref || !barPt || !activeBar) return;
     const target = Number(desiredLen);
     if (!Number.isFinite(target) || !(len > 0.001)) return;
     const scale = target / len;
@@ -409,8 +535,8 @@ function MeasureHud() {
     const shiftX = targetDx - dx;
     const shiftY = targetDy - dy;
     const shiftZ = targetDz - dz;
-    const newP2 = [p1[0] + targetDx, p1[1] + targetDy, p1[2] + targetDz];
-    adjustBarFromMeasure(ctrlBarIdx, shiftX, shiftY, shiftZ, newP2);
+    const newBarPt = [ref[0] + targetDx, ref[1] + targetDy, ref[2] + targetDz];
+    adjustBarFromMeasure(ctrlBarIdx, shiftX, shiftY, shiftZ, newBarPt, barPointIdx);
   };
 
   return (
@@ -427,7 +553,7 @@ function MeasureHud() {
         <div className="distnote">
           {pts.length === 0
             ? 'Click 1st point on Concrete, Rebar, or IFC surface (magnet snapping active).'
-            : `Point 1 (Ref): (${p1[0]}, ${p1[1]}, ${p1[2]}) mm. Click 2nd point on Rebar or Concrete.`}
+            : `Point 1: (${pts[0][0]}, ${pts[0][1]}, ${pts[0][2]}) mm. Click 2nd point — the point on the rebar auto-selects that bar.`}
         </div>
       ) : (
         <>
@@ -453,7 +579,15 @@ function MeasureHud() {
           {activeBar && (
             <div style={{ marginTop: 8, borderTop: '1px solid #243352', paddingTop: 6 }}>
               <div style={{ fontSize: 11, color: '#93c5fd', fontWeight: 600, marginBottom: 4 }}>
-                Control Rebar Distance against Ref:
+                Move bar to set distance — ref P{refIdx + 1} stays, bar P{barPointIdx + 1} rides:
+              </div>
+              <div className="measure-ctrl-row">
+                <button
+                  className="ghost sm"
+                  onClick={() => setMeasureBarPoint(refIdx)}
+                  title="Swap: the other point becomes the one that moves with the bar"
+                >⇄ Swap</button>
+                <span className="hint">P{barPointIdx + 1} on bar · P{refIdx + 1} fixed ref</span>
               </div>
               <label className="fld" style={{ marginBottom: 6 }}>
                 <select value={ctrlBarIdx} onChange={(e) => {
@@ -945,6 +1079,42 @@ export default function App() {
   const ifcActive = useStore((s) => s.ifcActive);
   const leftOpen = useStore((s) => s.leftOpen);
   const setLeftOpen = useStore((s) => s.setLeftOpen);
+
+  // Draggable resizable left panel width
+  const [sideWidth, setSideWidth] = useState(() => {
+    try {
+      const saved = localStorage.getItem('barbending.sideWidth');
+      return saved ? Math.max(260, Math.min(800, Number(saved))) : 360;
+    } catch {
+      return 360;
+    }
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  const startResize = (e) => {
+    e.preventDefault();
+    setIsResizing(true);
+    const startX = e.clientX;
+    const startW = sideWidth;
+
+    const onMouseMove = (ev) => {
+      const newW = Math.max(260, Math.min(window.innerWidth * 0.65, startW + (ev.clientX - startX)));
+      setSideWidth(Math.round(newW));
+      try {
+        localStorage.setItem('barbending.sideWidth', String(Math.round(newW)));
+      } catch {}
+    };
+
+    const onMouseUp = () => {
+      setIsResizing(false);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
   // Restore browser save on boot (bars + concrete + cover; IFC reloads by hand).
   useEffect(() => {
     const t = setTimeout(() => useStore.getState().loadProject(), 50);
@@ -1026,16 +1196,29 @@ export default function App() {
       <header><strong>barbending</strong><span>browser BBS · Three.js · FreeCAD-CSV compatible · {import.meta.env.DEV ? `dev-live (server ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'})` : `build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}`}</span><FileBar /></header>
       <div className="work">
         {leftOpen ? (
-        <aside className="side">
-          <div className="tabs">
-            <button className={tab === 'rebar' ? 'on' : ''} onClick={() => setTab('rebar')}>Rebar</button>
-            <button className={tab === 'concrete' ? 'on' : ''} onClick={() => setTab('concrete')}>Concrete</button>
-            <button className="collapse" onClick={() => setLeftOpen(false)} title="Collapse panel">«</button>
-          </div>
-          <div className="sidebody">{tab === 'rebar' ? <BarEditor /> : <ConcreteEditor />}</div>
-        </aside>
+          <>
+            <aside className="side" style={{ width: sideWidth, flex: `0 0 ${sideWidth}px` }}>
+              <div className="tabs">
+                <button className={tab === 'rebar' ? 'on' : ''} onClick={() => setTab('rebar')}>Rebar</button>
+                <button className={tab === 'concrete' ? 'on' : ''} onClick={() => setTab('concrete')}>Concrete</button>
+                <button className="collapse" onClick={() => setLeftOpen(false)} title="Collapse panel">«</button>
+              </div>
+              <div className="sidebody">{tab === 'rebar' ? <BarEditor /> : <ConcreteEditor />}</div>
+            </aside>
+            <div
+              className={`resizer-bar ${isResizing ? 'active' : ''}`}
+              onMouseDown={startResize}
+              onDoubleClick={() => {
+                setSideWidth(360);
+                try { localStorage.setItem('barbending.sideWidth', '360'); } catch {}
+              }}
+              title="Drag to resize panel width · Double-click to reset"
+            >
+              <div className="resizer-handle" />
+            </div>
+          </>
         ) : (
-        <div className="rail"><button onClick={() => setLeftOpen(true)} title="Expand panel">»</button></div>
+          <div className="rail"><button onClick={() => setLeftOpen(true)} title="Expand panel">»</button></div>
         )}
         <section className="view"><Scene /><ViewportBar /><MeasureHud /></section>
         {ifcActive && (

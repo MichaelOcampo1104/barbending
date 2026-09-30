@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { defaultBar, defaultBarForHost, resolveBarHost, genBarPoints, barMainLength, barSpliceEnds } from './bbs/shapes.js';
+import { defaultBar, defaultBarForHost, resolveBarHost, genBarPoints, barMainLength, barSpliceEnds, distToBar, barOverlapsBoxes } from './bbs/shapes.js';
 import { lapLengthMm } from './bbs/calc.js';
 import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
 
@@ -13,6 +13,7 @@ const HIST_MAX = 50;
 const snap = (s) => ({
   bars: structuredClone(s.bars),
   concretes: structuredClone(s.concretes),
+  refLines: structuredClone(s.refLines || []),
   selectedBar: s.selectedBar,
   cover: s.cover,
 });
@@ -23,6 +24,25 @@ const withHist = (s, patch) => ({
   past: [...s.past.slice(-(HIST_MAX - 1)), snap(s)],
   future: [],
 });
+
+// Nearest VISIBLE bar to an app-mm point, or null. Tolerance covers a tube
+// surface hit (dia/2) plus a few mm of click slop. Mirrors the visibility
+// rules in rebarSnapNodes so hidden bars never attract measure control.
+const nearestVisibleBar = (pt, bars, concretes) => {
+  const hiddenIds = new Set((concretes || []).filter((c) => c.visible === false).map((c) => c.id));
+  const hiddenBoxes = (concretes || []).filter((c) => c.visible === false)
+    .map((c) => ({ minX: c.x, minY: c.y, minZ: c.z, maxX: c.x + c.lx, maxY: c.y + c.ly, maxZ: c.z + c.lz }));
+  let best = null, bestD = Infinity;
+  (bars || []).forEach((b, i) => {
+    if (b.hidden) return;
+    if (b.host && hiddenIds.has(b.host)) return;
+    if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return;
+    const d = distToBar(pt, b);
+    const tol = (Number(b.Dia) || 16) / 2 + 8;
+    if (d < bestD && d <= tol) { bestD = d; best = i; }
+  });
+  return best;
+};
 
 // IFC bbox is stored in raw model units; camera fit scales by the active unit
 // so unit overrides keep the view consistent.
@@ -39,6 +59,9 @@ export const useStore = create((set, get) => ({
   bars: [
     { ...defaultBar('straight', 1), host: 'c1', Bar_mark: 'SETC_149', 'Length of Bar': 3000 },
   ],
+  refLines: [],
+  selectedRefLine: null,
+  selectRefLine: (id) => set({ selectedRefLine: id }),
   selectedBar: 0,
   selectedConcrete: 'c1',
   showConcrete: true,
@@ -56,7 +79,30 @@ export const useStore = create((set, get) => ({
     concretes: s.concretes.filter((c) => c.id !== id),
     // bars hosted on the removed member become unhosted (stay visible)
     bars: s.bars.map((b) => (b.host === id ? { ...b, host: null } : b)),
+    // reference lines parented to the removed concrete element are removed
+    refLines: (s.refLines || []).filter((l) => l.host !== id),
     selectedConcrete: s.selectedConcrete === id ? (s.concretes.find((c) => c.id !== id)?.id || null) : s.selectedConcrete,
+  })),
+
+  // Reference lines parented to concrete elements (for dimension checks, rebar alignment & snapping)
+  addRefLine: (line) => set((s) => withHist(s, {
+    refLines: [
+      ...(s.refLines || []),
+      {
+        id: `ref_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        visible: true,
+        color: '#f59e0b',
+        name: `Ref Line ${(s.refLines || []).length + 1}`,
+        ...line,
+      },
+    ],
+  })),
+  updateRefLine: (id, patch) => set((s) => withHist(s, {
+    refLines: (s.refLines || []).map((l) => (l.id === id ? { ...l, ...patch } : l)),
+  })),
+  removeRefLine: (id) => set((s) => withHist(s, {
+    refLines: (s.refLines || []).filter((l) => l.id !== id),
+    selectedRefLine: s.selectedRefLine === id ? null : s.selectedRefLine,
   })),
 
   addBar: (type, targetHostId = null) => {
@@ -166,7 +212,7 @@ export const useStore = create((set, get) => ({
   }),
   toggleConcrete: () => set((s) => ({ showConcrete: !s.showConcrete })),
 
-  // Undo/redo over the model (bars, concretes, selection, cover).
+  // Undo/redo over the model (bars, concretes, refLines, selection, cover).
   past: [],
   future: [],
   undo: () => set((s) => {
@@ -174,6 +220,7 @@ export const useStore = create((set, get) => ({
     const prev = s.past[s.past.length - 1];
     return {
       bars: prev.bars, concretes: prev.concretes,
+      refLines: prev.refLines || [],
       selectedBar: prev.selectedBar, cover: prev.cover,
       past: s.past.slice(0, -1),
       future: [snap(s), ...s.future].slice(0, HIST_MAX),
@@ -184,6 +231,7 @@ export const useStore = create((set, get) => ({
     const [next, ...rest] = s.future;
     return {
       bars: next.bars, concretes: next.concretes,
+      refLines: next.refLines || [],
       selectedBar: next.selectedBar, cover: next.cover,
       past: [...s.past, snap(s)].slice(-HIST_MAX),
       future: rest,
@@ -266,27 +314,59 @@ export const useStore = create((set, get) => ({
   },
   // Measure tool (ephemeral view aid — never saved, never in BBS/CSV).
   // points: app-mm [x, y, z] surface picks.
-  measure: { active: false, points: [] },
+  // barPointIdx: which point rides on the controlled rebar (the other is the
+  // fixed ref). measureBarIdx: auto-detected bar under that point (null = none).
+  measure: { active: false, points: [], barPointIdx: 1, measureBarIdx: null },
   setMeasureActive: (v) => set((s) => ({
-    measure: v ? { active: true, points: s.measure.points } : { active: false, points: [] },
+    measure: v
+      ? { active: true, points: s.measure.points, barPointIdx: s.measure.barPointIdx ?? 1, measureBarIdx: s.measure.measureBarIdx ?? null }
+      : { active: false, points: [], barPointIdx: 1, measureBarIdx: null },
   })),
   // Rebar snap magnet (pick + measure). UI pref: never saved, never in history.
   snapEnabled: true,
   setSnapEnabled: (v) => set({ snapEnabled: v }),
-  pushMeasurePoint: (p) => set((s) => s.measure.active
-    ? { measure: { active: true, points: [...s.measure.points, p].slice(-64) } }
-    : {}),
-  popMeasurePoint: () => set((s) => ({
-    measure: { active: s.measure.active, points: s.measure.points.slice(0, -1) },
+  pushMeasurePoint: (p) => set((s) => {
+    if (!s.measure.active) return {};
+    const pts = [...s.measure.points, p].slice(-64);
+    // Auto-detect: if the new point lands on a visible bar's centerline
+    // (snapped node or tube surface), that point becomes the bar-side point
+    // and its bar becomes the controlled one — so Set moves the bar you
+    // actually clicked, not just the selected one.
+    let barPointIdx = s.measure.barPointIdx ?? 1;
+    let measureBarIdx = s.measure.measureBarIdx ?? null;
+    const newIdx = pts.length - 1;
+    if (newIdx < 2) {
+      const hit = nearestVisibleBar(p, s.bars, s.concretes);
+      if (hit != null) {
+        barPointIdx = newIdx;
+        measureBarIdx = hit;
+      }
+    }
+    return { measure: { active: true, points: pts, barPointIdx, measureBarIdx } };
+  }),
+  popMeasurePoint: () => set((s) => {
+    const pts = s.measure.points.slice(0, -1);
+    return {
+      measure: {
+        active: s.measure.active,
+        points: pts,
+        barPointIdx: pts.length ? Math.min(s.measure.barPointIdx ?? 1, pts.length - 1) : 1,
+        measureBarIdx: pts.length ? s.measure.measureBarIdx ?? null : null,
+      },
+    };
+  }),
+  clearMeasure: () => set((s) => ({ measure: { active: s.measure.active, points: [], barPointIdx: 1, measureBarIdx: null } })),
+  // Manual override: which point follows the controlled bar (0 or 1).
+  setMeasureBarPoint: (idx) => set((s) => ({
+    measure: { ...s.measure, barPointIdx: idx === 0 ? 0 : 1 },
   })),
-  clearMeasure: () => set((s) => ({ measure: { active: s.measure.active, points: [] } })),
   updateMeasurePoint: (idx, pt) => set((s) => ({
     measure: {
       ...s.measure,
       points: s.measure.points.map((p, i) => i === idx ? pt : p),
     },
   })),
-  adjustBarFromMeasure: (barIdx, shiftX = 0, shiftY = 0, shiftZ = 0, targetP2 = null) => {
+  adjustBarFromMeasure: (barIdx, shiftX = 0, shiftY = 0, shiftZ = 0, targetBarPoint = null, barPointIdx = 1) => {
     const s = get();
     const bar = s.bars[barIdx];
     if (!bar) return;
@@ -295,9 +375,9 @@ export const useStore = create((set, get) => ({
     const newZ = Math.round(((Number(bar.Pos_z) || 0) + shiftZ) * 10) / 10;
     set((s2) => withHist(s2, {
       bars: s2.bars.map((b, i) => i === barIdx ? { ...b, Pos_x: newX, Pos_y: newY, Pos_z: newZ } : b),
-      measure: (targetP2 && s2.measure.points.length >= 2) ? {
+      measure: (targetBarPoint && s2.measure.points.length >= 2) ? {
         ...s2.measure,
-        points: s2.measure.points.map((p, i) => i === 1 ? targetP2 : p),
+        points: s2.measure.points.map((p, i) => i === barPointIdx ? targetBarPoint : p),
       } : s2.measure,
     }));
   },
@@ -311,6 +391,7 @@ export const useStore = create((set, get) => ({
     return {
       v: 1, app: 'barbending', savedAt: Date.now(),
       bars: s.bars, concretes: s.concretes,
+      refLines: s.refLines || [],
       cover: s.cover, bond: s.bond, selectedBar: s.selectedBar,
     };
   },
@@ -318,6 +399,7 @@ export const useStore = create((set, get) => ({
     if (!d || d.v !== 1 || !Array.isArray(d.bars) || !Array.isArray(d.concretes)) return false;
       set({
         bars: d.bars, concretes: d.concretes,
+        refLines: Array.isArray(d.refLines) ? d.refLines : [],
         cover: typeof d.cover === 'number' ? d.cover : 40,
         bond: d.bond === 'good' || d.bond === 'poor' ? d.bond : 'poor',
       selectedBar: Math.min(Number(d.selectedBar) || 0, Math.max(0, d.bars.length - 1)),
