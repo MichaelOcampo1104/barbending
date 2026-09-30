@@ -3,7 +3,7 @@
 // and dispatches to place_*_from_csv. We export the union header so the
 // file can be consumed directly, and accept any of the gen_* templates.
 
-import { genBarPoints, distCount, getBentDefaults } from './shapes.js';
+import { genBarPoints, distCount, getBentDefaults, resolveBarHost } from './shapes.js';
 import { barWeightKg } from './calc.js';
 
 export const SHAPE_CODES = {
@@ -91,18 +91,21 @@ export const MASTER_HEADERS = [
   'Visible',
 ];
 
-export function enrichBar(bar) {
+export function enrichBar(bar, concretes = []) {
   const g = genBarPoints(bar);
   const copies = distCount(bar); // qty (sets) × qty_x × qty_y
   const { shapeCode } = getShapeParameters(bar);
+  const resolvedHost = resolveBarHost(bar, concretes);
   return {
     ...bar,
+    host: resolvedHost || bar.host || null,
     Shape_Code: shapeCode,
     Visible: bar.hidden ? 0 : 1,
     'Total Length': bar['Total Length'] || g.cutLengthMm,
     Weight_kg: +barWeightKg(Number(bar.Dia || 16), g.cutLengthMm, copies).toFixed(2),
     _cut: g.cutLengthMm,
     _copies: copies,
+    _resolvedHost: resolvedHost,
   };
 }
 
@@ -148,7 +151,7 @@ export const BBS_BENCHMARK_HEADERS = [
 
 export function toBbsBenchmarkCsv(bars, concretes = []) {
   const concMap = new Map((concretes || []).map((c) => [c.id, c.name || c.type || c.id]));
-  const rows = bars.map(enrichBar);
+  const rows = bars.map((b) => enrichBar(b, concretes));
 
   const esc = (v) => {
     if (v === undefined || v === null) return '';
@@ -232,15 +235,39 @@ export function downloadBbsCsv(bars, concretes = [], filename = 'bar_bending_sch
 }
 
 // Minimal CSV parser (handles quotes) -> array of objects
-export function parseCsv(text) {
+export function parseCsv(text, existingBars = [], concretes = []) {
   const lines = text.trim().split(/\r?\n/);
   if (!lines.length) return [];
   const headers = splitLine(lines[0]);
-  return lines.slice(1).filter(Boolean).map((ln) => {
+
+  // Track max tag for auto-tagging
+  let currentMaxTag = (existingBars || []).reduce((max, b) => Math.max(max, Number(b.Rebar_tag) || 0), 0);
+
+  // Track mark numbering sequence per host concrete element
+  const markSeqByHost = new Map();
+  for (const b of existingBars || []) {
+    if (b.host && b.Bar_mark) {
+      const m = String(b.Bar_mark).match(/^([A-Za-z_-]+)(\d+)$/);
+      if (m) {
+        const prefix = m[1];
+        const num = parseInt(m[2], 10);
+        const numLen = m[2].length;
+        const cur = markSeqByHost.get(b.host);
+        if (!cur || num > cur.num) {
+          markSeqByHost.set(b.host, { prefix, num, numLen });
+        }
+      }
+    }
+  }
+
+  const result = [];
+
+  for (const ln of lines.slice(1).filter(Boolean)) {
     const cells = splitLine(ln);
     const o = {};
     headers.forEach((h, i) => { o[h.trim()] = (cells[i] ?? '').trim(); });
-    // numeric coercion for known fields
+
+    // Numeric coercion for known fields
     for (const k of ['Rebar_tag', 'Shape_Code', 'Dia', 'Pos_x', 'Pos_y', 'Pos_z', 'Pos_Rotation', 'plan_rotation', 'qty',
       'qty_x', 'spacing_x', 'qty_y', 'spacing_y', 'offset_x', 'offset_y', 'offset_z',
       'Length of Bar', 'H', 'Long_length', 'Crank_step', 'Length of Lap',
@@ -248,17 +275,74 @@ export function parseCsv(text) {
       'Visible']) {
       if (o[k] !== '' && o[k] !== undefined && !isNaN(Number(o[k]))) o[k] = Number(o[k]);
     }
+
+    // Match Concrete_element / Member / host to model concrete members
+    const elemName = o.Concrete_element || o.Concrete || o.Member || o.host;
+    if (elemName && concretes && concretes.length) {
+      const str = String(elemName).trim().toLowerCase();
+      const matched = concretes.find(
+        (c) => c.id?.toLowerCase() === str || c.name?.toLowerCase() === str
+      );
+      if (matched) {
+        o.host = matched.id;
+      }
+    }
+
+    // Auto-generate Rebar_tag if blank or 0
+    if (!o.Rebar_tag || isNaN(Number(o.Rebar_tag))) {
+      currentMaxTag += 1;
+      o.Rebar_tag = currentMaxTag;
+    } else {
+      currentMaxTag = Math.max(currentMaxTag, Number(o.Rebar_tag));
+    }
+
+    // Auto-generate Bar_mark if blank: follow host pattern or default B{tag}
+    if (!o.Bar_mark) {
+      if (o.host && markSeqByHost.has(o.host)) {
+        const entry = markSeqByHost.get(o.host);
+        entry.num += 1;
+        o.Bar_mark = `${entry.prefix}${String(entry.num).padStart(entry.numLen, '0')}`;
+      } else {
+        o.Bar_mark = `B${o.Rebar_tag}`;
+      }
+    } else if (o.host) {
+      // Record mark pattern if row has an explicit mark
+      const m = String(o.Bar_mark).match(/^([A-Za-z_-]+)(\d+)$/);
+      if (m) {
+        const prefix = m[1];
+        const num = parseInt(m[2], 10);
+        const numLen = m[2].length;
+        const cur = markSeqByHost.get(o.host);
+        if (!cur || num > cur.num) {
+          markSeqByHost.set(o.host, { prefix, num, numLen });
+        }
+      }
+    }
+
     if (o.Plane === '0' || o.Plane === 0) o.Plane = 'XY';
     else if (o.Plane === '1' || o.Plane === 1) o.Plane = 'XZ';
     else if (o.Plane === '2' || o.Plane === 2) o.Plane = 'YZ';
     else if (!o.Plane) o.Plane = 'XZ';
 
+    if (o.bond_condition) {
+      o.bond_condition = String(o.bond_condition).toLowerCase();
+    }
+    if (o.bent_up_down) {
+      o.bent_up_down = String(o.bent_up_down).toLowerCase();
+    }
+    if (o.double_hook) {
+      o.double_hook = String(o.double_hook).toLowerCase();
+    }
+
     if (Number(o.Visible) === 0) o.hidden = true;
     delete o.Visible;
     if (!o.Rebar_Type) o.Rebar_Type = 'straight';
     if (!o.qty) o.qty = 1;
-    return o;
-  });
+
+    result.push(o);
+  }
+
+  return result;
 }
 
 function splitLine(line) {

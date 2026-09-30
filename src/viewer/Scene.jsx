@@ -3,7 +3,7 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, AdaptiveDpr, Line, Html, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { genBarPoints, transformBarLocalPoint, distOffsets, barOverlapsBoxes, rebarSnapNodes, concreteSnapNodes, allSnapNodes, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES } from '../bbs/shapes.js';
+import { genBarPoints, transformBarLocalPoint, distOffsets, barOverlapsBoxes, rebarSnapNodes, concreteSnapNodes, allSnapNodes, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES, barAppBox } from '../bbs/shapes.js';
 import FitIfc from './FitIfc.jsx';
 import AutoClipping from './AutoClipping.jsx';
 import SectionBox from './SectionBox.jsx';
@@ -623,7 +623,7 @@ const S = 0.001;
 const DIA_COLORS = { 10: '#22c55e', 12: '#84cc16', 16: '#f59e0b', 20: '#ef4444', 25: '#a855f7', 32: '#3b82f6', 40: '#e11d48' };
 const colorFor = (dia) => DIA_COLORS[dia] || '#f59e0b';
 
-function RebarMesh({ bar, selected, onClick }) {
+function RebarMesh({ bar, selected, onClick, onDoubleClick }) {
   const tube = useMemo(() => {
     const g = genBarPoints(bar);
     // App coords in mm: [ax, ay, az] via transformBarLocalPoint(bar, pt)
@@ -658,7 +658,10 @@ function RebarMesh({ bar, selected, onClick }) {
   const by = -(Number(bar.Pos_y) || 0) * S;
 
   return (
-    <group userData-pickRoot="rebar" onClick={(e) => { e.stopPropagation(); onClick?.(); }}>
+    <group userData-pickRoot="rebar"
+      onClick={(e) => { e.stopPropagation(); onClick?.(); }}
+      onDoubleClick={(e) => { e.stopPropagation(); onDoubleClick?.(); }}
+    >
       {copies.map(([ox, oy, oz], i) => (
         <group key={i} position={[bx + ox * S, bz + oz * S, by - oy * S]}>
           {/* Selected bar draws on top (no depth test): snap-to-cover parks it
@@ -691,8 +694,12 @@ function ConcreteMesh({ c }) {
   const xray = useStore((s) => s.shading === 'xray');
   const opacity = isWireframe ? 0.08 : xray ? 0.1 : 0.22;
   const noMarks = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('nomarks') === '1';
+  const requestFit = useStore((s) => s.requestFit);
   return (
-    <mesh userData-pickRoot="concrete" position={[cx, cy, cz]} geometry={geom}>
+    <mesh userData-pickRoot="concrete" position={[cx, cy, cz]} geometry={geom} onDoubleClick={(e) => {
+      e.stopPropagation();
+      requestFit('concrete', c.id);
+    }}>
       <meshStandardMaterial color="#9ca3af" transparent opacity={opacity} roughness={0.9} depthWrite={false} clippingPlanes={sectionPlanes} />
       <lineSegments>
         <edgesGeometry args={[new THREE.BoxGeometry(sx, sy, sz)]} />
@@ -708,30 +715,176 @@ function ConcreteMesh({ c }) {
   );
 }
 
-// Preset views (Blender-style, app frame): Top/Bottom look along app Z
-// (scene ±Y), Front/Back along app Y (scene ∓Z), Left/Right along app X
-// (scene ±X). Keeps the current orbit target so model focus never jumps.
+// Preset views (Blender-style, app frame):
+// App X = Length (Red), App Y = Width/Depth (Green), App Z = Height/Vertical UP (Blue).
+// Scene coords: ThreeX = AppX, ThreeY = AppZ (UP), ThreeZ = -AppY (Depth).
 function ViewPreset() {
   const viewReq = useStore((s) => s.viewReq);
   const camera = useThree((s) => s.camera);
   const controls = useThree((s) => s.controls);
+  const animRef = useRef(null);
+  const lastN = useRef(0);
+
   useEffect(() => {
-    if (!viewReq || !controls) return;
+    if (!viewReq || !controls || viewReq.n === lastN.current) return;
+    lastN.current = viewReq.n;
     const t = controls.target;
     const d = Math.max(camera.position.distanceTo(t), 1);
     const e = Math.max(d * 0.002, 0.001); // epsilon avoids gimbal lock
     const off = {
       top: [0, d, e],
       bottom: [0, -d, e],
-      front: [0, e, -d],
-      back: [0, e, d],
+      front: [0, e, d],
+      back: [0, e, -d],
       right: [d, e, 0],
       left: [-d, e, 0],
-      iso: [d * 0.55, d * 0.45, -d * 0.62],
-    }[viewReq.dir] || [d * 0.55, d * 0.45, -d * 0.62];
-    camera.position.set(t.x + off[0], t.y + off[1], t.z + off[2]);
-    controls.update();
+      iso: [d * 0.65, d * 0.55, d * 0.65],
+    }[viewReq.dir] || [d * 0.65, d * 0.55, d * 0.65];
+
+    animRef.current = {
+      from: camera.position.clone(),
+      to: new THREE.Vector3(t.x + off[0], t.y + off[1], t.z + off[2]),
+      t: 0,
+    };
   }, [viewReq, controls, camera]);
+
+  useFrame((_, deltaSec) => {
+    if (!animRef.current || !controls) return;
+    const a = animRef.current;
+    a.t = Math.min(1, a.t + deltaSec * 6.0); // smooth ~180ms ease
+    const ease = 1 - Math.pow(1 - a.t, 3);
+    camera.position.lerpVectors(a.from, a.to, ease);
+    controls.update();
+    if (a.t >= 1) animRef.current = null;
+  });
+
+  return null;
+}
+
+// Focus / Fit model or selected rebar/beam bounds on request or hotkey
+function FitModelHandler() {
+  const fitReq = useStore((s) => s.fitReq);
+  const concretes = useStore((s) => s.concretes);
+  const bars = useStore((s) => s.bars);
+  const selectedBar = useStore((s) => s.selectedBar);
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls);
+  const requestFit = useStore((s) => s.requestFit);
+  const animRef = useRef(null);
+  const lastN = useRef(0);
+
+  // Press 'F' to fit selected bar or beam (or whole model if none)
+  useEffect(() => {
+    const onKey = (ev) => {
+      if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
+      const tag = (ev.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || ev.target?.isContentEditable) {
+        return;
+      }
+      if (ev.key.toLowerCase() === 'f') {
+        ev.preventDefault();
+        requestFit('auto');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [requestFit]);
+
+  useEffect(() => {
+    if (!fitReq || !controls || fitReq.n === lastN.current) return;
+    lastN.current = fitReq.n;
+
+    let box = null;
+    const reqType = fitReq.target || 'auto';
+
+    if (reqType === 'bar' || (reqType === 'auto' && selectedBar != null && bars[selectedBar])) {
+      const idx = reqType === 'bar' && fitReq.idOrIdx != null ? fitReq.idOrIdx : selectedBar;
+      const b = bars[idx];
+      if (b) {
+        box = barAppBox(b);
+      }
+    } else if (reqType === 'concrete') {
+      const cId = fitReq.idOrIdx || bars[selectedBar]?.host || concretes[0]?.id;
+      const c = (concretes || []).find((item) => item.id === cId);
+      if (c) {
+        box = { minX: c.x, maxX: c.x + c.lx, minY: c.y, maxY: c.y + c.ly, minZ: c.z, maxZ: c.z + c.lz };
+      }
+    }
+
+    if (!box) {
+      // Entire model bounding box
+      const visibleConc = (concretes || []).filter((c) => c.visible !== false);
+      if (!visibleConc.length && !(bars || []).length) return;
+
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+      for (const c of visibleConc) {
+        minX = Math.min(minX, c.x);
+        maxX = Math.max(maxX, c.x + c.lx);
+        minY = Math.min(minY, c.y);
+        maxY = Math.max(maxY, c.y + c.ly);
+        minZ = Math.min(minZ, c.z);
+        maxZ = Math.max(maxZ, c.z + c.lz);
+      }
+      for (const b of bars || []) {
+        if (b.hidden) continue;
+        const bb = barAppBox(b);
+        minX = Math.min(minX, bb.minX);
+        maxX = Math.max(maxX, bb.maxX);
+        minY = Math.min(minY, bb.minY);
+        maxY = Math.max(maxY, bb.maxY);
+        minZ = Math.min(minZ, bb.minZ);
+        maxZ = Math.max(maxZ, bb.maxZ);
+      }
+      if (Number.isFinite(minX)) {
+        box = { minX, maxX, minY, maxY, minZ, maxZ };
+      }
+    }
+
+    if (!box) return;
+
+    // Convert app mm to scene meters: ThreeX = AppX, ThreeY = AppZ (up), ThreeZ = -AppY
+    const cx = (((box.minX + box.maxX) / 2) || 0) * S;
+    const cy = (((box.minZ + box.maxZ) / 2) || 0) * S;
+    const cz = -((((box.minY + box.maxY) / 2) || 0) * S);
+
+    const dx = Math.max(0.1, (box.maxX - box.minX) * S);
+    const dy = Math.max(0.1, (box.maxZ - box.minZ) * S);
+    const dz = Math.max(0.1, (box.maxY - box.minY) * S);
+    const size = Math.hypot(dx, dy, dz);
+    const d = Math.max(size * 1.5, 0.6);
+
+    // Keep current viewing angle direction vector
+    const curDir = new THREE.Vector3().subVectors(camera.position, controls.target);
+    if (curDir.lengthSq() < 0.05) {
+      curDir.set(0.65, 0.55, 0.65);
+    }
+    curDir.normalize();
+
+    const targetPos = new THREE.Vector3(cx, cy, cz);
+    const cameraPos = new THREE.Vector3(cx + curDir.x * d, cy + curDir.y * d, cz + curDir.z * d);
+
+    animRef.current = {
+      fromTgt: controls.target.clone(),
+      toTgt: targetPos,
+      fromCam: camera.position.clone(),
+      toCam: cameraPos,
+      t: 0,
+    };
+  }, [fitReq, concretes, bars, selectedBar, controls, camera]);
+
+  useFrame((_, deltaSec) => {
+    if (!animRef.current || !controls) return;
+    const a = animRef.current;
+    a.t = Math.min(1, a.t + deltaSec * 5.5);
+    const ease = 1 - Math.pow(1 - a.t, 3);
+    controls.target.lerpVectors(a.fromTgt, a.toTgt, ease);
+    camera.position.lerpVectors(a.fromCam, a.toCam, ease);
+    controls.update();
+    if (a.t >= 1) animRef.current = null;
+  });
+
   return null;
 }
 
@@ -788,32 +941,49 @@ export default function Scene() {
         if (b.hidden) return null;
         if (b.host && hiddenHosts.has(b.host)) return null;
         if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return null;
-        return <RebarMesh key={i} bar={b} selected={i === selectedBar} onClick={() => {
-          const st = useStore.getState();
-          if (st.measure?.active) return;
-          // Lap picking: first click anchors, second click laps + selects.
-          if (st.lapArmed) {
-            if (st.lapAnchor == null) { st.setLapAnchor(i); return; }
-            if (st.lapAnchor === i) return;
-            st.selectBar(i);
-            const r = st.applyLapSplice(st.lapAnchor, i);
-            if (!r.ok) alert(r.msg);
-            else { st.setLapAnchor(null); st.setLapArmed(false); }
-            return;
-          }
-          selectBar(i);
-        }} />;
+        return (
+          <RebarMesh
+            key={i}
+            bar={b}
+            selected={i === selectedBar}
+            onClick={() => {
+              const st = useStore.getState();
+              if (st.measure?.active) return;
+              // Lap picking: first click anchors, second click laps + selects.
+              if (st.lapArmed) {
+                if (st.lapAnchor == null) { st.setLapAnchor(i); return; }
+                if (st.lapAnchor === i) return;
+                st.selectBar(i);
+                const r = st.applyLapSplice(st.lapAnchor, i);
+                if (!r.ok) alert(r.msg);
+                else { st.setLapAnchor(null); st.setLapArmed(false); }
+                return;
+              }
+              selectBar(i);
+            }}
+            onDoubleClick={() => {
+              selectBar(i);
+              useStore.getState().requestFit('bar', i);
+            }}
+          />
+        );
       })}
       <OrbitControls makeDefault enableDamping dampingFactor={0.08} panSpeed={1.8} screenSpacePanning enableZoom={false} minDistance={0} maxDistance={Infinity}
         mouseButtons={{ LEFT: navOrbit ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN }} />
       <FitIfc />
+      <FitModelHandler />
       <AutoClipping />
       <DiveZoom />
       <ViewPreset />
-      {/* Blender-style orientation gizmo: click an axis tip for
-          Top/Bottom/Left/Right/Front/Back, drag to orbit. */}
+      {/* Engineering/BIM orientation gizmo:
+          X = Length (Red), Z = Vertical UP (Blue), Y = Depth (Green).
+          Click an axis tip for Top/Bottom/Left/Right/Front/Back, drag to orbit. */}
       <GizmoHelper alignment="top-right" margin={[70, 70]}>
-        <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="white" />
+        <GizmoViewport
+          labels={['X', 'Z', 'Y']}
+          axisColors={['#ef4444', '#3b82f6', '#22c55e']}
+          labelColor="white"
+        />
       </GizmoHelper>
       <TraceTool />
       <PickHandler />

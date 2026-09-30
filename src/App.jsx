@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, Fragment } from 'react';
 import Scene from './viewer/Scene.jsx';
 import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
-import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount } from './bbs/shapes.js';
+import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost } from './bbs/shapes.js';
 import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES } from './bbs/csv.js';
 import { lapLengthMm } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
@@ -53,6 +53,8 @@ function BarEditor() {
   const setLapAnchor = useStore((s) => s.setLapAnchor);
   const applyLapSplice = useStore((s) => s.applyLapSplice);
   const lastLap = useStore((s) => s.lastLap);
+  const requestFit = useStore((s) => s.requestFit);
+  const duplicateBar = useStore((s) => s.duplicateBar);
   const [hostId, setHostId] = useState(null);
   const bar = bars[idx];
   if (!bar) return <div className="panel"><p>No bars yet — pick a type below.</p><TypeGrid onAdd={addBar} /></div>;
@@ -61,15 +63,28 @@ function BarEditor() {
 
   return (
     <div className="panel">
-      <label className="fld"><span>Selected bar ({bars.length} total)</span>
-        <select value={idx} onChange={(e) => selectBar(Number(e.target.value))}>
-          {bars.map((b, i) => (
-            <option key={i} value={i}>
-              {b.Bar_mark} · {b.Rebar_Type === 'c_link_with_hook' && String(b.double_hook || 'no').toLowerCase() === 'yes' ? 'c_link (double hook)' : b.Rebar_Type} · Ø{b.Dia}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="row2" style={{ alignItems: 'center', marginBottom: 4 }}>
+        <label className="fld" style={{ flex: 1 }}><span>Selected bar ({bars.length} total)</span>
+          <select value={idx} onChange={(e) => selectBar(Number(e.target.value))}>
+            {bars.map((b, i) => (
+              <option key={i} value={i}>
+                {b.Bar_mark} · {b.Rebar_Type === 'c_link_with_hook' && String(b.double_hook || 'no').toLowerCase() === 'yes' ? 'c_link (double hook)' : b.Rebar_Type} · Ø{b.Dia}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div style={{ display: 'flex', gap: 4, marginTop: 16 }}>
+          <button className="sm" onClick={() => requestFit('bar', idx)} title="Zoom camera directly to this rebar (Hotkey: F)">🎯 Zoom [F]</button>
+          <button className="sm" onClick={() => duplicateBar(idx)} title="Duplicate / Copy this rebar (Hotkey: Ctrl+D or C)">📋 Copy [Ctrl+D]</button>
+        </div>
+      </div>
+      {bar.host && (
+        <div style={{ marginBottom: 6 }}>
+          <button className="ghost sm" onClick={() => requestFit('concrete', bar.host)} title={`Zoom camera to ${concretes.find((c) => c.id === bar.host)?.name || 'Host Member'}`}>
+            🔍 Zoom to {concretes.find((c) => c.id === bar.host)?.name || 'Host Member'}
+          </button>
+        </div>
+      )}
       <div className="row2">
         <label className="fld"><span>Shape type — switch anytime</span>
           <select value={bar.Rebar_Type} onChange={(e) => replaceBar(idx, applyTypeDefaults(bar, e.target.value))}>
@@ -115,8 +130,8 @@ function BarEditor() {
       <div className="sect">Host & visibility (view only — BBS + CSV stay complete)</div>
       <div className="row2">
         <label className="fld"><span>Host member — hides with it</span>
-          <select value={bar.host && concretes.some((c) => c.id === bar.host) ? bar.host : ''} onChange={(e) => set('host', e.target.value || null)}>
-            <option value="">— None —</option>
+          <select value={resolveBarHost(bar, concretes) || ''} onChange={(e) => set('host', e.target.value || null)}>
+            <option value="">— None (Unhosted) —</option>
             {concretes.map((c) => <option key={c.id} value={c.id}>{c.name}{c.visible === false ? ' (hidden)' : ''}</option>)}
           </select>
         </label>
@@ -226,7 +241,8 @@ function BarEditor() {
       </div>
       {lastLap && lastLap.b === bar.Bar_mark && <div className="distnote">Last: {lastLap.b} → {lastLap.a} · {lastLap.len.toLocaleString('en-US')} mm ({lastLap.bond} bond, Ø{lastLap.dia})</div>}
       <div className="sect">Add bar</div>      <TypeGrid onAdd={addBar} />
-      <button className="danger block" onClick={() => removeBar(idx)}>Delete this bar</button>
+      <button className="block sm" onClick={() => duplicateBar(idx)} style={{ marginBottom: 6 }} title="Duplicate / Copy this rebar (Ctrl+D)">📋 Duplicate this bar (Ctrl+D)</button>
+      <button className="danger block sm" onClick={() => removeBar(idx)}>Delete this bar</button>
     </div>
   );
 }
@@ -529,6 +545,8 @@ function ViewportBar() {
   const navMode = useStore((s) => s.navMode);
   const setNavMode = useStore((s) => s.setNavMode);
   const requestView = useStore((s) => s.requestView);
+  const requestFit = useStore((s) => s.requestFit);
+  const duplicateBar = useStore((s) => s.duplicateBar);
   const section = useStore((s) => s.section);
   const toggleSection = useStore((s) => s.toggleSection);
   const fitSectionToIfc = useStore((s) => s.fitSectionToIfc);
@@ -564,15 +582,18 @@ function ViewportBar() {
           view
           <select defaultValue="" onChange={(e) => { if (e.target.value) requestView(e.target.value); e.target.value = ''; }}>
             <option value="" disabled>Iso ▾</option>
-            <option value="top">Top</option>
-            <option value="bottom">Bottom</option>
-            <option value="front">Front</option>
-            <option value="back">Back</option>
-            <option value="left">Left</option>
-            <option value="right">Right</option>
+            <option value="top">Top (Z↓)</option>
+            <option value="bottom">Bottom (Z↑)</option>
+            <option value="front">Front (Y→)</option>
+            <option value="back">Back (Y←)</option>
+            <option value="left">Left (X→)</option>
+            <option value="right">Right (X←)</option>
             <option value="iso">Iso</option>
           </select>
         </label>
+        <button onClick={() => requestFit('auto')} title="Zoom camera to selected rebar or beam (Hotkey: F)">🎯 Zoom Sel [F]</button>
+        <button onClick={() => duplicateBar()} title="Duplicate / Copy selected rebar (Hotkey: Ctrl+D or C)">📋 Copy [Ctrl+D]</button>
+        <button onClick={() => requestFit('all')} title="Fit entire model in view">⛶ Fit All</button>
         <button className={section?.enabled ? 'on' : ''} onClick={toggleSection} title="Revit-style section box: push/pull faces, move or rotate gizmo">◫ Section</button>
         {section?.enabled && (
           <span className="seg">
@@ -601,7 +622,7 @@ function ViewportBar() {
         <span className="vstat">{totalBars} bars · {totalW.toFixed(1)} kg</span>
       </div>
       <div className="overlay">
-        drag = orbit · wheel = zoom · right-drag = pan · click bar = select
+        drag = orbit · wheel = zoom · right-drag = pan · click bar = select · F = zoom · Ctrl+D/C = copy rebar
         {drawMode && !drawStart && <b> — 📐 [{drawMode.toUpperCase()} TOOL] Click 1st corner/node (snapping active) · Esc to cancel</b>}
         {drawMode && drawStart && <b> — 📐 [{drawMode.toUpperCase()} TOOL] Click opposite corner/node to complete member · Esc to cancel</b>}
         {snapNode && <b> — 📍 Snapped: ({snapNode.x}, {snapNode.y}, {snapNode.z}) [{snapNode.type}]</b>}
@@ -621,51 +642,199 @@ function BbsStrip() {
   const bars = useStore((s) => s.bars);
   const concretes = useStore((s) => s.concretes);
   const setBars = useStore((s) => s.setBars);
+  const appendBars = useStore((s) => s.appendBars);
   const updateBar = useStore((s) => s.updateBar);
   const selectBar = useStore((s) => s.selectBar);
   const selectedBar = useStore((s) => s.selectedBar);
+  const duplicateBar = useStore((s) => s.duplicateBar);
+  const requestFit = useStore((s) => s.requestFit);
   const fileRef = useRef(null);
-  const rows = bars.map(enrichBar);
-  const totalW = rows.reduce((a, r) => a + (r.Weight_kg || 0), 0);
-  const totalBars = rows.reduce((a, r) => a + (r._copies || 1), 0);
+  const insertFileRef = useRef(null);
 
-  const onImport = (e) => {
+  const [elemFilter, setElemFilter] = useState('all');
+  const [groupByElem, setGroupByElem] = useState(true);
+  const [collapsed, setCollapsed] = useState({});
+
+  const concMap = useMemo(() => new Map((concretes || []).map((c) => [c.id, c])), [concretes]);
+  const allRows = useMemo(() => bars.map((b, idx) => ({ ...enrichBar(b, concretes), _origIdx: idx })), [bars, concretes]);
+
+  // Rows matching current element filter
+  const filteredRows = useMemo(() => {
+    if (elemFilter === 'all') return allRows;
+    if (elemFilter === 'unhosted') return allRows.filter((r) => !r.host || !concMap.has(r.host));
+    return allRows.filter((r) => r.host === elemFilter);
+  }, [allRows, elemFilter, concMap]);
+
+  const totalW = filteredRows.reduce((a, r) => a + (r.Weight_kg || 0), 0);
+  const totalBars = filteredRows.reduce((a, r) => a + (r._copies || 1), 0);
+
+  // Grouping structure for all or filtered
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const c of concretes) {
+      if (elemFilter === 'all' || elemFilter === c.id) {
+        map.set(c.id, { id: c.id, concrete: c, name: c.name || `Member ${c.id}`, rows: [] });
+      }
+    }
+    if (elemFilter === 'all' || elemFilter === 'unhosted') {
+      map.set('unhosted', { id: 'unhosted', concrete: null, name: 'Free / Unassigned', rows: [] });
+    }
+
+    for (const r of filteredRows) {
+      const hostKey = r.host && concMap.has(r.host) ? r.host : 'unhosted';
+      if (!map.has(hostKey)) {
+        map.set(hostKey, { id: hostKey, concrete: null, name: 'Free / Unassigned', rows: [] });
+      }
+      map.get(hostKey).rows.push(r);
+    }
+
+    return Array.from(map.values())
+      .map((g) => ({
+        ...g,
+        totalW: g.rows.reduce((a, r) => a + (r.Weight_kg || 0), 0),
+        totalBars: g.rows.reduce((a, r) => a + (r._copies || 1), 0),
+      }))
+      .filter((g) => g.rows.length > 0 || (elemFilter !== 'all' && g.id === elemFilter));
+  }, [concretes, filteredRows, elemFilter, concMap]);
+
+  const toggleCollapse = (gid) => setCollapsed((c) => ({ ...c, [gid]: !c[gid] }));
+
+  const activeConcrete = elemFilter !== 'all' && elemFilter !== 'unhosted' ? concMap.get(elemFilter) : null;
+  const filterLabel = activeConcrete ? activeConcrete.name : elemFilter === 'unhosted' ? 'Unhosted Rebars' : 'All Elements';
+  const exportBars = filteredRows.map((r) => bars[r._origIdx]);
+  const safeFilterName = filterLabel.replace(/[\s\W]+/g, '_');
+  const bbsFilename = elemFilter === 'all' ? 'bar_bending_schedule.csv' : `BBS_${safeFilterName}.csv`;
+  const rebarFilename = elemFilter === 'all' ? 'rebar_scheduling.csv' : `rebar_scheduling_${safeFilterName}.csv`;
+
+  const onImport = (e, append = false) => {
     const f = e.target.files?.[0];
     if (!f) return;
     const rd = new FileReader();
     rd.onload = () => {
-      try { setBars(parseCsv(String(rd.result))); }
+      try {
+        const parsed = parseCsv(String(rd.result), append ? bars : [], concretes);
+        if (append) {
+          appendBars(parsed);
+        } else {
+          setBars(parsed);
+        }
+      }
       catch (err) { alert('CSV parse failed: ' + err.message); }
     };
     rd.readAsText(f);
     e.target.value = '';
   };
 
+  const renderRow = (r) => {
+    const i = r._origIdx;
+    return (
+      <tr
+        key={i}
+        className={(i === selectedBar ? 'sel' : '') + (r.hidden ? ' hidden' : '')}
+        onClick={() => selectBar(i)}
+        onDoubleClick={() => {
+          selectBar(i);
+          requestFit('bar', i);
+        }}
+        title="Click to select · Double-click to zoom directly to this bar"
+        style={{ cursor: 'pointer' }}
+      >
+        <td onClick={(e) => e.stopPropagation()} style={{ whiteSpace: 'nowrap' }}>
+          <button className="ghost sm" title={r.hidden ? 'Show bar' : 'Hide bar (stays in BBS + CSV)'} onClick={() => updateBar(i, { hidden: r.hidden ? undefined : true })}>{r.hidden ? '🚫' : '👁'}</button>
+          <button className="ghost sm" title="Duplicate / Copy this bar (Ctrl+D)" onClick={() => duplicateBar(i)}>📋</button>
+        </td>
+        <td>{r.Rebar_tag}</td><td>{r.Bar_mark}</td>
+        <td>{r.Rebar_Type === 'c_link_with_hook' ? (String(r.double_hook || 'no').toLowerCase() === 'yes' ? 'c_link_with_hook (double)' : 'c_link_with_hook (single)') : r.Rebar_Type}</td>
+        <td><span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: 4, fontWeight: 600, color: '#67e8f9' }}>{SHAPE_CODES[(r.Rebar_Type || '').toLowerCase()] || 20}</span></td>
+        <td>{r.Dia}</td><td>{r._copies}</td><td>{r._cut}</td><td>{r.Weight_kg}</td>
+      </tr>
+    );
+  };
+
   return (
     <footer className="bbs">
       <div className="bbstool">
-        <strong>BBS · {rows.length} rows · {totalBars} bars · {totalW.toFixed(1)} kg</strong>
+        <strong>
+          {elemFilter === 'all'
+            ? `BBS · ${filteredRows.length} rows · ${totalBars} bars · ${totalW.toFixed(1)} kg`
+            : `BBS for ${filterLabel} · ${filteredRows.length} rows · ${totalBars} bars · ${totalW.toFixed(1)} kg`}
+        </strong>
+
+        <label className="bbs-filter" title="Filter table & BBS CSV exports to a specific concrete member">
+          <span>Element:</span>
+          <select value={elemFilter} onChange={(e) => setElemFilter(e.target.value)}>
+            <option value="all">All Elements ({allRows.length} marks)</option>
+            {concretes.map((c) => {
+              const count = allRows.filter((r) => r.host === c.id).length;
+              return <option key={c.id} value={c.id}>{c.name} ({count} marks)</option>;
+            })}
+            {allRows.some((r) => !r.host || !concMap.has(r.host)) && (
+              <option value="unhosted">Free / Unassigned ({allRows.filter((r) => !r.host || !concMap.has(r.host)).length} marks)</option>
+            )}
+          </select>
+        </label>
+
+        {elemFilter === 'all' && (
+          <label className="chk" style={{ margin: 0, fontSize: 11 }} title="Group rebar rows under concrete element headers">
+            <input type="checkbox" checked={groupByElem} onChange={(e) => setGroupByElem(e.target.checked)} />
+            Group by Element
+          </label>
+        )}
+
+        {activeConcrete && (
+          <button className="ghost sm" onClick={() => requestFit('concrete', activeConcrete.id)} title={`Zoom camera to ${activeConcrete.name}`}>
+            🎯 Zoom {activeConcrete.name}
+          </button>
+        )}
+
         <span className="btnrow inline">
-          <button style={{ background: '#059669', fontWeight: 600 }} onClick={() => downloadBbsCsv(bars, concretes)} title="Generate BBS Schedule CSV (FreeCAD Reinforcement benchmark / BS 8666 format with shape codes 20, 37, 38, 85, 41, 43)">⤓ BBS Schedule CSV</button>
-          <button onClick={() => downloadCsv(bars)} title="Export FreeCAD parametric template CSV (rebar_scheduling.csv)">⤓ rebar_scheduling.csv</button>
-          <button onClick={() => fileRef.current?.click()} title="Import CSV">⤒ Import</button>
-          <input ref={fileRef} type="file" accept=".csv" hidden onChange={onImport} />
+          <button style={{ background: '#059669', fontWeight: 600 }} onClick={() => downloadBbsCsv(exportBars, concretes, bbsFilename)} title={`Generate BBS Schedule CSV (${elemFilter === 'all' ? 'Entire Model' : filterLabel})`}>
+            ⤓ BBS Schedule CSV {elemFilter !== 'all' ? `(${filterLabel})` : ''}
+          </button>
+          <button onClick={() => downloadCsv(exportBars, rebarFilename)} title={`Export FreeCAD parametric template CSV (${elemFilter === 'all' ? 'Entire Model' : filterLabel})`}>
+            ⤓ rebar_scheduling.csv
+          </button>
+          <button onClick={() => insertFileRef.current?.click()} title="Insert / Append rebars from CSV into existing concrete elements">+ Insert CSV</button>
+          <input ref={insertFileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, true)} />
+          <button onClick={() => fileRef.current?.click()} title="Import and replace all bars in model">⤒ Replace CSV</button>
+          <input ref={fileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, false)} />
         </span>
-        <span className="hint">Shape codes: 20=straight, 37=bent, 38=clink, 85=c_link_with_hook, 41=crank, 43=double_crank</span>
+        <span className="hint">Tip: Double-click any row to zoom · Press F to center</span>
       </div>
       <div className="tblwrap">
         <table>
           <thead><tr><th></th><th>#</th><th>Mark</th><th>Type</th><th>Shape</th><th>Ø</th><th>Bars</th><th>Cut (mm)</th><th>Wt (kg)</th></tr></thead>
           <tbody>
-            {rows.map((r, i) => (
-              <tr key={i} className={(i === selectedBar ? 'sel' : '') + (r.hidden ? ' hidden' : '')} onClick={() => selectBar(i)}>
-                <td onClick={(e) => e.stopPropagation()}><button className="ghost sm" title={r.hidden ? 'Show bar' : 'Hide bar (stays in BBS + CSV)'} onClick={() => updateBar(i, { hidden: r.hidden ? undefined : true })}>{r.hidden ? '🚫' : '👁'}</button></td>
-                <td>{r.Rebar_tag}</td><td>{r.Bar_mark}</td>
-                <td>{r.Rebar_Type === 'c_link_with_hook' ? (String(r.double_hook || 'no').toLowerCase() === 'yes' ? 'c_link_with_hook (double)' : 'c_link_with_hook (single)') : r.Rebar_Type}</td>
-                <td><span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: 4, fontWeight: 600, color: '#67e8f9' }}>{SHAPE_CODES[(r.Rebar_Type || '').toLowerCase()] || 20}</span></td>
-                <td>{r.Dia}</td><td>{r._copies}</td><td>{r._cut}</td><td>{r.Weight_kg}</td>
-              </tr>
-            ))}
+            {elemFilter === 'all' && groupByElem ? (
+              groups.map((g) => {
+                const isCollapsed = !!collapsed[g.id];
+                return (
+                  <Fragment key={`gwrap-${g.id}`}>
+                    <tr className="bbs-group-row" onClick={() => toggleCollapse(g.id)}>
+                      <td colSpan={9}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                            <span>{isCollapsed ? '▶' : '▼'}</span>
+                            <strong>📦 {g.name}</strong>
+                            <span className="bbs-group-badge">{g.rows.length} rows · {g.totalBars} bars · {g.totalW.toFixed(1)} kg</span>
+                          </span>
+                          <span className="btnrow inline" onClick={(e) => e.stopPropagation()} style={{ gap: 4 }}>
+                            {g.concrete && (
+                              <button className="ghost sm" onClick={() => requestFit('concrete', g.id)} title={`Zoom 3D view to ${g.name}`}>🎯 Zoom</button>
+                            )}
+                            <button className="ghost sm" onClick={() => setElemFilter(g.id)} title={`Filter table and BBS to ${g.name}`}>🔍 Pick only</button>
+                            <button className="ghost sm" onClick={() => downloadBbsCsv(g.rows.map((r) => bars[r._origIdx]), concretes, `BBS_${g.name.replace(/[\s\W]+/g, '_')}.csv`)} title={`Export BBS CSV for ${g.name}`}>⤓ BBS CSV</button>
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                    {!isCollapsed && g.rows.map(renderRow)}
+                  </Fragment>
+                );
+              })
+            ) : (
+              filteredRows.map(renderRow)
+            )}
           </tbody>
         </table>
       </div>
@@ -771,17 +940,46 @@ export default function App() {
   // inputs can't diverge from the store).
   useEffect(() => {
     const onKey = (e) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (e.altKey) return;
       const k = (e.key || '').toLowerCase();
-      const redoKey = k === 'y' || (k === 'z' && e.shiftKey);
-      if (k !== 'z' && !redoKey) return;
       const t = e.target;
-      if (t && (t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' ||
-        (t.tagName === 'INPUT' && (t.type === 'text' || t.type === 'search')))) return;
-      e.preventDefault();
+      const isInput = t && (t.isContentEditable || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' ||
+        (t.tagName === 'INPUT' && (t.type === 'text' || t.type === 'search' || t.type === 'number')));
+
+      if (isInput) return;
+
       const st = useStore.getState();
-      if (redoKey) st.redo();
-      else st.undo();
+
+      if (e.ctrlKey || e.metaKey) {
+        const redoKey = k === 'y' || (k === 'z' && e.shiftKey);
+        if (k === 'z' || redoKey) {
+          e.preventDefault();
+          if (redoKey) st.redo();
+          else st.undo();
+          return;
+        }
+        if (k === 'd') {
+          e.preventDefault();
+          st.duplicateBar();
+          return;
+        }
+        if (k === 'c') {
+          e.preventDefault();
+          st.copyBar();
+          return;
+        }
+        if (k === 'v') {
+          e.preventDefault();
+          st.pasteBar();
+          return;
+        }
+      } else {
+        if (k === 'c') {
+          e.preventDefault();
+          st.duplicateBar();
+          return;
+        }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

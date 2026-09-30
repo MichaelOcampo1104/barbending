@@ -37,7 +37,7 @@ export const useStore = create((set, get) => ({
     { id: 'c1', name: 'Beam B1', lx: 6000, ly: 400, lz: 600, x: 0, y: 0, z: 0 },
   ],
   bars: [
-    { ...defaultBar('straight', 1), Bar_mark: 'SETC_149', 'Length of Bar': 3000 },
+    { ...defaultBar('straight', 1), host: 'c1', Bar_mark: 'SETC_149', 'Length of Bar': 3000 },
   ],
   selectedBar: 0,
   showConcrete: true,
@@ -54,8 +54,15 @@ export const useStore = create((set, get) => ({
 
   addBar: (type) => {
     tagSeq = Math.max(tagSeq + 1, get().bars.length + 1);
-    set((s) => withHist(s, { bars: [...s.bars, defaultBar(type, tagSeq)], selectedBar: s.bars.length }));
+    const concs = get().concretes;
+    const defaultHost = concs.length > 0 ? concs[0].id : null;
+    const bar = { ...defaultBar(type, tagSeq), host: defaultHost };
+    set((s) => withHist(s, { bars: [...s.bars, bar], selectedBar: s.bars.length }));
   },
+  appendBars: (newBars) => set((s) => withHist(s, {
+    bars: [...s.bars, ...newBars],
+    selectedBar: s.bars.length,
+  })),
   updateBar: (idx, patch) => set((s) => withHist(s, {
     bars: s.bars.map((b, i) => (i === idx ? { ...b, ...patch } : b)),
   })),
@@ -63,6 +70,76 @@ export const useStore = create((set, get) => ({
   replaceBar: (idx, bar) => set((s) => withHist(s, {
     bars: s.bars.map((b, i) => (i === idx ? bar : b)),
   })),
+  duplicateBar: (idx) => {
+    const s = get();
+    const targetIdx = idx != null ? idx : s.selectedBar;
+    const bar = s.bars[targetIdx];
+    if (!bar) return;
+    const maxTag = s.bars.reduce((max, b) => Math.max(max, Number(b.Rebar_tag) || 0), 0);
+    const newTag = maxTag + 1;
+    let newMark = bar.Bar_mark || `B${newTag}`;
+    const match = String(newMark).match(/^(.*?)(\d+)$/);
+    if (match) {
+      const prefix = match[1];
+      const num = parseInt(match[2], 10) + 1;
+      const padded = String(num).padStart(match[2].length, '0');
+      newMark = `${prefix}${padded}`;
+    } else {
+      newMark = `${newMark}_copy`;
+    }
+    const newBar = {
+      ...structuredClone(bar),
+      Rebar_tag: newTag,
+      Bar_mark: newMark,
+    };
+    const insertIdx = targetIdx + 1;
+    const newBars = [...s.bars];
+    newBars.splice(insertIdx, 0, newBar);
+    set((state) => withHist(state, {
+      bars: newBars,
+      selectedBar: insertIdx,
+    }));
+  },
+  clipboardBar: null,
+  copyBar: (idx) => {
+    const s = get();
+    const targetIdx = idx != null ? idx : s.selectedBar;
+    const bar = s.bars[targetIdx];
+    if (bar) {
+      set({ clipboardBar: structuredClone(bar) });
+    }
+  },
+  pasteBar: () => {
+    const s = get();
+    const clip = s.clipboardBar;
+    if (!clip) return;
+    const maxTag = s.bars.reduce((max, b) => Math.max(max, Number(b.Rebar_tag) || 0), 0);
+    const newTag = maxTag + 1;
+    let newMark = clip.Bar_mark || `B${newTag}`;
+    const match = String(newMark).match(/^(.*?)(\d+)$/);
+    if (match) {
+      const prefix = match[1];
+      const num = parseInt(match[2], 10) + 1;
+      const padded = String(num).padStart(match[2].length, '0');
+      newMark = `${prefix}${padded}`;
+    } else {
+      newMark = `${newMark}_copy`;
+    }
+    const newBar = {
+      ...structuredClone(clip),
+      Rebar_tag: newTag,
+      Bar_mark: newMark,
+    };
+    const insertIdx = s.selectedBar != null && s.selectedBar >= 0 && s.selectedBar < s.bars.length
+      ? s.selectedBar + 1
+      : s.bars.length;
+    const newBars = [...s.bars];
+    newBars.splice(insertIdx, 0, newBar);
+    set((state) => withHist(state, {
+      bars: newBars,
+      selectedBar: insertIdx,
+    }));
+  },
   removeBar: (idx) => set((s) => withHist(s, {
     bars: s.bars.filter((_, i) => i !== idx),
     selectedBar: Math.max(0, s.selectedBar - 1),
@@ -344,6 +421,9 @@ export const useStore = create((set, get) => ({
   // Scene consumes {dir, n} and keeps the current orbit target (focus stays).
   viewReq: null,
   requestView: (dir) => set({ viewReq: { dir, n: Date.now() } }),
+  // Fit / Zoom to Selected (bar / concrete / all) view request
+  fitReq: null,
+  requestFit: (target = 'auto', idOrIdx = null) => set({ fitReq: { target, idOrIdx, n: Date.now() } }),
   perf: { fps: 0, dist: 0 },
   setPerf: (fps, dist) => set((s) => {
     if (Math.abs(s.perf.fps - fps) < 1 && Math.abs(s.perf.dist - dist) / Math.max(dist, 1e-6) < 0.05) return {};

@@ -265,6 +265,81 @@ export function barOverlapsBoxes(bar, boxes) {
   );
 }
 
+// Determines the associated concrete member ID ('c1', etc.) for a rebar.
+// Matches by explicit ID, name, Member/Concrete_element column, group, or spatial bounding box containment.
+export function resolveBarHost(bar, concretes = []) {
+  if (!bar || !concretes || !concretes.length) return null;
+
+  // 1. Direct match on bar.host by ID
+  if (bar.host) {
+    const direct = concretes.find((c) => c.id === bar.host);
+    if (direct) return direct.id;
+    // Match by name
+    const byName = concretes.find((c) => c.name && c.name.toLowerCase() === String(bar.host).toLowerCase());
+    if (byName) return byName.id;
+    // Match by ID case-insensitive
+    const byIdCase = concretes.find((c) => c.id && c.id.toLowerCase() === String(bar.host).toLowerCase());
+    if (byIdCase) return byIdCase.id;
+  }
+
+  // 2. Match by Concrete_element or Member fields (from CSV or FreeCAD)
+  const candidateName = bar.Concrete_element || bar.Concrete || bar.Member || bar.host_name;
+  if (candidateName) {
+    const str = String(candidateName).trim().toLowerCase();
+    const matched = concretes.find((c) =>
+      c.id?.toLowerCase() === str || c.name?.toLowerCase() === str
+    );
+    if (matched) return matched.id;
+  }
+
+  // 3. Match if bar.Group matches a concrete member name or ID
+  if (bar.Group) {
+    const grp = String(bar.Group).trim().toLowerCase();
+    const byGrp = concretes.find((c) => c.id?.toLowerCase() === grp || c.name?.toLowerCase() === grp);
+    if (byGrp) return byGrp.id;
+  }
+
+  // 4. Spatial bounding-box check: does the bar lie within / overlap a concrete element?
+  try {
+    const bb = barAppBox(bar);
+    if ([bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ].every(Number.isFinite)) {
+      const midX = (bb.minX + bb.maxX) / 2;
+      const midY = (bb.minY + bb.maxY) / 2;
+      const midZ = (bb.minZ + bb.maxZ) / 2;
+
+      // Check containment of bar centroid with a generous margin (e.g. 100mm tolerance for cover/hooks)
+      for (const c of concretes) {
+        const margin = 100;
+        const cMinX = c.x - margin, cMaxX = c.x + c.lx + margin;
+        const cMinY = c.y - margin, cMaxY = c.y + c.ly + margin;
+        const cMinZ = c.z - margin, cMaxZ = c.z + c.lz + margin;
+
+        if (midX >= cMinX && midX <= cMaxX &&
+            midY >= cMinY && midY <= cMaxY &&
+            midZ >= cMinZ && midZ <= cMaxZ) {
+          return c.id;
+        }
+      }
+
+      // Check standard bounding box intersection
+      for (const c of concretes) {
+        if (bb.minX <= (c.x + c.lx) && bb.maxX >= c.x &&
+            bb.minY <= (c.y + c.ly) && bb.maxY >= c.y &&
+            bb.minZ <= (c.z + c.lz) && bb.maxZ >= c.z) {
+          return c.id;
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 5. If only 1 concrete element exists in the whole project, associate by default
+  if (concretes.length === 1) {
+    return concretes[0].id;
+  }
+
+  return null;
+}
+
 // Main straight run length (mm) of a longitudinal bar (straight, bent, crank, double_crank)
 export function barMainLength(bar) {
   switch (bar?.Rebar_Type) {
