@@ -3,7 +3,7 @@
 // and dispatches to place_*_from_csv. We export the union header so the
 // file can be consumed directly, and accept any of the gen_* templates.
 
-import { genBarPoints, distCount } from './shapes.js';
+import { genBarPoints, distCount, getBentDefaults } from './shapes.js';
 import { barWeightKg } from './calc.js';
 
 export const SHAPE_CODES = {
@@ -32,17 +32,29 @@ export function getShapeParameters(bar) {
       B = Number(bar.H || 800);
       break;
     case 'c_link':
-    case 'clink':
-      A = Number(bar.c_length_a || 600);
-      B = Number(bar.c_length_b || 400);
-      C = Number(bar.c_length_a || 600);
+    case 'clink': {
+      const defs = getBentDefaults(dia);
+      A = Number(bar.c_length_a || defs.H);
+      B = Number(bar.length || bar['Length of Bar'] || 1000);
+      C = Number(bar.c_length_b || defs.H);
       break;
-    case 'c_link_with_hook':
-      A = Number(bar.c_length_a || 600);
-      B = Number(bar.c_length_b || 400);
-      C = Number(bar.c_length_a || 600);
-      D = Math.round(Number(bar.double_hook || 10) * dia);
+    }
+    case 'c_link_with_hook': {
+      const isDouble = String(bar.double_hook || 'no').toLowerCase() === 'yes';
+      const defs = getBentDefaults(dia);
+      const hookReturn = Math.round(10 * dia);
+      const defaultC = (dia === 16 ? 130 : dia === 13 ? 130 : (defs.U || 130));
+      const hookC = Number(bar.c_length_b) || defaultC;
+      const lenA = Number(bar.c_length_a || defs.H);
+      const L = Number(bar.length || bar['Length of Bar'] || 1000);
+      const hook6d = Math.round(6 * dia);
+
+      A = isDouble ? hook6d : lenA;
+      B = L;
+      C = hookC;
+      D = hookReturn;
       break;
+    }
     case 'crank':
       A = Math.round(Number(bar.Long_length || 4000) * 0.4);
       B = Number(bar.Crank_step || 300);
@@ -150,7 +162,8 @@ export function toBbsBenchmarkCsv(bars, concretes = []) {
   for (const r of rows) {
     const member = (r.host && concMap.get(r.host)) || r.Group || 'Free';
     const mark = r.Bar_mark || `B${r.Rebar_tag || 1}`;
-    const type = r.Rebar_Type || 'straight';
+    const isDoubleHook = (r.Rebar_Type || '').toLowerCase() === 'c_link_with_hook' && String(r.double_hook || 'no').toLowerCase() === 'yes';
+    const type = isDoubleHook ? 'c_link_with_hook (double hook)' : (r.Rebar_Type || 'straight');
     const dia = Number(r.Dia || 16);
     const sets = Math.max(1, Math.floor(Number(r.qty) || 1));
     const each = Math.max(1, Math.floor(Number(r.qty_x || 1) * Number(r.qty_y || 1)));
@@ -231,14 +244,14 @@ export function parseCsv(text) {
     for (const k of ['Rebar_tag', 'Shape_Code', 'Dia', 'Pos_x', 'Pos_y', 'Pos_z', 'Pos_Rotation', 'plan_rotation', 'qty',
       'qty_x', 'spacing_x', 'qty_y', 'spacing_y', 'offset_x', 'offset_y', 'offset_z',
       'Length of Bar', 'H', 'Long_length', 'Crank_step', 'Length of Lap',
-      'DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length', 'c_length_a', 'c_length_b', 'length', 'double_hook',
+      'DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length', 'c_length_a', 'c_length_b', 'length',
       'Visible']) {
       if (o[k] !== '' && o[k] !== undefined && !isNaN(Number(o[k]))) o[k] = Number(o[k]);
     }
     if (o.Plane === '0' || o.Plane === 0) o.Plane = 'XY';
     else if (o.Plane === '1' || o.Plane === 1) o.Plane = 'XZ';
     else if (o.Plane === '2' || o.Plane === 2) o.Plane = 'YZ';
-    else if (!o.Plane) o.Plane = (o.Rebar_Type === 'c_link' || o.Rebar_Type === 'c_link_with_hook') ? 'YZ' : 'XZ';
+    else if (!o.Plane) o.Plane = 'XZ';
 
     if (Number(o.Visible) === 0) o.hidden = true;
     delete o.Visible;

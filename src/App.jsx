@@ -63,7 +63,11 @@ function BarEditor() {
     <div className="panel">
       <label className="fld"><span>Selected bar ({bars.length} total)</span>
         <select value={idx} onChange={(e) => selectBar(Number(e.target.value))}>
-          {bars.map((b, i) => <option key={i} value={i}>{b.Bar_mark} · {b.Rebar_Type} · Ø{b.Dia}</option>)}
+          {bars.map((b, i) => (
+            <option key={i} value={i}>
+              {b.Bar_mark} · {b.Rebar_Type === 'c_link_with_hook' && String(b.double_hook || 'no').toLowerCase() === 'yes' ? 'c_link (double hook)' : b.Rebar_Type} · Ø{b.Dia}
+            </option>
+          ))}
         </select>
       </label>
       <div className="row2">
@@ -85,6 +89,13 @@ function BarEditor() {
           <select value={bar[f] ?? 'up'} onChange={(e) => set(f, e.target.value)}>
             <option value="up">up</option>
             <option value="down">down</option>
+          </select>
+        </label>
+      ) : f === 'double_hook' ? (
+        <label key={f} className="fld"><span>double_hook</span>
+          <select value={bar[f] ?? 'no'} onChange={(e) => set(f, e.target.value)}>
+            <option value="no">no (single hook)</option>
+            <option value="yes">yes (double hook)</option>
           </select>
         </label>
       ) : (
@@ -517,6 +528,7 @@ function ViewportBar() {
   const setShading = useStore((s) => s.setShading);
   const navMode = useStore((s) => s.navMode);
   const setNavMode = useStore((s) => s.setNavMode);
+  const requestView = useStore((s) => s.requestView);
   const section = useStore((s) => s.section);
   const toggleSection = useStore((s) => s.toggleSection);
   const fitSectionToIfc = useStore((s) => s.fitSectionToIfc);
@@ -548,6 +560,19 @@ function ViewportBar() {
           <button className={navMode === 'select' ? 'on' : ''} onClick={() => setNavMode('select')} title="LMB selects bars/IFC (orbit with MMB)">Select</button>
           <button className={navMode === 'orbit' ? 'on' : ''} onClick={() => setNavMode('orbit')} title="LMB orbits the view">Orbit</button>
         </span>
+        <label className="cover" title="Blender-style preset view — jumps the camera, keeps the orbit focus. The axis gizmo top-right does the same on click.">
+          view
+          <select defaultValue="" onChange={(e) => { if (e.target.value) requestView(e.target.value); e.target.value = ''; }}>
+            <option value="" disabled>Iso ▾</option>
+            <option value="top">Top</option>
+            <option value="bottom">Bottom</option>
+            <option value="front">Front</option>
+            <option value="back">Back</option>
+            <option value="left">Left</option>
+            <option value="right">Right</option>
+            <option value="iso">Iso</option>
+          </select>
+        </label>
         <button className={section?.enabled ? 'on' : ''} onClick={toggleSection} title="Revit-style section box: push/pull faces, move or rotate gizmo">◫ Section</button>
         {section?.enabled && (
           <span className="seg">
@@ -635,7 +660,8 @@ function BbsStrip() {
             {rows.map((r, i) => (
               <tr key={i} className={(i === selectedBar ? 'sel' : '') + (r.hidden ? ' hidden' : '')} onClick={() => selectBar(i)}>
                 <td onClick={(e) => e.stopPropagation()}><button className="ghost sm" title={r.hidden ? 'Show bar' : 'Hide bar (stays in BBS + CSV)'} onClick={() => updateBar(i, { hidden: r.hidden ? undefined : true })}>{r.hidden ? '🚫' : '👁'}</button></td>
-                <td>{r.Rebar_tag}</td><td>{r.Bar_mark}</td><td>{r.Rebar_Type}</td>
+                <td>{r.Rebar_tag}</td><td>{r.Bar_mark}</td>
+                <td>{r.Rebar_Type === 'c_link_with_hook' ? (String(r.double_hook || 'no').toLowerCase() === 'yes' ? 'c_link_with_hook (double)' : 'c_link_with_hook (single)') : r.Rebar_Type}</td>
                 <td><span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: 4, fontWeight: 600, color: '#67e8f9' }}>{SHAPE_CODES[(r.Rebar_Type || '').toLowerCase()] || 20}</span></td>
                 <td>{r.Dia}</td><td>{r._copies}</td><td>{r._cut}</td><td>{r.Weight_kg}</td>
               </tr>

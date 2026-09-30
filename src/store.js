@@ -340,6 +340,10 @@ export const useStore = create((set, get) => ({
   // navMode: 'select' (LMB picks, MMB orbits) or 'orbit' (LMB orbits too).
   navMode: 'select',
   setNavMode: (v) => set({ navMode: v }),
+  // Preset view request (Blender-style Top/Bottom/Left/Right/Front/Back/Iso).
+  // Scene consumes {dir, n} and keeps the current orbit target (focus stays).
+  viewReq: null,
+  requestView: (dir) => set({ viewReq: { dir, n: Date.now() } }),
   perf: { fps: 0, dist: 0 },
   setPerf: (fps, dist) => set((s) => {
     if (Math.abs(s.perf.fps - fps) < 1 && Math.abs(s.perf.dist - dist) / Math.max(dist, 1e-6) < 0.05) return {};

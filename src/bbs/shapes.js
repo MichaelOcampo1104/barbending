@@ -13,6 +13,22 @@ export const REBAR_TYPES = [
   'c_link_with_hook',
 ];
 
+export const BENT_DEFAULTS = {
+  10: { r: 20, H: 120, U: 85 },
+  13: { r: 24, H: 125, U: 130 },
+  16: { r: 32, H: 130, U: 130 },
+  20: { r: 70, H: 190, U: 165 },
+  25: { r: 87, H: 240, U: 260 },
+  32: { r: 112, H: 305, U: 330 },
+  40: { r: 140, H: 380, U: 400 },
+  50: { r: 175, H: 475, U: 400 },
+};
+
+export function getBentDefaults(dia) {
+  const d = Math.round(Number(dia) || 16);
+  return BENT_DEFAULTS[d] || { r: d * 2, H: Math.max(100, d * 8), U: d * 10 };
+}
+
 export function genBarPoints(bar) {
   const d = Number(bar.Dia || 16);
   switch (bar.Rebar_Type) {
@@ -42,19 +58,56 @@ export function genBarPoints(bar) {
       return finish(pts, 2, d);
     }
     case 'c_link': {
-      // Closed rectangular stirrup a x b in local XY plane
-      const a = Number(bar.c_length_a || 600);
-      const b = Number(bar.c_length_b || 400);
-      const pts = [[0, 0, 0], [a, 0, 0], [a, b, 0], [0, b, 0], [0, 0, 0]];
-      return finish(pts, 4, d);
+      // FreeCAD Standard C-Link / U-Shape (place_c_link): Leg A (lenA) -> Spine (L) -> Leg B (lenB)
+      const defs = getBentDefaults(d);
+      const L = Number(bar.length || bar['Length of Bar'] || 1000);
+      const lenA = Number(bar.c_length_a ?? defs.H);
+      const lenB = Number(bar.c_length_b ?? defs.H);
+      const pts = [[0, lenA, 0], [0, 0, 0], [L, 0, 0], [L, lenB, 0]];
+      const totalLen = Math.round(lenA + L + lenB);
+      return { points: pts, bends90: 2, lengthMm: totalLen, cutLengthMm: totalLen };
     }
     case 'c_link_with_hook': {
-      // Stirrup with 135°-ish hooks (modelled as short extensions)
-      const a = Number(bar.c_length_a || 600);
-      const b = Number(bar.c_length_b || 400);
-      const hook = Number(bar.double_hook || 10) * d;
-      const pts = [[hook, hook, 0], [a, 0, 0], [a, b, 0], [0, b, 0], [0, 0, 0], [hook, hook, 0]];
-      return finish(pts, 5, d);
+      // FreeCAD C-Link with Hook (place_c_link_with_hook):
+      // Single Hook: Leg A (p1 -> p2) -> Spine (p2 -> p3_b) -> 180° Hook (p3_b -> p3_a -> p4)
+      // Double Hook: Left Hook (p1 -> p2_a -> p2_b) -> Spine (p2_b -> p3_b) -> Right Hook (p3_b -> p3_a -> p4)
+      const defs = getBentDefaults(d);
+      const L = Number(bar.length || bar['Length of Bar'] || 1000);
+      const lenA = Number(bar.c_length_a ?? defs.H);
+      const defaultC = (d === 16 ? 130 : d === 13 ? 130 : (defs.U || 130));
+      const hookC = Number(bar.c_length_b) || defaultC;
+      const hookWidth = hookC - d;
+      const isDouble = String(bar.double_hook || 'no').toLowerCase() === 'yes';
+
+      const hookReturn = Math.round(10 * d);
+      const hook6d = Math.round(6 * d);
+
+      // Single hook: A = lenA, B = L, C = hookC, D = hookReturn -> A + B + C + D
+      // Double hook: A = 6*d, B = L, C = hookC, D = hookReturn -> A*2 + B + C*2 + D*2
+      const totalLen = Math.round(
+        isDouble
+          ? (hook6d * 2 + L + hookC * 2 + hookReturn * 2)
+          : (lenA + L + hookC + hookReturn)
+      );
+
+      if (isDouble) {
+        const p1 = [hookReturn, hookWidth, 0];
+        const p2_a = [0, hookWidth, 0];
+        const p2_b = [0, 0, 0];
+        const p3_b = [L, 0, 0];
+        const p3_a = [L, hookWidth, 0];
+        const p4 = [Math.max(0, L - hookReturn), hookWidth, 0];
+        const pts = [p1, p2_a, p2_b, p3_b, p3_a, p4];
+        return { points: pts, bends90: 4, lengthMm: totalLen, cutLengthMm: totalLen };
+      } else {
+        const p1 = [0, lenA, 0];
+        const p2 = [0, 0, 0];
+        const p3_b = [L, 0, 0];
+        const p3_a = [L, hookWidth, 0];
+        const p4 = [Math.max(0, L - hookReturn), hookWidth, 0];
+        const pts = [p1, p2, p3_b, p3_a, p4];
+        return { points: pts, bends90: 3, lengthMm: totalLen, cutLengthMm: totalLen };
+      }
     }
     case 'straight':
     default: {
@@ -80,17 +133,17 @@ export function defaultBar(type, tag = 1) {
     Rebar_Type: type,
     Dia: 16,
     Pos_x: 0, Pos_y: 0, Pos_z: 0,
-    Group: 'HRB3DB_bt',
+    Group: isStirrup ? 'C_Links_Hook' : 'HRB3DB_bt',
     Pos_Rotation: 0,
-    Plane: isStirrup ? 'YZ' : 'XZ',
+    Plane: 'XZ',
     qty: 1,
   };
   switch (type) {
     case 'bent': return { ...base, 'Length of Bar': 3000, H: 800, bent_up_down: 'up' };
     case 'crank': return { ...base, Long_length: 4000, Crank_step: 300, 'Length of Lap': 500 };
     case 'double_crank': return { ...base, DC_Lap_Start: 1000, DC_Lap_Mid: 2000, DC_Tail_Length: 1000, Crank_step: 300 };
-    case 'c_link': return { ...base, c_length_a: 600, c_length_b: 400, length: 2000, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150 };
-    case 'c_link_with_hook': return { ...base, c_length_a: 600, c_length_b: 400, length: 2000, double_hook: 10, qty_x: 1, spacing_x: 150 };
+    case 'c_link': return { ...base, length: 1000, c_length_a: 130, c_length_b: 130, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150 };
+    case 'c_link_with_hook': return { ...base, length: 1000, c_length_a: 130, c_length_b: 130, double_hook: 'no', qty_x: 1, spacing_x: 150, qty_y: 5, spacing_y: 200 };
     default: return { ...base, 'Length of Bar': 3000, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150 };
   }
 }
@@ -102,8 +155,8 @@ export const DIM_FIELDS_BY_TYPE = {
   bent: ['Length of Bar', 'H', 'bent_up_down'],
   crank: ['Long_length', 'Crank_step', 'Length of Lap'],
   double_crank: ['DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length', 'Crank_step'],
-  c_link: ['c_length_a', 'c_length_b', 'length'],
-  c_link_with_hook: ['c_length_a', 'c_length_b', 'length', 'double_hook'],
+  c_link: ['length', 'c_length_a', 'c_length_b'],
+  c_link_with_hook: ['length', 'c_length_a', 'c_length_b', 'double_hook'],
 };
 
 const ALL_DIM_FIELDS = [...new Set(Object.values(DIM_FIELDS_BY_TYPE).flat())];

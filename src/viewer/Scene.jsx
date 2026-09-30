@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, Grid, AdaptiveDpr, Line, Html } from '@react-three/drei';
+import { OrbitControls, Grid, AdaptiveDpr, Line, Html, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
 import { genBarPoints, transformBarLocalPoint, distOffsets, barOverlapsBoxes, rebarSnapNodes, concreteSnapNodes, allSnapNodes, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES } from '../bbs/shapes.js';
@@ -708,6 +708,33 @@ function ConcreteMesh({ c }) {
   );
 }
 
+// Preset views (Blender-style, app frame): Top/Bottom look along app Z
+// (scene ±Y), Front/Back along app Y (scene ∓Z), Left/Right along app X
+// (scene ±X). Keeps the current orbit target so model focus never jumps.
+function ViewPreset() {
+  const viewReq = useStore((s) => s.viewReq);
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls);
+  useEffect(() => {
+    if (!viewReq || !controls) return;
+    const t = controls.target;
+    const d = Math.max(camera.position.distanceTo(t), 1);
+    const e = Math.max(d * 0.002, 0.001); // epsilon avoids gimbal lock
+    const off = {
+      top: [0, d, e],
+      bottom: [0, -d, e],
+      front: [0, e, -d],
+      back: [0, e, d],
+      right: [d, e, 0],
+      left: [-d, e, 0],
+      iso: [d * 0.55, d * 0.45, -d * 0.62],
+    }[viewReq.dir] || [d * 0.55, d * 0.45, -d * 0.62];
+    camera.position.set(t.x + off[0], t.y + off[1], t.z + off[2]);
+    controls.update();
+  }, [viewReq, controls, camera]);
+  return null;
+}
+
 export default function Scene() {
   const concretes = useStore((s) => s.concretes);
   const bars = useStore((s) => s.bars);
@@ -782,6 +809,12 @@ export default function Scene() {
       <FitIfc />
       <AutoClipping />
       <DiveZoom />
+      <ViewPreset />
+      {/* Blender-style orientation gizmo: click an axis tip for
+          Top/Bottom/Left/Right/Front/Back, drag to orbit. */}
+      <GizmoHelper alignment="top-right" margin={[70, 70]}>
+        <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="white" />
+      </GizmoHelper>
       <TraceTool />
       <PickHandler />
       <MeasureHandler />
