@@ -162,6 +162,9 @@ export function toBbsBenchmarkCsv(bars, concretes = []) {
   const lines = ['Bar Bending Schedule', BBS_BENCHMARK_HEADERS.join(',')];
   const diaTotals = {};
 
+  // Group by Member + Bar Mark to accumulate identical bar marks
+  const grouped = new Map();
+
   for (const r of rows) {
     const member = (r.host && concMap.get(r.host)) || r.Group || 'Free';
     const mark = r.Bar_mark || `B${r.Rebar_tag || 1}`;
@@ -172,32 +175,65 @@ export function toBbsBenchmarkCsv(bars, concretes = []) {
     const each = Math.max(1, Math.floor(Number(r.qty_x || 1) * Number(r.qty_y || 1)));
     const totalBars = r._copies || (sets * each);
     const cutLenMm = r._cut || 0;
-    const totalLenM = +( (totalBars * cutLenMm) / 1000 ).toFixed(3);
     const weightKg = r.Weight_kg || 0;
 
     const { shapeCode, A, B, C, D, E } = getShapeParameters(r);
 
-    if (!diaTotals[dia]) {
-      diaTotals[dia] = { lengthM: 0, weightKg: 0 };
+    // Grouping key by Member and Bar Mark (and Dia/Cut to guarantee identical fabrication profile)
+    const key = `${member}:::${mark}:::${dia}:::${cutLenMm}`;
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        member,
+        mark,
+        type,
+        dia,
+        noOfMembers: sets,
+        barsInEach: each * sets,
+        totalBars,
+        cutLenMm,
+        shapeCode,
+        A,
+        B,
+        C,
+        D,
+        E,
+        totalWeightKg: weightKg,
+      });
+    } else {
+      const g = grouped.get(key);
+      g.barsInEach += each * sets;
+      g.totalBars += totalBars;
+      g.totalWeightKg += weightKg;
+      g.noOfMembers = 1;
     }
-    diaTotals[dia].lengthM += totalLenM;
-    diaTotals[dia].weightKg += weightKg;
+  }
+
+  for (const g of grouped.values()) {
+    const totalLenM = +( (g.totalBars * g.cutLenMm) / 1000 ).toFixed(3);
+    const weightKg = +g.totalWeightKg.toFixed(2);
+
+    if (!diaTotals[g.dia]) {
+      diaTotals[g.dia] = { lengthM: 0, weightKg: 0 };
+    }
+    diaTotals[g.dia].lengthM += totalLenM;
+    diaTotals[g.dia].weightKg += weightKg;
 
     const rowData = [
-      member,
-      mark,
-      type,
-      dia,
-      sets,
-      each,
-      totalBars,
-      cutLenMm,
-      shapeCode,
-      A,
-      B,
-      C,
-      D,
-      E,
+      g.member,
+      g.mark,
+      g.type,
+      g.dia,
+      g.noOfMembers,
+      g.barsInEach,
+      g.totalBars,
+      g.cutLenMm,
+      g.shapeCode,
+      g.A,
+      g.B,
+      g.C,
+      g.D,
+      g.E,
       totalLenM,
       weightKg,
     ];
@@ -234,6 +270,50 @@ export function downloadBbsCsv(bars, concretes = [], filename = 'bar_bending_sch
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
+// Generate a unique signature for a bar based on its diameter, type, shape dimensions, and cut length.
+export function getBarShapeKey(bar, matchHost = false) {
+  const dia = Number(bar.Dia || 16);
+  const type = (bar.Rebar_Type || 'straight').toLowerCase();
+  const { shapeCode, A, B, C, D, E } = getShapeParameters(bar);
+  const pts = genBarPoints(bar);
+  const cut = pts?.cutLengthMm || 0;
+  const extra = [];
+  if (type === 'bent') extra.push(String(bar.bent_up_down || 'up').toLowerCase());
+  if (type === 'c_link_with_hook') extra.push(String(bar.double_hook || 'no').toLowerCase());
+
+  const hostPart = matchHost && bar.host ? `host:${bar.host}|` : '';
+  return `${hostPart}type:${type}|dia:${dia}|sc:${shapeCode}|A:${A}|B:${B}|C:${C}|D:${D}|E:${E}|cut:${cut}|${extra.join('|')}`;
+}
+
+// Auto-assign / consolidate bar marks across a list of bars based on identical shape, diameter, and length
+export function autoAssignBarMarks(bars, { scopeByHost = false } = {}) {
+  const sigMap = new Map();
+  let globalSeq = 1;
+  const hostSeqMap = new Map();
+
+  return bars.map((b) => {
+    const hostKey = scopeByHost && b.host ? b.host : 'all';
+    const sig = getBarShapeKey(b, scopeByHost);
+
+    if (sigMap.has(sig)) {
+      return { ...b, Bar_mark: sigMap.get(sig) };
+    }
+
+    let mark = b.Bar_mark;
+    if (!mark) {
+      if (scopeByHost && b.host) {
+        let seq = hostSeqMap.get(hostKey) || 1;
+        hostSeqMap.set(hostKey, seq + 1);
+        mark = `B${seq}`;
+      } else {
+        mark = `B${globalSeq++}`;
+      }
+    }
+    sigMap.set(sig, mark);
+    return { ...b, Bar_mark: mark };
+  });
+}
+
 // Minimal CSV parser (handles quotes) -> array of objects
 export function parseCsv(text, existingBars = [], concretes = []) {
   const lines = text.trim().split(/\r?\n/);
@@ -245,16 +325,26 @@ export function parseCsv(text, existingBars = [], concretes = []) {
 
   // Track mark numbering sequence per host concrete element
   const markSeqByHost = new Map();
+  // Map identical bar signatures to known Bar_marks
+  const signatureToMarkMap = new Map();
+
   for (const b of existingBars || []) {
-    if (b.host && b.Bar_mark) {
-      const m = String(b.Bar_mark).match(/^([A-Za-z_-]+)(\d+)$/);
-      if (m) {
-        const prefix = m[1];
-        const num = parseInt(m[2], 10);
-        const numLen = m[2].length;
-        const cur = markSeqByHost.get(b.host);
-        if (!cur || num > cur.num) {
-          markSeqByHost.set(b.host, { prefix, num, numLen });
+    if (b.Bar_mark) {
+      const sigHost = getBarShapeKey(b, true);
+      const sigGlobal = getBarShapeKey(b, false);
+      if (b.host) signatureToMarkMap.set(sigHost, b.Bar_mark);
+      if (!signatureToMarkMap.has(sigGlobal)) signatureToMarkMap.set(sigGlobal, b.Bar_mark);
+
+      if (b.host) {
+        const m = String(b.Bar_mark).match(/^([A-Za-z_-]+)(\d+)$/);
+        if (m) {
+          const prefix = m[1];
+          const num = parseInt(m[2], 10);
+          const numLen = m[2].length;
+          const cur = markSeqByHost.get(b.host);
+          if (!cur || num > cur.num) {
+            markSeqByHost.set(b.host, { prefix, num, numLen });
+          }
         }
       }
     }
@@ -288,41 +378,18 @@ export function parseCsv(text, existingBars = [], concretes = []) {
       }
     }
 
-    // Auto-generate Rebar_tag if blank or 0
-    if (!o.Rebar_tag || isNaN(Number(o.Rebar_tag))) {
-      currentMaxTag += 1;
-      o.Rebar_tag = currentMaxTag;
+    // Default Plane to 'XY' (horizontal plane) when inserting from CSV
+    const planeRaw = String(o.Plane ?? '').toUpperCase().trim();
+    if (planeRaw === '0' || planeRaw === 'XY' || planeRaw === 'TOP' || planeRaw === 'HORIZONTAL' || planeRaw === 'SLAB') {
+      o.Plane = 'XY';
+    } else if (planeRaw === '1' || planeRaw === 'XZ' || planeRaw === 'FRONT' || planeRaw === 'VERTICAL') {
+      o.Plane = 'XZ';
+    } else if (planeRaw === '2' || planeRaw === 'YZ' || planeRaw === 'SIDE' || planeRaw === 'CROSS') {
+      o.Plane = 'YZ';
     } else {
-      currentMaxTag = Math.max(currentMaxTag, Number(o.Rebar_tag));
+      // Default plane is XY
+      o.Plane = 'XY';
     }
-
-    // Auto-generate Bar_mark if blank: follow host pattern or default B{tag}
-    if (!o.Bar_mark) {
-      if (o.host && markSeqByHost.has(o.host)) {
-        const entry = markSeqByHost.get(o.host);
-        entry.num += 1;
-        o.Bar_mark = `${entry.prefix}${String(entry.num).padStart(entry.numLen, '0')}`;
-      } else {
-        o.Bar_mark = `B${o.Rebar_tag}`;
-      }
-    } else if (o.host) {
-      // Record mark pattern if row has an explicit mark
-      const m = String(o.Bar_mark).match(/^([A-Za-z_-]+)(\d+)$/);
-      if (m) {
-        const prefix = m[1];
-        const num = parseInt(m[2], 10);
-        const numLen = m[2].length;
-        const cur = markSeqByHost.get(o.host);
-        if (!cur || num > cur.num) {
-          markSeqByHost.set(o.host, { prefix, num, numLen });
-        }
-      }
-    }
-
-    if (o.Plane === '0' || o.Plane === 0) o.Plane = 'XY';
-    else if (o.Plane === '1' || o.Plane === 1) o.Plane = 'XZ';
-    else if (o.Plane === '2' || o.Plane === 2) o.Plane = 'YZ';
-    else if (!o.Plane) o.Plane = 'XZ';
 
     if (o.bond_condition) {
       o.bond_condition = String(o.bond_condition).toLowerCase();
@@ -338,6 +405,55 @@ export function parseCsv(text, existingBars = [], concretes = []) {
     delete o.Visible;
     if (!o.Rebar_Type) o.Rebar_Type = 'straight';
     if (!o.qty) o.qty = 1;
+
+    // Auto-generate Rebar_tag if blank or 0
+    if (!o.Rebar_tag || isNaN(Number(o.Rebar_tag))) {
+      currentMaxTag += 1;
+      o.Rebar_tag = currentMaxTag;
+    } else {
+      currentMaxTag = Math.max(currentMaxTag, Number(o.Rebar_tag));
+    }
+
+    // Detect identical bar shape & length to assign identical Bar_mark
+    const shapeKeyWithHost = getBarShapeKey(o, true);
+    const shapeKeyGlobal = getBarShapeKey(o, false);
+
+    if (o.Bar_mark) {
+      // Record explicit Bar_mark for subsequent identical bars
+      if (o.host) signatureToMarkMap.set(shapeKeyWithHost, o.Bar_mark);
+      if (!signatureToMarkMap.has(shapeKeyGlobal)) signatureToMarkMap.set(shapeKeyGlobal, o.Bar_mark);
+
+      if (o.host) {
+        const m = String(o.Bar_mark).match(/^([A-Za-z_-]+)(\d+)$/);
+        if (m) {
+          const prefix = m[1];
+          const num = parseInt(m[2], 10);
+          const numLen = m[2].length;
+          const cur = markSeqByHost.get(o.host);
+          if (!cur || num > cur.num) {
+            markSeqByHost.set(o.host, { prefix, num, numLen });
+          }
+        }
+      }
+    } else {
+      // Look up if an identical bar already has an assigned Bar_mark
+      const existingMark = (o.host && signatureToMarkMap.get(shapeKeyWithHost)) || signatureToMarkMap.get(shapeKeyGlobal);
+      if (existingMark) {
+        o.Bar_mark = existingMark;
+      } else {
+        // Generate new sequential Bar_mark
+        if (o.host && markSeqByHost.has(o.host)) {
+          const entry = markSeqByHost.get(o.host);
+          entry.num += 1;
+          o.Bar_mark = `${entry.prefix}${String(entry.num).padStart(entry.numLen, '0')}`;
+        } else {
+          o.Bar_mark = `B${o.Rebar_tag}`;
+        }
+        // Register newly generated mark for any subsequent identical bars
+        if (o.host) signatureToMarkMap.set(shapeKeyWithHost, o.Bar_mark);
+        signatureToMarkMap.set(shapeKeyGlobal, o.Bar_mark);
+      }
+    }
 
     result.push(o);
   }

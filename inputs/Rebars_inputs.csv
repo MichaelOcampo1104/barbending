@@ -1,3 +1,4 @@
 ﻿Rebar_Type,Rebar_tag,Bar_mark,Dia,Pos_x,Pos_y,Pos_z,Group,Concrete_element,Pos_Rotation,plan_rotation,Length of Bar,H,bent_up_down,bond_condition,lapping_bar,staggered,couplera,transition_couplera,rotation_xy_Plan,Length of Lap,Crank_step,Long_length,DC_Lap_Start,DC_Lap_Mid,DC_Tail_Length,qty_x,spacing_x,qty_y,spacing_y,length,c_length_a,c_length_b,feature,double_hook,Plane,Total Length
-straight,,,40,100,200,200,HRB6_S,Beam B1,270,,9550,,,GOOD,,0,,,,,,,,,,,,,,,,,,,,
-bent,,,40,300,400,200,HRB6_B,Beam B1,90,,3280,560,down,POOR,,0,,,,,,,,,,,,,,,,,,,,
+straight,,,40,100,200,200,HRB6_S,Slab B1,270,,9550,,,GOOD,,0,,,,,,,,,,,,,,,,,,,XY,
+bent,,,40,300,400,200,HRB6_B,Slab B1,90,,3280,560,down,POOR,,0,,,,,,,,,,,,,,,,,,,XY,
+bent,,,40,300,400,205,HRB6_B,Slab B1,90,,3280,560,down,POOR,,0,,,,,,,,,,,,,,,,,,,,

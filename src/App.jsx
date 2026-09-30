@@ -3,7 +3,7 @@ import Scene from './viewer/Scene.jsx';
 import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
 import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost } from './bbs/shapes.js';
-import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES } from './bbs/csv.js';
+import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES, autoAssignBarMarks } from './bbs/csv.js';
 import { lapLengthMm } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
@@ -87,7 +87,10 @@ function BarEditor() {
       )}
       <div className="row2">
         <label className="fld"><span>Shape type — switch anytime</span>
-          <select value={bar.Rebar_Type} onChange={(e) => replaceBar(idx, applyTypeDefaults(bar, e.target.value))}>
+          <select value={bar.Rebar_Type} onChange={(e) => {
+            const hostObj = concretes.find((c) => c.id === resolveBarHost(bar, concretes)) || null;
+            replaceBar(idx, applyTypeDefaults(bar, e.target.value, hostObj, cover));
+          }}>
             {REBAR_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </label>
@@ -257,9 +260,12 @@ function TypeGrid({ onAdd }) {
 
 function ConcreteEditor() {
   const concretes = useStore((s) => s.concretes);
+  const selectedConcrete = useStore((s) => s.selectedConcrete);
+  const selectConcrete = useStore((s) => s.selectConcrete);
   const addConcrete = useStore((s) => s.addConcrete);
   const updateConcrete = useStore((s) => s.updateConcrete);
   const removeConcrete = useStore((s) => s.removeConcrete);
+  const requestFit = useStore((s) => s.requestFit);
   const drawMode = useStore((s) => s.drawMode);
   const setDrawMode = useStore((s) => s.setDrawMode);
   const setShading = useStore((s) => s.setShading);
@@ -283,11 +289,17 @@ function ConcreteEditor() {
 
       <div className="sect">Concrete Elements ({concretes.length})</div>
       {concretes.map((c) => (
-        <div key={c.id} className={c.visible === false ? 'cbox hidden' : 'cbox'}>
+        <div
+          key={c.id}
+          className={(c.visible === false ? 'cbox hidden' : 'cbox') + (c.id === selectedConcrete ? ' sel' : '')}
+          onClick={() => selectConcrete(c.id)}
+          style={{ borderColor: c.id === selectedConcrete ? '#38bdf8' : undefined }}
+        >
           <div className="crow">
             <input className="cname" value={c.name} onChange={(e) => updateConcrete(c.id, { name: e.target.value })} />
-            <button className="sm" title={c.visible === false ? 'Show (bars inside reappear)' : 'Hide (bars inside hide too)'} onClick={() => updateConcrete(c.id, { visible: c.visible === false ? true : false })}>{c.visible === false ? '🚫' : '👁'}</button>
-            <button className="danger sm" onClick={() => removeConcrete(c.id)}>×</button>
+            <button className="sm ghost" title="Zoom to element" onClick={(e) => { e.stopPropagation(); selectConcrete(c.id); requestFit('concrete', c.id); }}>🎯</button>
+            <button className="sm" title={c.visible === false ? 'Show (bars inside reappear)' : 'Hide (bars inside hide too)'} onClick={(e) => { e.stopPropagation(); updateConcrete(c.id, { visible: c.visible === false ? true : false }); }}>{c.visible === false ? '🚫' : '👁'}</button>
+            <button className="danger sm" onClick={(e) => { e.stopPropagation(); removeConcrete(c.id); }}>×</button>
           </div>
           <div className="grid3">
             {[['lx', 'Lx'], ['ly', 'Ly'], ['lz', 'Hz']].map(([k, l]) => (
@@ -788,15 +800,18 @@ function BbsStrip() {
         )}
 
         <span className="btnrow inline">
+          <button className="ghost sm" onClick={() => setBars(autoAssignBarMarks(bars, { scopeByHost: elemFilter !== 'all' }))} title="Detect and unify bar marks for all bars with identical shape, diameter, and length">
+            🏷️ Match Marks
+          </button>
           <button style={{ background: '#059669', fontWeight: 600 }} onClick={() => downloadBbsCsv(exportBars, concretes, bbsFilename)} title={`Generate BBS Schedule CSV (${elemFilter === 'all' ? 'Entire Model' : filterLabel})`}>
             ⤓ BBS Schedule CSV {elemFilter !== 'all' ? `(${filterLabel})` : ''}
           </button>
           <button onClick={() => downloadCsv(exportBars, rebarFilename)} title={`Export FreeCAD parametric template CSV (${elemFilter === 'all' ? 'Entire Model' : filterLabel})`}>
             ⤓ rebar_scheduling.csv
           </button>
-          <button onClick={() => insertFileRef.current?.click()} title="Insert / Append rebars from CSV into existing concrete elements">+ Insert CSV</button>
+          <button onClick={() => insertFileRef.current?.click()} title="Insert / Append rebars from CSV into existing concrete elements (Defaults to XY plane)">+ Insert CSV</button>
           <input ref={insertFileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, true)} />
-          <button onClick={() => fileRef.current?.click()} title="Import and replace all bars in model">⤒ Replace CSV</button>
+          <button onClick={() => fileRef.current?.click()} title="Import and replace all bars in model (Defaults to XY plane)">⤒ Replace CSV</button>
           <input ref={fileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, false)} />
         </span>
         <span className="hint">Tip: Double-click any row to zoom · Press F to center</span>

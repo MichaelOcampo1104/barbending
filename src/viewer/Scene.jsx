@@ -913,7 +913,7 @@ export default function Scene() {
   return (
     <Canvas camera={{ position: [6, 4, -6], fov: 45 }} style={{ background: '#0f172a' }}
       dpr={[1, 1.75]}
-      gl={{ preserveDrawingBuffer: AUTOTEST, powerPreference: 'high-performance' }}
+      gl={{ preserveDrawingBuffer: AUTOTEST, powerPreference: 'high-performance', stencil: true }}
       onCreated={({ gl }) => {
         gl.localClippingEnabled = true;
         try {

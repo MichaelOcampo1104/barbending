@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { defaultBar, genBarPoints, barMainLength, barSpliceEnds } from './bbs/shapes.js';
+import { defaultBar, defaultBarForHost, resolveBarHost, genBarPoints, barMainLength, barSpliceEnds } from './bbs/shapes.js';
 import { lapLengthMm } from './bbs/calc.js';
 import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
 
@@ -40,9 +40,15 @@ export const useStore = create((set, get) => ({
     { ...defaultBar('straight', 1), host: 'c1', Bar_mark: 'SETC_149', 'Length of Bar': 3000 },
   ],
   selectedBar: 0,
+  selectedConcrete: 'c1',
   showConcrete: true,
 
-  addConcrete: (c) => set((s) => withHist(s, { concretes: [...s.concretes, { id: `c${Date.now()}`, ...c }] })),
+  selectConcrete: (id) => set({ selectedConcrete: id }),
+
+  addConcrete: (c) => set((s) => withHist(s, {
+    concretes: [...s.concretes, { id: `c${Date.now()}`, ...c }],
+    selectedConcrete: `c${Date.now()}`,
+  })),
   updateConcrete: (id, patch) => set((s) => withHist(s, {
     concretes: s.concretes.map((c) => (c.id === id ? { ...c, ...patch } : c)),
   })),
@@ -50,14 +56,22 @@ export const useStore = create((set, get) => ({
     concretes: s.concretes.filter((c) => c.id !== id),
     // bars hosted on the removed member become unhosted (stay visible)
     bars: s.bars.map((b) => (b.host === id ? { ...b, host: null } : b)),
+    selectedConcrete: s.selectedConcrete === id ? (s.concretes.find((c) => c.id !== id)?.id || null) : s.selectedConcrete,
   })),
 
-  addBar: (type) => {
+  addBar: (type, targetHostId = null) => {
     tagSeq = Math.max(tagSeq + 1, get().bars.length + 1);
-    const concs = get().concretes;
-    const defaultHost = concs.length > 0 ? concs[0].id : null;
-    const bar = { ...defaultBar(type, tagSeq), host: defaultHost };
-    set((s) => withHist(s, { bars: [...s.bars, bar], selectedBar: s.bars.length }));
+    const s = get();
+    const concs = s.concretes || [];
+    const activeBar = s.bars[s.selectedBar];
+    const hostId = targetHostId || s.selectedConcrete || (activeBar ? (resolveBarHost(activeBar, concs) || activeBar?.host) : null) || (concs.length > 0 ? concs[0].id : null);
+    const hostObj = concs.find((c) => c.id === hostId) || concs[0] || null;
+    const bar = defaultBarForHost(type, tagSeq, hostObj, s.cover);
+    set((state) => withHist(state, {
+      bars: [...state.bars, bar],
+      selectedBar: state.bars.length,
+      selectedConcrete: hostObj ? hostObj.id : state.selectedConcrete,
+    }));
   },
   appendBars: (newBars) => set((s) => withHist(s, {
     bars: [...s.bars, ...newBars],
@@ -145,7 +159,11 @@ export const useStore = create((set, get) => ({
     selectedBar: Math.max(0, s.selectedBar - 1),
   })),
   setBars: (bars) => set((s) => withHist(s, { bars, selectedBar: 0 })),
-  selectBar: (idx) => set({ selectedBar: idx }),
+  selectBar: (idx) => set((s) => {
+    const bar = s.bars[idx];
+    const host = bar ? (resolveBarHost(bar, s.concretes) || bar.host) : s.selectedConcrete;
+    return { selectedBar: idx, selectedConcrete: host || s.selectedConcrete };
+  }),
   toggleConcrete: () => set((s) => ({ showConcrete: !s.showConcrete })),
 
   // Undo/redo over the model (bars, concretes, selection, cover).

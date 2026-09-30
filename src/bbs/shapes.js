@@ -148,6 +148,163 @@ export function defaultBar(type, tag = 1) {
   }
 }
 
+// Generates a new rebar pre-fitted and snapped inside the active host concrete member.
+export function defaultBarForHost(type, tag = 1, host = null, cover = 30) {
+  const base = defaultBar(type, tag);
+  if (!host) return base;
+
+  const dia = Number(base.Dia || 16);
+  const cv = Number(cover) || 30;
+  const inset = cv + dia / 2;
+
+  const isBeamX = host.lx >= host.ly && host.lx >= host.lz;
+  const isColZ = host.lz > host.lx && host.lz > host.ly;
+  const isSlabXY = host.lz < host.lx && host.lz < host.ly;
+  const isStirrup = type === 'c_link' || type === 'c_link_with_hook';
+
+  if (isStirrup) {
+    if (isBeamX) {
+      const lenA = Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia));
+      const lenB = Math.max(dia * 2, Math.round(host.lz - 2 * cv - dia));
+      return {
+        ...base,
+        host: host.id,
+        Plane: 'YZ',
+        Pos_Rotation: 0,
+        c_length_a: lenA,
+        c_length_b: lenB,
+        length: lenA,
+        Pos_x: Math.round((host.x + cv + dia / 2) * 10) / 10,
+        Pos_y: Math.round((host.y + inset) * 10) / 10,
+        Pos_z: Math.round((host.z + inset) * 10) / 10,
+        spacing_x: 150,
+        qty_x: Math.max(1, Math.floor((host.lx - 2 * cv) / 150)),
+        qty_y: 1,
+      };
+    } else if (isColZ) {
+      const lenA = Math.max(dia * 2, Math.round(host.lx - 2 * cv - dia));
+      const lenB = Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia));
+      return {
+        ...base,
+        host: host.id,
+        Plane: 'XY',
+        Pos_Rotation: 0,
+        c_length_a: lenA,
+        c_length_b: lenB,
+        length: lenA,
+        Pos_x: Math.round((host.x + inset) * 10) / 10,
+        Pos_y: Math.round((host.y + inset) * 10) / 10,
+        Pos_z: Math.round((host.z + cv + dia / 2) * 10) / 10,
+        spacing_x: 0,
+        qty_x: 1,
+        spacing_y: 150,
+        qty_y: Math.max(1, Math.floor((host.lz - 2 * cv) / 150)),
+      };
+    } else {
+      const lenA = Math.max(dia * 2, Math.round(host.lx - 2 * cv - dia));
+      const lenB = Math.max(dia * 2, Math.round(host.lz - 2 * cv - dia));
+      return {
+        ...base,
+        host: host.id,
+        Plane: 'XZ',
+        Pos_Rotation: 0,
+        c_length_a: lenA,
+        c_length_b: lenB,
+        length: lenA,
+        Pos_x: Math.round((host.x + inset) * 10) / 10,
+        Pos_y: Math.round((host.y + inset) * 10) / 10,
+        Pos_z: Math.round((host.z + cv + dia / 2) * 10) / 10,
+        spacing_x: 150,
+        qty_x: Math.max(1, Math.floor((host.lx - 2 * cv) / 150)),
+        qty_y: 1,
+      };
+    }
+  }
+
+  // Longitudinal bars: straight, bent, crank, double_crank
+  if (isBeamX) {
+    const mainLen = Math.max(300, Math.round(host.lx - 2 * cv));
+    const hLen = Math.max(100, Math.round(host.lz - 2 * cv));
+    const crankStep = Math.max(50, Math.round(host.lz - 2 * inset));
+    return {
+      ...base,
+      host: host.id,
+      Plane: 'XZ',
+      Pos_Rotation: 0,
+      Pos_x: Math.round((host.x + cv) * 10) / 10,
+      Pos_y: Math.round((host.y + inset) * 10) / 10,
+      Pos_z: Math.round((host.z + inset) * 10) / 10,
+      'Length of Bar': mainLen,
+      Long_length: mainLen,
+      H: hLen,
+      Crank_step: crankStep,
+      'Length of Lap': Math.min(500, Math.round(mainLen * 0.2)),
+      DC_Lap_Start: Math.round(mainLen * 0.25),
+      DC_Lap_Mid: Math.round(mainLen * 0.5),
+      DC_Tail_Length: Math.round(mainLen * 0.25),
+      qty_x: 1,
+      qty_y: 1,
+    };
+  } else if (isColZ) {
+    const mainLen = Math.max(300, Math.round(host.lz - 2 * cv));
+    const hLen = Math.max(100, Math.round(host.lx - 2 * cv));
+    const crankStep = Math.max(50, Math.round(host.lx - 2 * inset));
+    return {
+      ...base,
+      host: host.id,
+      Plane: 'XZ',
+      Pos_Rotation: 90,
+      Pos_x: Math.round((host.x + inset) * 10) / 10,
+      Pos_y: Math.round((host.y + inset) * 10) / 10,
+      Pos_z: Math.round((host.z + cv) * 10) / 10,
+      'Length of Bar': mainLen,
+      Long_length: mainLen,
+      H: hLen,
+      Crank_step: crankStep,
+      'Length of Lap': Math.min(500, Math.round(mainLen * 0.2)),
+      DC_Lap_Start: Math.round(mainLen * 0.25),
+      DC_Lap_Mid: Math.round(mainLen * 0.5),
+      DC_Tail_Length: Math.round(mainLen * 0.25),
+      qty_x: 1,
+      qty_y: 1,
+    };
+  } else if (isSlabXY) {
+    const mainLen = Math.max(300, Math.round(host.lx - 2 * cv));
+    const crankStep = Math.max(50, Math.round(host.lz - 2 * inset));
+    return {
+      ...base,
+      host: host.id,
+      Plane: 'XY',
+      Pos_Rotation: 0,
+      Pos_x: Math.round((host.x + cv) * 10) / 10,
+      Pos_y: Math.round((host.y + inset) * 10) / 10,
+      Pos_z: Math.round((host.z + inset) * 10) / 10,
+      'Length of Bar': mainLen,
+      Long_length: mainLen,
+      Crank_step: crankStep,
+      'Length of Lap': Math.min(500, Math.round(mainLen * 0.2)),
+      DC_Lap_Start: Math.round(mainLen * 0.25),
+      DC_Lap_Mid: Math.round(mainLen * 0.5),
+      DC_Tail_Length: Math.round(mainLen * 0.25),
+      spacing_y: 200,
+      qty_y: Math.max(1, Math.floor((host.ly - 2 * cv) / 200)),
+    };
+  } else {
+    const mainLen = Math.max(300, Math.round(host.lx - 2 * cv));
+    return {
+      ...base,
+      host: host.id,
+      Plane: 'XZ',
+      Pos_Rotation: 0,
+      Pos_x: Math.round((host.x + cv) * 10) / 10,
+      Pos_y: Math.round((host.y + inset) * 10) / 10,
+      Pos_z: Math.round((host.z + inset) * 10) / 10,
+      'Length of Bar': mainLen,
+      Long_length: mainLen,
+    };
+  }
+}
+
 // Dimension fields per type (form + CSV). Common fields (mark, dia,
 // position, distribution, group, plane) are preserved on type switch.
 export const DIM_FIELDS_BY_TYPE = {
@@ -163,11 +320,21 @@ const ALL_DIM_FIELDS = [...new Set(Object.values(DIM_FIELDS_BY_TYPE).flat())];
 
 // Switch a bar to a new shape type: keep identity/position/distribution,
 // drop the old shape's dimensions, fill the new shape's defaults.
-export function applyTypeDefaults(bar, type) {
+export function applyTypeDefaults(bar, type, host = null, cover = 30) {
   const next = { ...bar, Rebar_Type: type };
   for (const f of ALL_DIM_FIELDS) delete next[f];
-  const fresh = defaultBar(type, bar.Rebar_tag);
+  const fresh = host ? defaultBarForHost(type, bar.Rebar_tag, host, cover) : defaultBar(type, bar.Rebar_tag);
   for (const f of DIM_FIELDS_BY_TYPE[type] || []) next[f] = fresh[f];
+  if (host && (type === 'c_link' || type === 'c_link_with_hook')) {
+    next.Plane = fresh.Plane;
+    next.Pos_x = fresh.Pos_x;
+    next.Pos_y = fresh.Pos_y;
+    next.Pos_z = fresh.Pos_z;
+    next.qty_x = fresh.qty_x;
+    next.spacing_x = fresh.spacing_x;
+    next.qty_y = fresh.qty_y;
+    next.spacing_y = fresh.spacing_y;
+  }
   return next;
 }
 

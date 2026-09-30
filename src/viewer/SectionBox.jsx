@@ -42,8 +42,8 @@ if (typeof window !== 'undefined') {
 function capQuad(i, size) {
   const [sx, sy, sz] = size;
   switch (i) {
-    case 0: return { args: [sy, sz], pos: [sx / 2, 0, 0], rot: [0, Math.PI / 2, 0] };
-    case 1: return { args: [sy, sz], pos: [-sx / 2, 0, 0], rot: [0, -Math.PI / 2, 0] };
+    case 0: return { args: [sz, sy], pos: [sx / 2, 0, 0], rot: [0, Math.PI / 2, 0] };
+    case 1: return { args: [sz, sy], pos: [-sx / 2, 0, 0], rot: [0, -Math.PI / 2, 0] };
     case 2: return { args: [sx, sz], pos: [0, sy / 2, 0], rot: [-Math.PI / 2, 0, 0] };
     case 3: return { args: [sx, sz], pos: [0, -sy / 2, 0], rot: [Math.PI / 2, 0, 0] };
     case 4: return { args: [sx, sy], pos: [0, 0, sz / 2], rot: [0, 0, 0] };
