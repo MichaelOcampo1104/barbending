@@ -133,6 +133,11 @@ button.block { width: 100%; margin-top: 8px; }
 .bbs-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #94a3b8; }
 .bbs-filter select { background: #0b1528; color: #38bdf8; border: 1px solid #2b3d63; border-radius: 5px; padding: 3px 8px; font-size: 12px; font-weight: 600; }
 .hint { font-size: 11px; color: #93a4c4; }
+/* joined-members picker row (full-width wrap under the BBS toolbar) */
+.join-list { display: flex; flex-direction: column; gap: 4px; flex-basis: 100%; max-height: 148px; overflow: auto; padding: 6px 8px; border: 1px solid #1a2948; border-radius: 6px; }
+.join-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: #93c5fd; font-weight: 600; }
+.join-group { display: flex; flex-wrap: wrap; gap: 2px 12px; align-items: center; border-top: 1px solid #1a2948; padding-top: 4px; }
+.member-search { background: #0b1528; color: #e2e8f0; border: 1px solid #2b3d63; border-radius: 5px; padding: 3px 8px; font-size: 12px; width: 130px; }
 .hint code { color: #cbd5e1; }
 .tblwrap { overflow: auto; flex: 1; margin: 6px 12px 8px; border: 1px solid #243352; border-radius: 6px; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }

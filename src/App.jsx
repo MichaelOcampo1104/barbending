@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, useMemo, Fragment } from 'react';
 import Scene from './viewer/Scene.jsx';
 import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
-import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost } from './bbs/shapes.js';
-import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES, autoAssignBarMarks } from './bbs/csv.js';
+import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost, memberKind } from './bbs/shapes.js';
+import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES, autoAssignBarMarks, concreteVolumeM3, rebarRatioKgM3, concreteVolumeSource } from './bbs/csv.js';
 import { lapLengthMm } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
@@ -430,6 +430,9 @@ function ConcreteEditor() {
               {[['x', 'X'], ['y', 'Y'], ['z', 'Z']].map(([k, l]) => (
                 <Field key={k} label={l} value={c[k]} onChange={(v) => updateConcrete(c.id, { [k]: v })} />
               ))}
+            </div>
+            <div className="distnote" style={{ marginTop: 2 }} title={concreteVolumeSource(c) === 'mesh' ? 'Exact mesh volume: retraced IFC profile incl. openings/chamfers — this is the BBS take-off' : 'Lx·Ly·Lz box volume — this is the BBS take-off'}>
+              Volume {concreteVolumeM3(c).toFixed(3)} m³ {concreteVolumeSource(c) === 'mesh' ? '(✨ exact mesh)' : '(box)'}
             </div>
 
             {/* Quick Ref Line Helpers & Attached Ref Lines */}
@@ -890,29 +893,80 @@ function BbsStrip() {
   const [groupByElem, setGroupByElem] = useState(true);
   const [collapsed, setCollapsed] = useState({});
   const [deleteArmed, setDeleteArmed] = useState(false);
+  const [joinMode, setJoinMode] = useState(false);
+  const [joinedIds, setJoinedIds] = useState([]);
+  const [memberSearch, setMemberSearch] = useState('');
 
   const concMap = useMemo(() => new Map((concretes || []).map((c) => [c.id, c])), [concretes]);
   const allRows = useMemo(() => bars.map((b, idx) => ({ ...enrichBar(b, concretes), _origIdx: idx })), [bars, concretes]);
+  const joinedSet = useMemo(() => new Set(joinedIds), [joinedIds]);
 
-  // Rows matching current element filter
+  // Marks per member, computed once (the picker renders this per option —
+  // filtering allRows per member per render would be O(members × rows)).
+  const marksByHost = useMemo(() => {
+    const m = new Map();
+    for (const r of allRows) {
+      const k = r.host && concMap.has(r.host) ? r.host : 'unhosted';
+      m.set(k, (m.get(k) || 0) + 1);
+    }
+    return m;
+  }, [allRows, concMap]);
+
+  // Member search narrows both the Element dropdown and the join picker.
+  const searchLower = memberSearch.trim().toLowerCase();
+  const visibleConcretes = useMemo(() => (
+    !searchLower ? (concretes || []) : (concretes || []).filter((c) => String(c.name || '').toLowerCase().includes(searchLower))
+  ), [concretes, searchLower]);
+
+  // Join picker grouped by structural kind (scales to hundreds of members).
+  const joinGroups = useMemo(() => {
+    const map = new Map();
+    for (const c of visibleConcretes) {
+      const k = memberKind(c);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(c);
+    }
+    return ['Beam', 'Column', 'Slab', 'Wall', 'Footing', 'Member'].filter((k) => map.has(k)).map((k) => ({ kind: k, members: map.get(k) }));
+  }, [visibleConcretes]);
+  const toggleKind = (members) => {
+    const ids = members.map((c) => c.id);
+    const allIn = ids.every((id) => joinedSet.has(id));
+    setJoinedIds((prev) => allIn ? prev.filter((id) => !ids.includes(id)) : [...new Set([...prev, ...ids])]);
+  };
+
+  // Rows matching current element filter (or the joined member set)
   const filteredRows = useMemo(() => {
+    if (joinMode) return allRows.filter((r) => r.host && joinedSet.has(r.host));
     if (elemFilter === 'all') return allRows;
     if (elemFilter === 'unhosted') return allRows.filter((r) => !r.host || !concMap.has(r.host));
     return allRows.filter((r) => r.host === elemFilter);
-  }, [allRows, elemFilter, concMap]);
+  }, [allRows, elemFilter, concMap, joinMode, joinedSet]);
 
   const totalW = filteredRows.reduce((a, r) => a + (r.Weight_kg || 0), 0);
   const totalBars = filteredRows.reduce((a, r) => a + (r._copies || 1), 0);
+
+  // Concrete members in scope (joined set / single / all) → volume + ratio.
+  const includedConcretes = useMemo(() => {
+    if (joinMode) return (concretes || []).filter((c) => joinedSet.has(c.id));
+    if (elemFilter === 'all') return concretes || [];
+    if (elemFilter === 'unhosted') return [];
+    const c = concMap.get(elemFilter);
+    return c ? [c] : [];
+  }, [concretes, elemFilter, joinMode, joinedSet, concMap]);
+  const totalVolM3 = includedConcretes.reduce((a, c) => a + concreteVolumeM3(c), 0);
+  const ratio = rebarRatioKgM3(totalW, totalVolM3);
+  const volStr = `${totalVolM3.toFixed(3)} m³`;
+  const ratioStr = ratio == null ? 'n/a' : `${ratio.toFixed(1)} kg/m³`;
 
   // Grouping structure for all or filtered
   const groups = useMemo(() => {
     const map = new Map();
     for (const c of concretes) {
-      if (elemFilter === 'all' || elemFilter === c.id) {
+      if (joinMode ? joinedSet.has(c.id) : (elemFilter === 'all' || elemFilter === c.id)) {
         map.set(c.id, { id: c.id, concrete: c, name: c.name || `Member ${c.id}`, rows: [] });
       }
     }
-    if (elemFilter === 'all' || elemFilter === 'unhosted') {
+    if (!joinMode && (elemFilter === 'all' || elemFilter === 'unhosted')) {
       map.set('unhosted', { id: 'unhosted', concrete: null, name: 'Free / Unassigned', rows: [] });
     }
 
@@ -925,13 +979,19 @@ function BbsStrip() {
     }
 
     return Array.from(map.values())
-      .map((g) => ({
-        ...g,
-        totalW: g.rows.reduce((a, r) => a + (r.Weight_kg || 0), 0),
-        totalBars: g.rows.reduce((a, r) => a + (r._copies || 1), 0),
-      }))
-      .filter((g) => g.rows.length > 0 || (elemFilter !== 'all' && g.id === elemFilter));
-  }, [concretes, filteredRows, elemFilter, concMap]);
+      .map((g) => {
+        const w = g.rows.reduce((a, r) => a + (r.Weight_kg || 0), 0);
+        const v = g.concrete ? concreteVolumeM3(g.concrete) : 0;
+        return {
+          ...g,
+          totalW: w,
+          totalBars: g.rows.reduce((a, r) => a + (r._copies || 1), 0),
+          volM3: v,
+          ratio: rebarRatioKgM3(w, v),
+        };
+      })
+      .filter((g) => g.rows.length > 0 || (!joinMode && elemFilter !== 'all' && g.id === elemFilter));
+  }, [concretes, filteredRows, elemFilter, concMap, joinMode, joinedSet]);
 
   const toggleCollapse = (gid) => setCollapsed((c) => ({ ...c, [gid]: !c[gid] }));
 
@@ -948,12 +1008,19 @@ function BbsStrip() {
     return () => window.removeEventListener('keydown', onKey);
   }, [deleteArmed]);
 
-  const activeConcrete = elemFilter !== 'all' && elemFilter !== 'unhosted' ? concMap.get(elemFilter) : null;
-  const filterLabel = activeConcrete ? activeConcrete.name : elemFilter === 'unhosted' ? 'Unhosted Rebars' : 'All Elements';
+  const activeConcrete = !joinMode && elemFilter !== 'all' && elemFilter !== 'unhosted' ? concMap.get(elemFilter) : null;
+  const filterLabel = joinMode
+    ? (joinedIds.length ? `Joined ${joinedIds.length} members` : 'Joined (none selected)')
+    : (activeConcrete ? activeConcrete.name : elemFilter === 'unhosted' ? 'Unhosted Rebars' : 'All Elements');
   const exportBars = filteredRows.map((r) => bars[r._origIdx]);
+  // Concrete ids scoping the volume/ratio block in the BBS CSV export.
+  const exportMemberIds = joinMode ? [...joinedIds]
+    : (elemFilter === 'all' ? null : elemFilter === 'unhosted' ? [] : [elemFilter]);
   const safeFilterName = filterLabel.replace(/[\s\W]+/g, '_');
-  const bbsFilename = elemFilter === 'all' ? 'bar_bending_schedule.csv' : `BBS_${safeFilterName}.csv`;
-  const rebarFilename = elemFilter === 'all' ? 'rebar_scheduling.csv' : `rebar_scheduling_${safeFilterName}.csv`;
+  const bbsFilename = joinMode ? `BBS_Joined_${joinedIds.length}members.csv`
+    : elemFilter === 'all' ? 'bar_bending_schedule.csv' : `BBS_${safeFilterName}.csv`;
+  const rebarFilename = joinMode ? 'rebar_scheduling_joined.csv'
+    : elemFilter === 'all' ? 'rebar_scheduling.csv' : `rebar_scheduling_${safeFilterName}.csv`;
 
   const onImport = (e, append = false) => {
     const f = e.target.files?.[0];
@@ -1005,26 +1072,80 @@ function BbsStrip() {
     <footer className="bbs">
       <div className="bbstool">
         <strong>
-          {elemFilter === 'all'
-            ? `BBS · ${filteredRows.length} rows · ${totalBars} bars · ${totalW.toFixed(1)} kg`
-            : `BBS for ${filterLabel} · ${filteredRows.length} rows · ${totalBars} bars · ${totalW.toFixed(1)} kg`}
+          {joinMode || elemFilter !== 'all'
+            ? `BBS for ${filterLabel} · ${filteredRows.length} rows · ${totalBars} bars · ${totalW.toFixed(1)} kg · ${volStr} concrete · ${ratioStr}`
+            : `BBS · ${filteredRows.length} rows · ${totalBars} bars · ${totalW.toFixed(1)} kg · ${volStr} concrete · ${ratioStr}`}
         </strong>
 
         <label className="bbs-filter" title="Filter table & BBS CSV exports to a specific concrete member">
           <span>Element:</span>
-          <select value={elemFilter} onChange={(e) => setElemFilter(e.target.value)}>
+          <select value={joinMode ? '__joined' : elemFilter} onChange={(e) => {
+            if (e.target.value === '__joined') {
+              setJoinMode(true);
+              if (!joinedIds.length) setJoinedIds((concretes || []).map((c) => c.id));
+            } else {
+              setJoinMode(false);
+              setElemFilter(e.target.value);
+            }
+          }}>
             <option value="all">All Elements ({allRows.length} marks)</option>
-            {concretes.map((c) => {
-              const count = allRows.filter((r) => r.host === c.id).length;
-              return <option key={c.id} value={c.id}>{c.name} ({count} marks)</option>;
-            })}
-            {allRows.some((r) => !r.host || !concMap.has(r.host)) && (
-              <option value="unhosted">Free / Unassigned ({allRows.filter((r) => !r.host || !concMap.has(r.host)).length} marks)</option>
+            {visibleConcretes.map((c) => (
+              <option key={c.id} value={c.id}>{c.name} ({marksByHost.get(c.id) || 0} marks)</option>
+            ))}
+            {activeConcrete && !visibleConcretes.some((c) => c.id === activeConcrete.id) && (
+              <option value={activeConcrete.id}>{activeConcrete.name} ({marksByHost.get(activeConcrete.id) || 0} marks)</option>
             )}
+            {(marksByHost.get('unhosted') || 0) > 0 && (
+              <option value="unhosted">Free / Unassigned ({marksByHost.get('unhosted')} marks)</option>
+            )}
+            {concretes.length > 1 && <option value="__joined">🔗 Joined members…</option>}
           </select>
         </label>
+        <input
+          className="member-search"
+          placeholder="Filter members…"
+          title="Narrow the Element dropdown and the join picker (scales to hundreds of members)"
+          value={memberSearch}
+          onChange={(e) => setMemberSearch(e.target.value)}
+        />
 
-        {elemFilter === 'all' && (
+        {joinMode && (
+          <div className="join-list" title="Tick members to join into one BBS (volumes + ratio combine)">
+            <div className="join-head">
+              <span>{joinedIds.length} members · {filteredRows.length} marks · {totalW.toFixed(1)} kg · {volStr} · {ratioStr}</span>
+              <span style={{ display: 'inline-flex', gap: 4 }}>
+                <button className="ghost sm" onClick={() => setJoinedIds((concretes || []).map((c) => c.id))}>All</button>
+                <button className="ghost sm" onClick={() => setJoinedIds([])}>None</button>
+                <button className="ghost sm" onClick={() => setJoinedIds((prev) => (concretes || []).filter((c) => !prev.includes(c.id)).map((c) => c.id))} title="Invert selection">Invert</button>
+              </span>
+            </div>
+            {joinGroups.map((g) => {
+              const ids = g.members.map((c) => c.id);
+              const allIn = ids.every((id) => joinedSet.has(id));
+              const kindVol = g.members.filter((c) => joinedSet.has(c.id)).reduce((a, c) => a + concreteVolumeM3(c), 0);
+              return (
+                <div key={g.kind} className="join-group">
+                  <button className="ghost sm" onClick={() => toggleKind(g.members)} title={allIn ? `Untick all ${g.kind}s` : `Tick all ${g.kind}s`}>
+                    {allIn ? '☑' : '☐'} {g.kind}s ({g.members.length}{kindVol > 0 ? ` · ${kindVol.toFixed(2)} m³ sel` : ''})
+                  </button>
+                  {g.members.map((c) => (
+                    <label key={c.id} className="chk" style={{ margin: 0, fontSize: 11 }}>
+                      <input
+                        type="checkbox"
+                        checked={joinedSet.has(c.id)}
+                        onChange={(e) => setJoinedIds((prev) => e.target.checked ? [...prev, c.id] : prev.filter((id) => id !== c.id))}
+                      />
+                      {c.name} ({marksByHost.get(c.id) || 0} · {concreteVolumeM3(c).toFixed(2)} m³)
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
+            {!joinGroups.length && <span className="hint">No members match “{memberSearch}”.</span>}
+          </div>
+        )}
+
+        {!joinMode && elemFilter === 'all' && (
           <label className="chk" style={{ margin: 0, fontSize: 11 }} title="Group rebar rows under concrete element headers">
             <input type="checkbox" checked={groupByElem} onChange={(e) => setGroupByElem(e.target.checked)} />
             Group by Element
@@ -1046,11 +1167,11 @@ function BbsStrip() {
           >
             {deleteArmed ? '🗑 Delete ON' : '🗑 Delete'}
           </button>
-          <button className="ghost sm" onClick={() => setBars(autoAssignBarMarks(bars, { scopeByHost: elemFilter !== 'all' }))} title="Detect and unify bar marks for all bars with identical shape, diameter, and length">
+          <button className="ghost sm" onClick={() => setBars(autoAssignBarMarks(bars, { scopeByHost: joinMode || elemFilter !== 'all' }))} title="Detect and unify bar marks for all bars with identical shape, diameter, and length">
             🏷️ Match Marks
           </button>
-          <button style={{ background: '#059669', fontWeight: 600 }} onClick={() => downloadBbsCsv(exportBars, concretes, bbsFilename)} title={`Generate BBS Schedule CSV (${elemFilter === 'all' ? 'Entire Model' : filterLabel})`}>
-            ⤓ BBS Schedule CSV {elemFilter !== 'all' ? `(${filterLabel})` : ''}
+          <button style={{ background: '#059669', fontWeight: 600 }} onClick={() => downloadBbsCsv(exportBars, concretes, bbsFilename, { memberIds: exportMemberIds })} title={`Generate BBS Schedule CSV with concrete volumes + rebar ratio (${joinMode || elemFilter !== 'all' ? filterLabel : 'Entire Model'})`}>
+            ⤓ BBS Schedule CSV {(joinMode || elemFilter !== 'all') ? `(${filterLabel})` : ''}
           </button>
           <button onClick={() => downloadCsv(exportBars, rebarFilename)} title={`Export FreeCAD parametric template CSV (${elemFilter === 'all' ? 'Entire Model' : filterLabel})`}>
             ⤓ rebar_scheduling.csv
@@ -1066,7 +1187,7 @@ function BbsStrip() {
         <table>
           <thead><tr><th></th><th>#</th><th>Mark</th><th>Type</th><th>Shape</th><th>Ø</th><th>Bars</th><th>Cut (mm)</th><th>Wt (kg)</th></tr></thead>
           <tbody>
-            {elemFilter === 'all' && groupByElem ? (
+            {(joinMode || (elemFilter === 'all' && groupByElem)) ? (
               groups.map((g) => {
                 const isCollapsed = !!collapsed[g.id];
                 return (
@@ -1077,14 +1198,14 @@ function BbsStrip() {
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                             <span>{isCollapsed ? '▶' : '▼'}</span>
                             <strong>📦 {g.name}</strong>
-                            <span className="bbs-group-badge">{g.rows.length} rows · {g.totalBars} bars · {g.totalW.toFixed(1)} kg</span>
+                            <span className="bbs-group-badge">{g.rows.length} rows · {g.totalBars} bars · {g.totalW.toFixed(1)} kg{g.concrete ? ' · ' + g.volM3.toFixed(3) + ' m³ · ' + (g.ratio == null ? 'n/a' : g.ratio.toFixed(1) + ' kg/m³') : ''}</span>
                           </span>
                           <span className="btnrow inline" onClick={(e) => e.stopPropagation()} style={{ gap: 4 }}>
                             {g.concrete && (
                               <button className="ghost sm" onClick={() => requestFit('concrete', g.id)} title={`Zoom 3D view to ${g.name}`}>🎯 Zoom</button>
                             )}
-                            <button className="ghost sm" onClick={() => setElemFilter(g.id)} title={`Filter table and BBS to ${g.name}`}>🔍 Pick only</button>
-                            <button className="ghost sm" onClick={() => downloadBbsCsv(g.rows.map((r) => bars[r._origIdx]), concretes, `BBS_${g.name.replace(/[\s\W]+/g, '_')}.csv`)} title={`Export BBS CSV for ${g.name}`}>⤓ BBS CSV</button>
+                            <button className="ghost sm" onClick={() => { setJoinMode(false); setElemFilter(g.id); }} title={`Filter table and BBS to ${g.name}`}>🔍 Pick only</button>
+                            <button className="ghost sm" onClick={() => downloadBbsCsv(g.rows.map((r) => bars[r._origIdx]), concretes, `BBS_${g.name.replace(/[\s\W]+/g, '_')}.csv`, { memberIds: g.concrete ? [g.id] : [] })} title={`Export BBS CSV with volume + ratio for ${g.name}`}>⤓ BBS CSV</button>
                           </span>
                         </div>
                       </td>

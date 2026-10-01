@@ -68,10 +68,13 @@ export const useStore = create((set, get) => ({
 
   selectConcrete: (id) => set({ selectedConcrete: id }),
 
-  addConcrete: (c) => set((s) => withHist(s, {
-    concretes: [...s.concretes, { id: `c${Date.now()}`, ...c }],
-    selectedConcrete: `c${Date.now()}`,
-  })),
+  addConcrete: (c) => {
+    const nid = (c && c.id) || `c${Date.now()}`;
+    return set((s) => withHist(s, {
+      concretes: [...s.concretes, { ...c, id: nid }],
+      selectedConcrete: nid,
+    }));
+  },
   updateConcrete: (id, patch) => set((s) => {
     const old = s.concretes.find((c) => c.id === id);
     // Host-follow: translating a member (x/y/z edit) carries its explicit

@@ -3,7 +3,7 @@
 // and dispatches to place_*_from_csv. We export the union header so the
 // file can be consumed directly, and accept any of the gen_* templates.
 
-import { genBarPoints, distCount, getBentDefaults, resolveBarHost } from './shapes.js';
+import { genBarPoints, distCount, getBentDefaults, resolveBarHost, meshVolumeM3 } from './shapes.js';
 import { barWeightKg } from './calc.js';
 
 export const SHAPE_CODES = {
@@ -15,6 +15,31 @@ export const SHAPE_CODES = {
   crank: 41,
   double_crank: 43,
 };
+
+// Concrete volume in m³. Precedence: exact retraced mesh geometry (auto-traced
+// complex profiles, openings and chamfers included) guarded against degenerate
+// meshes — a closed solid can never exceed its own bbox — else Lx·Ly·Lz box.
+export function concreteVolumeM3(c) {
+  if (!c) return 0;
+  const box = (Math.max(0, Number(c.lx) || 0) * Math.max(0, Number(c.ly) || 0) * Math.max(0, Number(c.lz) || 0)) / 1e9;
+  const mesh = meshVolumeM3(c.meshData);
+  if (mesh > 0 && (box <= 0 || mesh <= box * 1.001)) return mesh;
+  return box;
+}
+
+// Where a member's BBS volume comes from: 'mesh' (exact retraced geometry)
+// or 'box' (Lx·Ly·Lz). Shown in the Concrete tab so the take-off is auditable.
+export function concreteVolumeSource(c) {
+  if (!c) return 'box';
+  const box = (Math.max(0, Number(c.lx) || 0) * Math.max(0, Number(c.ly) || 0) * Math.max(0, Number(c.lz) || 0)) / 1e9;
+  const mesh = meshVolumeM3(c.meshData);
+  return (mesh > 0 && (box <= 0 || mesh <= box * 1.001)) ? 'mesh' : 'box';
+}
+
+// Rebar ratio in kg/m³, or null when there is no concrete volume.
+export function rebarRatioKgM3(steelKg, concM3) {
+  return concM3 > 0 ? steelKg / concM3 : null;
+}
 
 export function getShapeParameters(bar) {
   const dia = Number(bar.Dia || 16);
@@ -149,7 +174,7 @@ export const BBS_BENCHMARK_HEADERS = [
   'Total Weight (kg)',
 ];
 
-export function toBbsBenchmarkCsv(bars, concretes = []) {
+export function toBbsBenchmarkCsv(bars, concretes = [], opts = {}) {
   const concMap = new Map((concretes || []).map((c) => [c.id, c.name || c.type || c.id]));
   const rows = bars.map((b) => enrichBar(b, concretes));
 
@@ -256,11 +281,30 @@ export function toBbsBenchmarkCsv(bars, concretes = []) {
 
   lines.push(['Total', grandLenM.toFixed(3), grandWeightKg.toFixed(2)].map(esc).join(','));
 
+  // Concrete volumes + rebar ratio (kg/m³). opts.memberIds scopes the block
+  // to the joined/filtered members; null = every concrete passed in.
+  const volMembers = (opts.memberIds
+    ? (concretes || []).filter((c) => opts.memberIds.includes(c.id))
+    : (concretes || []));
+  let totalVolM3 = 0;
+  lines.push('');
+  lines.push('Concrete volumes (Lx*Ly*Lz)');
+  lines.push(['Member', 'Volume (m3)'].map(esc).join(','));
+  for (const c of volMembers) {
+    const v = concreteVolumeM3(c);
+    totalVolM3 += v;
+    lines.push([(c.name || c.type || c.id), v.toFixed(3)].map(esc).join(','));
+  }
+  lines.push(['Total concrete (m3)', totalVolM3.toFixed(3)].map(esc).join(','));
+  lines.push(['Total steel (kg)', grandWeightKg.toFixed(2)].map(esc).join(','));
+  const ratio = rebarRatioKgM3(grandWeightKg, totalVolM3);
+  lines.push(['Rebar ratio (kg/m3)', ratio == null ? 'n/a' : ratio.toFixed(2)].map(esc).join(','));
+
   return lines.join('\n');
 }
 
-export function downloadBbsCsv(bars, concretes = [], filename = 'bar_bending_schedule.csv') {
-  const csvContent = toBbsBenchmarkCsv(bars, concretes);
+export function downloadBbsCsv(bars, concretes = [], filename = 'bar_bending_schedule.csv', opts = {}) {
+  const csvContent = toBbsBenchmarkCsv(bars, concretes, opts);
   // Prepend UTF-8 BOM so Excel opens special characters and formatting reliably
   const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');

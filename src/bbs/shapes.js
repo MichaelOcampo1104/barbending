@@ -770,6 +770,44 @@ export function snapPrimitives(bars, concretes, refLines = [], excludeIdx = -1, 
   return { ends, mids, centers, segments: allSnapSegments(bars, concretes, refLines, excludeIdx, includeConcrete) };
 }
 
+// Inferred structural kind of a box concrete member for grouping/filtering
+// in pickers and schedules: name prefix wins (Beam B1, Column C3…), else
+// dimension heuristics (mirrors the TraceTool auto-trace rules).
+export function memberKind(c) {
+  const n = String(c?.name || '').toLowerCase();
+  if (n.includes('beam')) return 'Beam';
+  if (n.includes('column') || /\bcol\b/.test(n)) return 'Column';
+  if (n.includes('slab')) return 'Slab';
+  if (n.includes('wall')) return 'Wall';
+  if (n.includes('foot')) return 'Footing';
+  const lx = Number(c?.lx) || 0, ly = Number(c?.ly) || 0, lz = Number(c?.lz) || 0;
+  if (lz > lx && lz > ly) return 'Column';
+  if (lx >= lz && lx >= ly && lz > 250) return 'Beam';
+  if (lx > 1000 && ly > 1000 && lz <= 400) return 'Slab';
+  if (ly > lx * 3 && lz > 500) return 'Wall';
+  return 'Member';
+}
+
+// True volume (m³) of exact retraced mesh geometry (app-mm triangles from
+// extractMeshGeometry): signed-tetrahedron sum, absolute value. Returns 0
+// for missing/degenerate data — callers fall back to the Lx·Ly·Lz box.
+export function meshVolumeM3(meshData) {
+  const pts = meshData?.positions;
+  const idx = meshData?.indices;
+  if (!pts?.length || !idx?.length || idx.length % 3 !== 0) return 0;
+  let vol = 0;
+  for (let i = 0; i < idx.length; i += 3) {
+    const a = idx[i] * 3, b = idx[i + 1] * 3, c = idx[i + 2] * 3;
+    if (a < 0 || b < 0 || c < 0 || a + 2 >= pts.length || b + 2 >= pts.length || c + 2 >= pts.length) continue;
+    const ax = pts[a], ay = pts[a + 1], az = pts[a + 2];
+    const bx = pts[b], by = pts[b + 1], bz = pts[b + 2];
+    const cx = pts[c], cy = pts[c + 1], cz = pts[c + 2];
+    if (![ax, ay, az, bx, by, bz, cx, cy, cz].every(Number.isFinite)) continue;
+    vol += (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6;
+  }
+  return Math.abs(vol) / 1e9;
+}
+
 // Distribution grid — mirrors FreeCAD parametric_utils.py place_c_link_*:
 // copies at (Pos_x + ix*spacing_x + offset_x, Pos_y + iy*spacing_y + offset_y,
 //            Pos_z + offset_z). Applies to ALL bar types in the browser so

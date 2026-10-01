@@ -78,6 +78,26 @@ export function defaultSectionBox(ifc) {
   return { center: [0, 2, 0], size: [8, 4, 8] };
 }
 
+// True when a scene-unit (metre, Y-up) world point survives the active cut.
+// Raycasting ignores clipping planes, so pick/trace hovers must filter hits
+// explicitly — otherwise clicks "through" the cut grab removed elements.
+// Inactive/missing box → true (no filtering). Accepts THREE.Vector3,
+// {x,y,z}, or [x,y,z].
+const _bq = new THREE.Quaternion();
+const _bv = new THREE.Vector3();
+export function isWorldPointInSectionBox(worldPt, section) {
+  const s = normalizeSection(section);
+  if (!s?.enabled || !s.center || !s.size) return true;
+  const px = worldPt.x ?? worldPt[0];
+  const py = worldPt.y ?? worldPt[1];
+  const pz = worldPt.z ?? worldPt[2];
+  if (!Number.isFinite(px + py + pz)) return false;
+  _bq.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]).invert();
+  _bv.set(px - s.center[0], py - s.center[1], pz - s.center[2]).applyQuaternion(_bq);
+  const e = 0.001; // 1 mm tolerance so on-face points count as inside
+  return Math.abs(_bv.x) <= s.size[0] / 2 + e && Math.abs(_bv.y) <= s.size[1] / 2 + e && Math.abs(_bv.z) <= s.size[2] / 2 + e;
+}
+
 // Param t along axis line (A0 + t·N, N unit) closest to pointer ray (Ro + s·Rd).
 // Used for push/pull face dragging.
 export function closestAxisParam(Ro, Rd, A0, N) {

@@ -3,9 +3,10 @@ import { useThree } from '@react-three/fiber';
 import { Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { subsetBox } from '../ifc/session.js';
+import { subsetBox, extractMeshGeometry } from '../ifc/session.js';
 import { fmtLen, snapMagnet } from './Scene.jsx';
 import { snapPrimitives } from '../bbs/shapes.js';
+import { isWorldPointInSectionBox } from './sectionPlanes.js';
 
 const S = 0.001;
 const _v1 = new THREE.Vector3();
@@ -169,10 +170,16 @@ export default function TraceTool() {
       // spatially (80 mm margin) at click time.
       if (st.drawMode !== 'trace_ifc' && st.snapEnabled !== false) {
         const ds = st.drawStart;
-        const magnet = snapMagnet(ev, camera, rect,
+        let magnet = snapMagnet(ev, camera, rect,
           snapPrimitives(st.bars, st.concretes, st.refLines, -1, true),
           st.snapOpts,
           ds ? [ds.x, ds.y, ds.z] : null);
+        // Section cut hides geometry visually but raycast/magnet math still
+        // sees it — drop magnet points clipped away by the active box.
+        if (magnet && !isWorldPointInSectionBox(
+          { x: magnet.p[0] * S, y: magnet.p[2] * S, z: -magnet.p[1] * S }, st.section)) {
+          magnet = null;
+        }
         if (magnet) {
           const kindLabel = { end: 'Endpoint', mid: 'Midpoint', center: 'Center', nearest: 'Nearest', perp: 'Perpendicular' }[magnet.kind] || 'Snap';
           const appPos = {
@@ -207,12 +214,15 @@ export default function TraceTool() {
       }
 
       const hits = raycaster.current.intersectObjects(targets, false);
-      if (!hits.length) {
+      // Raycast ignores clipping planes: with an active section box the first
+      // hit may be a clipped-away element "through" the cut — take the first
+      // hit that survives the box instead.
+      const hit = hits.find((h) => isWorldPointInSectionBox(h.point, st.section)) || null;
+      if (!hit) {
         clearSnap();
         return;
       }
 
-      const hit = hits[0];
       // Raycast fallback honors the snap options too: mesh vertices/corners
       // need Endpoint, face edge midpoints need Midpoint. (The raw surface
       // hit stays the unsnapped fallback regardless.)
@@ -306,8 +316,9 @@ export default function TraceTool() {
           else r.traverse((o) => { if (o.isMesh && o.visible && !o.userData?.stencil) targets.push(o); });
         }
         const hits = raycaster.current.intersectObjects(targets, false);
-        if (hits.length) {
-          const hit = hits[0];
+        // Same section-box filtering as hover: skip clipped-away hits.
+        const hit = hits.find((h) => isWorldPointInSectionBox(h.point, useStore.getState().section)) || null;
+        if (hit) {
           currentSnap = {
             x: Math.round(hit.point.x * 1000),
             y: Math.round(-hit.point.z * 1000),
@@ -337,7 +348,6 @@ export default function TraceTool() {
 
           const bb = targetMesh.userData?.ifcKey ? subsetBox(targetMesh) : cachedWorldBox(targetMesh);
           if (bb.isEmpty() || !Number.isFinite(bb.min.x + bb.max.x)) return;
-
           const x = Math.round(bb.min.x * 1000);
           const y = Math.round(-bb.max.z * 1000);
           const z = Math.round(bb.min.y * 1000);
@@ -361,12 +371,20 @@ export default function TraceTool() {
           const existingConcretes = useStore.getState().concretes || [];
           const count = existingConcretes.filter((c) => c.name.startsWith(prefix)).length + 1;
           const name = elData?.name || `${prefix} ${count}`;
-          const meshData = extractMeshGeometry(targetMesh);
+          // The pick walk can stop at a wrapper group (e.g. the concrete
+          // pickRoot group) — descend to the geometry-bearing mesh for the
+          // exact profile. Stencil/ghost children share the same geometry.
+          const geomMesh = targetMesh?.isMesh && targetMesh?.geometry ? targetMesh : (() => {
+            let found = null;
+            targetMesh?.traverse?.((o) => { if (!found && o.isMesh && o.geometry) found = o; });
+            return found;
+          })();
+          const meshData = extractMeshGeometry(geomMesh);
 
           addConcrete({ name, lx, ly, lz, x, y, z, meshData });
           console.info(`[TraceTool] Auto-traced ${name} (exact geometry preserved: ${!!meshData}): ${lx}x${ly}x${lz} mm @ (${x}, ${y}, ${z})`);
         } catch (err) {
-          console.error('[TraceTool] Auto-trace failed:', err);
+          console.error('[TraceTool] Auto-trace failed: ' + (err?.stack || err?.message || String(err)));
         }
         return;
       }
