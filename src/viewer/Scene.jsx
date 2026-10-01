@@ -3,7 +3,7 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, AdaptiveDpr, Line, Html, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { genBarPoints, transformBarLocalPoint, distOffsets, barOverlapsBoxes, rebarSnapNodes, rebarSegments, concreteSnapNodes, concreteEdges, refLineSegments, allSnapNodes, allSnapSegments, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES, barAppBox } from '../bbs/shapes.js';
+import { genBarPoints, transformBarLocalPoint, distOffsets, barOverlapsBoxes, snapPrimitives, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES, barAppBox } from '../bbs/shapes.js';
 import FitIfc from './FitIfc.jsx';
 import AutoClipping from './AutoClipping.jsx';
 import SectionBox from './SectionBox.jsx';
@@ -12,70 +12,71 @@ import { sectionPlanes } from './sectionPlanes.js';
 import { stencilMats } from './stencilMats.js';
 
 const noopStencilRaycast = () => null;
-const SNAP_PX = 14; // screen-space aperture for rebar-node snapping
+const SNAP_PX = 14; // screen-space aperture for the snap magnet
+const SNAP_OPTS_FALLBACK = { end: true, mid: true, center: true, nearest: true, perp: true };
 
-// Nearest visible rebar centerline node (app-mm [x,y,z]) within SNAP_PX of
-// the cursor, or null. nodes = rebarSnapNodes(...) app-mm points. Nodes
+// Unified osnap magnet over categorized primitives (see snapPrimitives):
+// enabled Endpoint/Midpoint/Center nodes, Nearest point along any edge/leg,
+// and the Perpendicular foot from refPt (measure's last point) onto an edge.
+// Every candidate is gated by the same SNAP_PX cursor aperture and the
+// closest one wins — returns { p: app-mm [x,y,z], kind } or null. Points
 // behind the camera are skipped (projection flips there).
-function snapToRebar(ev, camera, rect, nodes) {
-  if (!nodes?.length) return null;
+// Exported for TraceTool so draw modes share the same snap options.
+export function snapMagnet(ev, camera, rect, prim, opts, refPt) {
+  const o = opts || SNAP_OPTS_FALLBACK;
+  const cx = ev.clientX - rect.left, cy = ev.clientY - rect.top;
   const v = new THREE.Vector3();
   const cam = new THREE.Vector3();
-  const cx = ev.clientX - rect.left, cy = ev.clientY - rect.top;
-  let best = null, bestD = SNAP_PX;
-  for (const [x, y, z] of nodes) {
+  let best = null;
+  // Project an app-mm point to screen px, or null when behind the camera.
+  const toScreen = ([x, y, z]) => {
     v.set(x * S, z * S, -y * S);
     cam.copy(v).applyMatrix4(camera.matrixWorldInverse);
-    if (cam.z > -1e-6) continue;
+    if (cam.z > -1e-6) return null;
     v.project(camera);
-    const d = Math.hypot((v.x * 0.5 + 0.5) * rect.width - cx, (-v.y * 0.5 + 0.5) * rect.height - cy);
-    if (d < bestD) { bestD = d; best = [x, y, z]; }
+    return [(v.x * 0.5 + 0.5) * rect.width, (-v.y * 0.5 + 0.5) * rect.height];
+  };
+  const consider = (p, kind, sx, sy) => {
+    const d = Math.hypot(sx - cx, sy - cy);
+    if (d < SNAP_PX && (!best || d < best.d)) best = { p, kind, d };
+  };
+  if (o.end) for (const p of prim.ends || []) { const s = toScreen(p); if (s) consider(p, 'end', s[0], s[1]); }
+  if (o.mid) for (const p of prim.mids || []) { const s = toScreen(p); if (s) consider(p, 'mid', s[0], s[1]); }
+  if (o.center) for (const p of prim.centers || []) { const s = toScreen(p); if (s) consider(p, 'center', s[0], s[1]); }
+  const segs = prim.segments || [];
+  if (o.nearest) {
+    for (const seg of segs) {
+      const [ax, ay, az] = seg[0];
+      const [bx, by, bz] = seg[1];
+      const sa = toScreen(seg[0]);
+      const sb = toScreen(seg[1]);
+      if (!sa || !sb) continue;
+      const dx = sb[0] - sa[0], dy = sb[1] - sa[1];
+      const len2 = dx * dx + dy * dy;
+      let t = len2 > 0 ? ((cx - sa[0]) * dx + (cy - sa[1]) * dy) / len2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      consider(
+        [ax + t * (bx - ax), ay + t * (by - ay), az + t * (bz - az)],
+        'nearest', sa[0] + t * dx, sa[1] + t * dy,
+      );
+    }
   }
-  return best;
-}
-
-// Nearest point on any snap segment (app-mm [p1,p2] pairs: concrete box
-// edges, rebar legs, ref lines) within SNAP_PX of the cursor, or null.
-// Screen-space point-to-segment so the magnet grabs anywhere along an edge,
-// not just at its endpoints. Segments with an endpoint behind the camera are
-// skipped (projection flips there).
-function snapToEdges(ev, camera, rect, segments) {
-  if (!segments?.length) return null;
-  const va = new THREE.Vector3();
-  const vb = new THREE.Vector3();
-  const ca = new THREE.Vector3();
-  const cb = new THREE.Vector3();
-  const cx = ev.clientX - rect.left, cy = ev.clientY - rect.top;
-  let best = null, bestD = SNAP_PX;
-  for (const seg of segments) {
-    const [ax, ay, az] = seg[0];
-    const [bx, by, bz] = seg[1];
-    va.set(ax * S, az * S, -ay * S);
-    vb.set(bx * S, bz * S, -by * S);
-    ca.copy(va).applyMatrix4(camera.matrixWorldInverse);
-    cb.copy(vb).applyMatrix4(camera.matrixWorldInverse);
-    if (ca.z > -1e-6 || cb.z > -1e-6) continue;
-    va.project(camera);
-    vb.project(camera);
-    const sax = (va.x * 0.5 + 0.5) * rect.width, say = (-va.y * 0.5 + 0.5) * rect.height;
-    const sbx = (vb.x * 0.5 + 0.5) * rect.width, sby = (-vb.y * 0.5 + 0.5) * rect.height;
-    const dx = sbx - sax, dy = sby - say;
-    const len2 = dx * dx + dy * dy;
-    let t = len2 > 0 ? ((cx - sax) * dx + (cy - say) * dy) / len2 : 0;
-    t = Math.max(0, Math.min(1, t));
-    const d = Math.hypot(cx - (sax + t * dx), cy - (say + t * dy));
-    if (d < bestD) {
-      bestD = d;
-      best = [ax + t * (bx - ax), ay + t * (by - ay), az + t * (bz - az)];
+  if (o.perp && refPt) {
+    const [rx, ry, rz] = refPt;
+    for (const seg of segs) {
+      const [ax, ay, az] = seg[0];
+      const [bx, by, bz] = seg[1];
+      const abx = bx - ax, aby = by - ay, abz = bz - az;
+      const ab2 = abx * abx + aby * aby + abz * abz;
+      if (!(ab2 > 1e-9)) continue;
+      const t = ((rx - ax) * abx + (ry - ay) * aby + (rz - az) * abz) / ab2;
+      if (t <= 0 || t >= 1) continue; // endpoints are covered by nodes
+      const foot = [ax + t * abx, ay + t * aby, az + t * abz];
+      const s = toScreen(foot);
+      if (s) consider(foot, 'perp', s[0], s[1]);
     }
   }
   return best;
-}
-
-// Combined magnet: exact nodes win (corners, bar ends, face centers), then
-// edges (anywhere along a concrete edge / rebar leg / ref line).
-function snapNodesAndEdges(ev, camera, rect, nodes, segments) {
-  return snapToRebar(ev, camera, rect, nodes) || snapToEdges(ev, camera, rect, segments);
 }
 
 // Display length: "742 mm" or "12,400 mm (12.40 m)". Shared with the overlay.
@@ -248,23 +249,23 @@ function PickHandler() {
       let root = h.object;
       while (root && root !== scene && !root.userData?.pickRoot) root = root.parent;
       if (st.ifcPick) {
-        // Snap on the rebar first: a visible bar node or anywhere along a
-        // bar leg near the cursor wins over the surface point (exact
-        // centreline point, no cover offset).
+        // Snap on the rebar first: a visible bar node, mid-leg point, or any
+        // point along a bar leg near the cursor wins over the surface point
+        // (exact centreline point, no cover offset).
         const snap = st.snapEnabled !== false
-          ? snapNodesAndEdges(ev, camera, rect,
-              rebarSnapNodes(st.bars, st.concretes, st.selectedBar),
-              rebarSegments(st.bars, st.concretes, st.selectedBar))
+          ? snapMagnet(ev, camera, rect,
+              snapPrimitives(st.bars, st.concretes, [], st.selectedBar, false),
+              st.snapOpts, null)
           : null;
         if (snap) {
           const pos = {
-            Pos_x: Math.round(snap[0] * 10) / 10,
-            Pos_y: Math.round(snap[1] * 10) / 10,
-            Pos_z: Math.round(snap[2] * 10) / 10,
+            Pos_x: Math.round(snap.p[0] * 10) / 10,
+            Pos_y: Math.round(snap.p[1] * 10) / 10,
+            Pos_z: Math.round(snap.p[2] * 10) / 10,
           };
           st.updateBar(st.selectedBar, pos);
-          st.setLastPick({ ...pos, snapped: 'rebar', at: Date.now() });
-          console.info('[pick] placed ' + JSON.stringify(pos) + ' (snapped rebar)');
+          st.setLastPick({ ...pos, snapped: `rebar-${snap.kind}`, at: Date.now() });
+          console.info('[pick] placed ' + JSON.stringify(pos) + ` (snapped rebar-${snap.kind})`);
           return;
         }
         // Snap-to-cover: push the placed point inside the clicked concrete/IFC
@@ -337,15 +338,18 @@ function MeasureHandler() {
       ), camera);
       const hits = raycaster.current.intersectObjects(collectPickTargets(scene), false);
       if (!hits.length) return;
-      // Snap on rebar, concrete, or reference line nodes first, then anywhere
-      // along their edges (concrete box edges, rebar legs, ref lines)
+      // Osnap magnet over rebar, concrete, and reference lines: enabled
+      // Endpoint/Midpoint/Center nodes, Nearest along edges, and the
+      // Perpendicular foot from the last placed point. Closest wins.
+      const pts = st.measure.points || [];
+      const refPt = pts.length ? pts[pts.length - 1] : null;
       const snapped = st.snapEnabled !== false
-        ? snapNodesAndEdges(ev, camera, rect,
-            allSnapNodes(st.bars, st.concretes, st.refLines),
-            allSnapSegments(st.bars, st.concretes, st.refLines))
+        ? snapMagnet(ev, camera, rect,
+            snapPrimitives(st.bars, st.concretes, st.refLines, -1, true),
+            st.snapOpts, refPt)
         : null;
       if (snapped) {
-        st.pushMeasurePoint(snapped.map((v) => Math.round(v * 10) / 10));
+        st.pushMeasurePoint(snapped.p.map((v) => Math.round(v * 10) / 10));
         return;
       }
       const h = hits[0];
@@ -384,9 +388,10 @@ function MeasureHandler() {
 }
 
 // Snap magnet preview: while pick-to-place or measure is armed (and snap is
-// enabled), hovering near a visible bar, concrete, or reference line node or
-// edge shows exactly where a click would snap. Local state only — no store
-// churn per mousemove.
+// enabled), hovering near an enabled osnap target shows exactly where a click
+// would snap — pink for Endpoint/Midpoint/Center/Nearest, green for
+// Perpendicular. Local state only — no store churn per mousemove.
+const SNAP_KIND_COLORS = { end: '#ec4899', mid: '#ec4899', center: '#ec4899', nearest: '#a78bfa', perp: '#22c55e' };
 function SnapPreview() {
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
@@ -402,18 +407,20 @@ function SnapPreview() {
         return;
       }
       const rect = el.getBoundingClientRect();
-      let nodes, segments;
+      let prim, refPt;
       if (inMeasure) {
-        nodes = allSnapNodes(st.bars, st.concretes, st.refLines);
-        segments = allSnapSegments(st.bars, st.concretes, st.refLines);
+        prim = snapPrimitives(st.bars, st.concretes, st.refLines, -1, true);
+        const pts = st.measure.points || [];
+        refPt = pts.length ? pts[pts.length - 1] : null;
       } else {
-        nodes = rebarSnapNodes(st.bars, st.concretes, inPick ? st.selectedBar : -1);
-        segments = rebarSegments(st.bars, st.concretes, inPick ? st.selectedBar : -1);
+        prim = snapPrimitives(st.bars, st.concretes, [], inPick ? st.selectedBar : -1, false);
+        refPt = null;
       }
-      const sn = snapNodesAndEdges(ev, camera, rect, nodes, segments);
+      const sn = snapMagnet(ev, camera, rect, prim, st.snapOpts, refPt);
       setHover((h) => {
-        const key = sn ? sn.join(',') : '';
-        return (h?.join(',') ?? '') === key ? h : sn;
+        const key = sn ? `${sn.kind}:${sn.p.map((v) => v.toFixed(1)).join(',')}` : '';
+        const old = h ? `${h.kind}:${h.p.map((v) => v.toFixed(1)).join(',')}` : '';
+        return old === key ? h : sn;
       });
     };
     el.addEventListener('pointermove', onMove);
@@ -427,13 +434,14 @@ function SnapPreview() {
     return off;
   }, []);
   if (!hover) return null;
-  const [x, y, z] = hover;
+  const [x, y, z] = hover.p;
   const pos = [x * S, z * S, -y * S];
+  const color = SNAP_KIND_COLORS[hover.kind] || '#ec4899';
   return (
     <group position={pos}>
       <mesh renderOrder={9999}>
         <octahedronGeometry args={[0.05, 0]} />
-        <meshBasicMaterial color="#ec4899" wireframe depthTest={false} transparent opacity={0.95} />
+        <meshBasicMaterial color={color} wireframe depthTest={false} transparent opacity={0.95} />
       </mesh>
       <mesh renderOrder={10000}>
         <sphereGeometry args={[0.014, 10, 10]} />

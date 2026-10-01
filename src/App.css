@@ -78,6 +78,11 @@ button.ghost:hover { background: #1d4ed8; }
 .cover { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: #9fb0cc; background: rgba(10,18,36,.75); padding: 4px 8px; border-radius: 6px; border: 1px solid #2b3d63; }
 .cover input { width: 52px; background: #0b1528; color: #e2e8f0; border: 1px solid #2b3d63; border-radius: 4px; padding: 3px 5px; font-size: 12px; }
 .cover select { background: #0b1528; color: #e2e8f0; border: 1px solid #2b3d63; border-radius: 4px; padding: 3px 5px; font-size: 12px; }
+/* snap osnap-style options popover (anchored to the 🧲 Snap ▾ split button) */
+.snap-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 60; background: #0d1730; border: 1px solid #2b3d63; border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; min-width: 178px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.snap-pop label { display: flex; gap: 8px; align-items: center; font-size: 12px; color: #c6d3ea; cursor: pointer; }
+.snap-pop input { accent-color: #1d4ed8; }
+.snap-note { font-size: 11px; color: #8fa3c8; border-top: 1px solid #243352; padding-top: 6px; }
 .overlay { position: absolute; bottom: 8px; left: 8px; right: 8px; font-size: 11px; color: #9fb0cc; background: rgba(10,18,36,.75); padding: 5px 10px; border-radius: 6px; pointer-events: none; }
 .overlay b { color: #e2e8f0; }
 
@@ -137,6 +142,7 @@ tbody tr { cursor: pointer; }
 tbody tr:hover { background: #1a2a4d; }
 tbody tr.sel { background: #1e3a8a; }
 tbody tr.hidden { opacity: 0.45; }
+tbody tr.del:hover { background: #7f1d1d; }
 tbody tr.hidden.sel { background: #17295c; }
 tr.bbs-group-row { background: #111e3b !important; font-weight: 600; color: #38bdf8; border-top: 2px solid #243b6b; border-bottom: 1px solid #243b6b; }
 tr.bbs-group-row:hover { background: #16284f !important; }

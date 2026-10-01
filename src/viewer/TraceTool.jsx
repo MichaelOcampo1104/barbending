@@ -3,8 +3,9 @@ import { useThree } from '@react-three/fiber';
 import { Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { subsetBox, extractMeshGeometry } from '../ifc/session.js';
-import { fmtLen } from './Scene.jsx';
+import { subsetBox } from '../ifc/session.js';
+import { fmtLen, snapMagnet } from './Scene.jsx';
+import { snapPrimitives } from '../bbs/shapes.js';
 
 const S = 0.001;
 const _v1 = new THREE.Vector3();
@@ -155,8 +156,40 @@ export default function TraceTool() {
       raf = 0;
       const ev = lastEv;
       if (!ev) return;
-      if (!useStore.getState().drawMode) { clearSnap(); return; }
+      const st = useStore.getState();
+      if (!st.drawMode) { clearSnap(); return; }
       const rect = el.getBoundingClientRect();
+
+      // Osnap magnet first (ref_line / beam / column / slab): same Endpoint /
+      // Midpoint / Center / Nearest / Perpendicular options as pick + measure,
+      // so ref-line endpoints can land on bar ends, edge midpoints, or the
+      // perpendicular foot from the first point. trace_ifc skips this — its
+      // placement derives from the picked IFC element's bounding box, not the
+      // cursor point. Magnet hits carry no mesh, so the host resolves
+      // spatially (80 mm margin) at click time.
+      if (st.drawMode !== 'trace_ifc' && st.snapEnabled !== false) {
+        const ds = st.drawStart;
+        const magnet = snapMagnet(ev, camera, rect,
+          snapPrimitives(st.bars, st.concretes, st.refLines, -1, true),
+          st.snapOpts,
+          ds ? [ds.x, ds.y, ds.z] : null);
+        if (magnet) {
+          const kindLabel = { end: 'Endpoint', mid: 'Midpoint', center: 'Center', nearest: 'Nearest', perp: 'Perpendicular' }[magnet.kind] || 'Snap';
+          const appPos = {
+            x: Math.round(magnet.p[0]),
+            y: Math.round(magnet.p[1]),
+            z: Math.round(magnet.p[2]),
+            worldPos: [magnet.p[0] * S, magnet.p[2] * S, -magnet.p[1] * S],
+            type: kindLabel,
+            hitObject: null,
+          };
+          liveSnapRef.current = appPos;
+          setLiveSnap(appPos);
+          setSnapNode(appPos);
+          return;
+        }
+      }
+
       mouse.current.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.current.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
 
@@ -180,7 +213,14 @@ export default function TraceTool() {
       }
 
       const hit = hits[0];
-      const candidates = getSnapCandidates(hit);
+      // Raycast fallback honors the snap options too: mesh vertices/corners
+      // need Endpoint, face edge midpoints need Midpoint. (The raw surface
+      // hit stays the unsnapped fallback regardless.)
+      const snapOpts = st.snapOpts || { end: true, mid: true };
+      const candidates = getSnapCandidates(hit).filter((c) =>
+        c.type === 'Surface Point' ? true
+        : c.type === 'Edge Midpoint' ? snapOpts.mid !== false
+        : snapOpts.end !== false);
 
       // Find closest snap candidate to hit point in 3D world space
       let best = null;

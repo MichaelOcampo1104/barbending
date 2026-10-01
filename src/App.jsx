@@ -744,6 +744,9 @@ function ViewportBar() {
   const setMeasureActive = useStore((s) => s.setMeasureActive);
   const snapEnabled = useStore((s) => s.snapEnabled);
   const setSnapEnabled = useStore((s) => s.setSnapEnabled);
+  const snapOpts = useStore((s) => s.snapOpts);
+  const setSnapOpt = useStore((s) => s.setSnapOpt);
+  const [snapMenu, setSnapMenu] = useState(false);
   const lapArmed = useStore((s) => s.lapArmed);
   const setLapArmed = useStore((s) => s.setLapArmed);
   const lapAnchor = useStore((s) => s.lapAnchor);
@@ -823,7 +826,27 @@ function ViewportBar() {
         )}
         <button className={ifcPick ? 'on' : ''} onClick={() => setIfcPick(!ifcPick)} title="Click IFC / concrete / bar surfaces to move the selected bar there">🎯 Pick pos</button>
         <button className={measure.active ? 'on' : ''} onClick={() => setMeasureActive(!measure.active)} title="Measure: LMB clicks drop points on surfaces, RMB removes last, Esc exits (view-only)">📏 Measure</button>
-        <button className={snapEnabled !== false ? 'on' : ''} onClick={() => setSnapEnabled(!(snapEnabled !== false))} title="Snap magnet: pick & measure snap to nearby bar ends/corners (pink marker shows the target)">🧲 Snap</button>
+        <span style={{ position: 'relative', display: 'inline-flex', gap: 0 }}>
+          <button className={snapEnabled !== false ? 'on' : ''} onClick={() => setSnapEnabled(!(snapEnabled !== false))} title={`Snap magnet (${['end', 'mid', 'center', 'nearest', 'perp'].filter((k) => snapOpts?.[k]).join(' · ') || 'nothing enabled'}): pick & measure snap to nearby targets`} style={{ borderRadius: '6px 0 0 6px' }}>🧲 Snap</button>
+          <button onClick={() => setSnapMenu((v) => !v)} title="Snap options: endpoint / midpoint / center / nearest / perpendicular" style={{ borderRadius: '0 6px 6px 0', borderLeft: '1px solid #0f172a' }}>▾</button>
+          {snapMenu && (
+            <div className="snap-pop" onClick={(e) => e.stopPropagation()}>
+              {[
+                ['end', 'Endpoint', 'Bar vertices, concrete corners, ref-line ends'],
+                ['mid', 'Midpoint', 'Bar-leg and concrete-edge midpoints'],
+                ['center', 'Center', 'Concrete face centers'],
+                ['nearest', 'Nearest', 'Any point along an edge / bar leg (violet marker)'],
+                ['perp', 'Perpendicular', 'Foot of perpendicular from the last measure point (green marker)'],
+              ].map(([k, label, tip]) => (
+                <label key={k} title={tip}>
+                  <input type="checkbox" checked={!!snapOpts?.[k]} onChange={(e) => setSnapOpt(k, e.target.checked)} />
+                  {label}
+                </label>
+              ))}
+              <div className="snap-note">Closest enabled target to the cursor wins. Perpendicular needs a placed measure point.</div>
+            </div>
+          )}
+        </span>
         <button className={lapArmed ? 'on' : ''} onClick={() => setLapArmed(!lapArmed)} title="Lap splice: click anchor bar, then lapping bar (EC2 table, straight/bent/crank bars)">🔗 Lap</button>
         <label className="cover" title="Concrete cover (mm) — pick-to-place sinks the bar centreline this far + Ø/2 inside the clicked face">
           cover
@@ -838,8 +861,8 @@ function ViewportBar() {
         {drawMode && drawStart && <b> — 📐 [{drawMode.toUpperCase()} TOOL] Click opposite corner/node to complete member · Esc to cancel</b>}
         {snapNode && <b> — 📍 Snapped: ({snapNode.x}, {snapNode.y}, {snapNode.z}) [{snapNode.type}]</b>}
         {section?.enabled && <b> — drag ◼ face cubes to push/pull the section</b>}
-        {ifcPick && <b> — pick mode: click IFC / concrete to place the selected bar (cover {cover}mm + Ø/2 inside the face){snapEnabled !== false && ' · near a bar end snaps ⚓'}</b>}
-        {measure.active && <b> — 📏 {measure.points.length} pts{measure.points.length > 1 && ` · total ${fmtLen(measureTotal(measure.points))}`} · click surfaces{snapEnabled !== false && ' · snaps to bar ends'} · RMB removes last · Esc done</b>}
+        {ifcPick && <b> — pick mode: click IFC / concrete to place the selected bar (cover {cover}mm + Ø/2 inside the face){snapEnabled !== false && ' · snap ⚓ (▾ options)'}</b>}
+        {measure.active && <b> — 📏 {measure.points.length} pts{measure.points.length > 1 && ` · total ${fmtLen(measureTotal(measure.points))}`} · click surfaces{snapEnabled !== false && ' · snap ⚓ (▾ options)'} · RMB removes last · Esc done</b>}
         {lapArmed && <b> — 🔗 lap: click {lapAnchor == null ? 'anchor bar' : 'lapping bar'}{lapAnchor != null && bars[lapAnchor] ? ` (anchor ${bars[lapAnchor].Bar_mark})` : ''} · Esc cancels</b>}
         {lastLap && <b> — 🔗 {lastLap.b} → {lastLap.a} · lap {lastLap.len.toLocaleString('en-US')} mm ({lastLap.bond} bond, Ø{lastLap.dia})</b>}
         {lastPick && <b> — placed ({lastPick.Pos_x}, {lastPick.Pos_y}, {lastPick.Pos_z}){lastPick.snapped ? ' ⚓ rebar' : ''}</b>}
@@ -858,6 +881,7 @@ function BbsStrip() {
   const selectBar = useStore((s) => s.selectBar);
   const selectedBar = useStore((s) => s.selectedBar);
   const duplicateBar = useStore((s) => s.duplicateBar);
+  const removeBar = useStore((s) => s.removeBar);
   const requestFit = useStore((s) => s.requestFit);
   const fileRef = useRef(null);
   const insertFileRef = useRef(null);
@@ -865,6 +889,7 @@ function BbsStrip() {
   const [elemFilter, setElemFilter] = useState('all');
   const [groupByElem, setGroupByElem] = useState(true);
   const [collapsed, setCollapsed] = useState({});
+  const [deleteArmed, setDeleteArmed] = useState(false);
 
   const concMap = useMemo(() => new Map((concretes || []).map((c) => [c.id, c])), [concretes]);
   const allRows = useMemo(() => bars.map((b, idx) => ({ ...enrichBar(b, concretes), _origIdx: idx })), [bars, concretes]);
@@ -910,6 +935,19 @@ function BbsStrip() {
 
   const toggleCollapse = (gid) => setCollapsed((c) => ({ ...c, [gid]: !c[gid] }));
 
+  // Delete mode: Esc disarms (skipped while typing in a field).
+  useEffect(() => {
+    if (!deleteArmed) return;
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      setDeleteArmed(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [deleteArmed]);
+
   const activeConcrete = elemFilter !== 'all' && elemFilter !== 'unhosted' ? concMap.get(elemFilter) : null;
   const filterLabel = activeConcrete ? activeConcrete.name : elemFilter === 'unhosted' ? 'Unhosted Rebars' : 'All Elements';
   const exportBars = filteredRows.map((r) => bars[r._origIdx]);
@@ -941,13 +979,14 @@ function BbsStrip() {
     return (
       <tr
         key={i}
-        className={(i === selectedBar ? 'sel' : '') + (r.hidden ? ' hidden' : '')}
-        onClick={() => selectBar(i)}
+        className={(i === selectedBar ? 'sel' : '') + (r.hidden ? ' hidden' : '') + (deleteArmed ? ' del' : '')}
+        onClick={() => { if (deleteArmed) removeBar(i); else selectBar(i); }}
         onDoubleClick={() => {
+          if (deleteArmed) return;
           selectBar(i);
           requestFit('bar', i);
         }}
-        title="Click to select · Double-click to zoom directly to this bar"
+        title={deleteArmed ? 'Delete mode: click to delete this bar (Ctrl+Z undoes)' : 'Click to select · Double-click to zoom directly to this bar'}
         style={{ cursor: 'pointer' }}
       >
         <td onClick={(e) => e.stopPropagation()} style={{ whiteSpace: 'nowrap' }}>
@@ -999,6 +1038,14 @@ function BbsStrip() {
         )}
 
         <span className="btnrow inline">
+          <button
+            className={deleteArmed ? 'danger sm' : 'ghost sm'}
+            style={deleteArmed ? { background: '#dc2626', fontWeight: 700 } : undefined}
+            onClick={() => setDeleteArmed((v) => !v)}
+            title={deleteArmed ? 'Delete mode ON: click any row to delete it · Esc to exit · Ctrl+Z undoes' : 'Delete mode: arm, then click rows to delete them (undoable)'}
+          >
+            {deleteArmed ? '🗑 Delete ON' : '🗑 Delete'}
+          </button>
           <button className="ghost sm" onClick={() => setBars(autoAssignBarMarks(bars, { scopeByHost: elemFilter !== 'all' }))} title="Detect and unify bar marks for all bars with identical shape, diameter, and length">
             🏷️ Match Marks
           </button>
@@ -1013,7 +1060,7 @@ function BbsStrip() {
           <button onClick={() => fileRef.current?.click()} title="Import and replace all bars in model (Defaults to XY plane)">⤒ Replace CSV</button>
           <input ref={fileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, false)} />
         </span>
-        <span className="hint">Tip: Double-click any row to zoom · Press F to center</span>
+        <span className="hint">{deleteArmed ? '🗑 Delete mode: click a row to delete · Esc to exit · Ctrl+Z undoes' : 'Tip: Double-click any row to zoom · Press F to center'}</span>
       </div>
       <div className="tblwrap">
         <table>

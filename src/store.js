@@ -359,6 +359,16 @@ export const useStore = create((set, get) => ({
   // Rebar snap magnet (pick + measure). UI pref: never saved, never in history.
   snapEnabled: true,
   setSnapEnabled: (v) => set({ snapEnabled: v }),
+  // Osnap-style snap options (ViewportBar ▾ menu). All on by default so the
+  // magnet behaves as before; toggling narrows what it grabs. Session-only
+  // UI prefs: never saved, never in history.
+  //   end: bar vertices, concrete corners, ref-line endpoints
+  //   mid: bar-leg / concrete-edge midpoints
+  //   center: concrete face centers
+  //   nearest: anywhere along an edge/leg/line (cursor-nearest point)
+  //   perp: foot of perpendicular from the last measure point onto an edge
+  snapOpts: { end: true, mid: true, center: true, nearest: true, perp: true },
+  setSnapOpt: (k, v) => set((s) => ({ snapOpts: { ...s.snapOpts, [k]: v } })),
   pushMeasurePoint: (p) => set((s) => {
     if (!s.measure.active) return {};
     const pts = [...s.measure.points, p].slice(-64);

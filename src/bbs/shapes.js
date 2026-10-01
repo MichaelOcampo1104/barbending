@@ -712,6 +712,64 @@ export function allSnapSegments(bars, concretes, refLines = [], excludeIdx = -1,
   return segs;
 }
 
+// Categorized snap primitives for osnap-style options (Endpoint / Midpoint /
+// Center toggles + Nearest / Perpendicular edge modes). All points/segments
+// are app-mm; visibility rules mirror the individual builders above.
+//   ends: bar vertices, concrete corners, ref-line endpoints
+//   mids: bar-leg midpoints, concrete edge midpoints, ref-line midpoints
+//   centers: concrete face centers
+//   segments: concrete edges, bar legs, ref lines (Nearest + Perpendicular)
+export function snapPrimitives(bars, concretes, refLines = [], excludeIdx = -1, includeConcrete = true) {
+  const ends = [], mids = [], centers = [];
+  const hiddenIds = new Set((concretes || []).filter((c) => c.visible === false).map((c) => c.id));
+  const hiddenBoxes = (concretes || []).filter((c) => c.visible === false)
+    .map((c) => ({ minX: c.x, minY: c.y, minZ: c.z, maxX: c.x + c.lx, maxY: c.y + c.ly, maxZ: c.z + c.lz }));
+  (bars || []).forEach((b, bi) => {
+    if (bi === excludeIdx || b.hidden) return;
+    if (b.host && hiddenIds.has(b.host)) return;
+    if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return;
+    const g = genBarPoints(b);
+    const px = Number(b.Pos_x) || 0, py = Number(b.Pos_y) || 0, pz = Number(b.Pos_z) || 0;
+    const transformed = g.points.map((pt) => transformBarLocalPoint(b, pt));
+    for (const [ox, oy, oz] of distOffsets(b).slice(0, MAX_RENDER_COPIES)) {
+      const world = transformed.map(([tx, ty, tz]) => [px + ox + tx, py + oy + ty, pz + oz + tz]);
+      for (const w of world) ends.push(w);
+      for (let i = 1; i < world.length; i++) {
+        mids.push([
+          (world[i - 1][0] + world[i][0]) / 2,
+          (world[i - 1][1] + world[i][1]) / 2,
+          (world[i - 1][2] + world[i][2]) / 2,
+        ]);
+      }
+    }
+  });
+  if (includeConcrete) {
+    (concretes || []).forEach((c) => {
+      if (c.visible === false) return;
+      const x0 = Number(c.x) || 0, y0 = Number(c.y) || 0, z0 = Number(c.z) || 0;
+      const lx = Number(c.lx) || 0, ly = Number(c.ly) || 0, lz = Number(c.lz) || 0;
+      for (const dx of [0, lx]) for (const dy of [0, ly]) for (const dz of [0, lz]) ends.push([x0 + dx, y0 + dy, z0 + dz]);
+      for (const dy of [0, ly]) for (const dz of [0, lz]) mids.push([x0 + lx / 2, y0 + dy, z0 + dz]);
+      for (const dx of [0, lx]) for (const dz of [0, lz]) mids.push([x0 + dx, y0 + ly / 2, z0 + dz]);
+      for (const dx of [0, lx]) for (const dy of [0, ly]) mids.push([x0 + dx, y0 + dy, z0 + lz / 2]);
+      centers.push(
+        [x0 + lx / 2, y0 + ly / 2, z0], [x0 + lx / 2, y0 + ly / 2, z0 + lz],
+        [x0, y0 + ly / 2, z0 + lz / 2], [x0 + lx, y0 + ly / 2, z0 + lz / 2],
+        [x0 + lx / 2, y0, z0 + lz / 2], [x0 + lx / 2, y0 + ly, z0 + lz / 2],
+      );
+    });
+  }
+  const hiddenConcreteIds = new Set((concretes || []).filter((c) => c.visible === false).map((c) => c.id));
+  for (const l of refLines || []) {
+    if (l.visible === false) continue;
+    if (l.host && hiddenConcreteIds.has(l.host)) continue;
+    if (l.p1) ends.push(l.p1);
+    if (l.p2) ends.push(l.p2);
+    if (l.p1 && l.p2) mids.push([(l.p1[0] + l.p2[0]) / 2, (l.p1[1] + l.p2[1]) / 2, (l.p1[2] + l.p2[2]) / 2]);
+  }
+  return { ends, mids, centers, segments: allSnapSegments(bars, concretes, refLines, excludeIdx, includeConcrete) };
+}
+
 // Distribution grid — mirrors FreeCAD parametric_utils.py place_c_link_*:
 // copies at (Pos_x + ix*spacing_x + offset_x, Pos_y + iy*spacing_y + offset_y,
 //            Pos_z + offset_z). Applies to ALL bar types in the browser so
