@@ -3,7 +3,7 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, AdaptiveDpr, Line, Html, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { genBarPoints, transformBarLocalPoint, distOffsets, barOverlapsBoxes, rebarSnapNodes, concreteSnapNodes, allSnapNodes, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES, barAppBox } from '../bbs/shapes.js';
+import { genBarPoints, transformBarLocalPoint, distOffsets, barOverlapsBoxes, rebarSnapNodes, rebarSegments, concreteSnapNodes, concreteEdges, refLineSegments, allSnapNodes, allSnapSegments, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES, barAppBox } from '../bbs/shapes.js';
 import FitIfc from './FitIfc.jsx';
 import AutoClipping from './AutoClipping.jsx';
 import SectionBox from './SectionBox.jsx';
@@ -32,6 +32,50 @@ function snapToRebar(ev, camera, rect, nodes) {
     if (d < bestD) { bestD = d; best = [x, y, z]; }
   }
   return best;
+}
+
+// Nearest point on any snap segment (app-mm [p1,p2] pairs: concrete box
+// edges, rebar legs, ref lines) within SNAP_PX of the cursor, or null.
+// Screen-space point-to-segment so the magnet grabs anywhere along an edge,
+// not just at its endpoints. Segments with an endpoint behind the camera are
+// skipped (projection flips there).
+function snapToEdges(ev, camera, rect, segments) {
+  if (!segments?.length) return null;
+  const va = new THREE.Vector3();
+  const vb = new THREE.Vector3();
+  const ca = new THREE.Vector3();
+  const cb = new THREE.Vector3();
+  const cx = ev.clientX - rect.left, cy = ev.clientY - rect.top;
+  let best = null, bestD = SNAP_PX;
+  for (const seg of segments) {
+    const [ax, ay, az] = seg[0];
+    const [bx, by, bz] = seg[1];
+    va.set(ax * S, az * S, -ay * S);
+    vb.set(bx * S, bz * S, -by * S);
+    ca.copy(va).applyMatrix4(camera.matrixWorldInverse);
+    cb.copy(vb).applyMatrix4(camera.matrixWorldInverse);
+    if (ca.z > -1e-6 || cb.z > -1e-6) continue;
+    va.project(camera);
+    vb.project(camera);
+    const sax = (va.x * 0.5 + 0.5) * rect.width, say = (-va.y * 0.5 + 0.5) * rect.height;
+    const sbx = (vb.x * 0.5 + 0.5) * rect.width, sby = (-vb.y * 0.5 + 0.5) * rect.height;
+    const dx = sbx - sax, dy = sby - say;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((cx - sax) * dx + (cy - say) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const d = Math.hypot(cx - (sax + t * dx), cy - (say + t * dy));
+    if (d < bestD) {
+      bestD = d;
+      best = [ax + t * (bx - ax), ay + t * (by - ay), az + t * (bz - az)];
+    }
+  }
+  return best;
+}
+
+// Combined magnet: exact nodes win (corners, bar ends, face centers), then
+// edges (anywhere along a concrete edge / rebar leg / ref line).
+function snapNodesAndEdges(ev, camera, rect, nodes, segments) {
+  return snapToRebar(ev, camera, rect, nodes) || snapToEdges(ev, camera, rect, segments);
 }
 
 // Display length: "742 mm" or "12,400 mm (12.40 m)". Shared with the overlay.
@@ -204,11 +248,13 @@ function PickHandler() {
       let root = h.object;
       while (root && root !== scene && !root.userData?.pickRoot) root = root.parent;
       if (st.ifcPick) {
-        // Snap on the rebar first: a visible bar end/corner near the cursor
-        // wins over the surface point (exact node, no cover offset — the node
-        // already lies on a bar centreline).
+        // Snap on the rebar first: a visible bar node or anywhere along a
+        // bar leg near the cursor wins over the surface point (exact
+        // centreline point, no cover offset).
         const snap = st.snapEnabled !== false
-          ? snapToRebar(ev, camera, rect, rebarSnapNodes(st.bars, st.concretes, st.selectedBar))
+          ? snapNodesAndEdges(ev, camera, rect,
+              rebarSnapNodes(st.bars, st.concretes, st.selectedBar),
+              rebarSegments(st.bars, st.concretes, st.selectedBar))
           : null;
         if (snap) {
           const pos = {
@@ -291,9 +337,12 @@ function MeasureHandler() {
       ), camera);
       const hits = raycaster.current.intersectObjects(collectPickTargets(scene), false);
       if (!hits.length) return;
-      // Snap on rebar, concrete, or reference line nodes
+      // Snap on rebar, concrete, or reference line nodes first, then anywhere
+      // along their edges (concrete box edges, rebar legs, ref lines)
       const snapped = st.snapEnabled !== false
-        ? snapToRebar(ev, camera, rect, allSnapNodes(st.bars, st.concretes, st.refLines))
+        ? snapNodesAndEdges(ev, camera, rect,
+            allSnapNodes(st.bars, st.concretes, st.refLines),
+            allSnapSegments(st.bars, st.concretes, st.refLines))
         : null;
       if (snapped) {
         st.pushMeasurePoint(snapped.map((v) => Math.round(v * 10) / 10));
@@ -335,8 +384,9 @@ function MeasureHandler() {
 }
 
 // Snap magnet preview: while pick-to-place or measure is armed (and snap is
-// enabled), hovering near a visible bar, concrete, or reference line corner shows exactly where a
-// click would snap. Local state only — no store churn per mousemove.
+// enabled), hovering near a visible bar, concrete, or reference line node or
+// edge shows exactly where a click would snap. Local state only — no store
+// churn per mousemove.
 function SnapPreview() {
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
@@ -352,10 +402,15 @@ function SnapPreview() {
         return;
       }
       const rect = el.getBoundingClientRect();
-      const nodes = inMeasure
-        ? allSnapNodes(st.bars, st.concretes, st.refLines)
-        : rebarSnapNodes(st.bars, st.concretes, inPick ? st.selectedBar : -1);
-      const sn = snapToRebar(ev, camera, rect, nodes);
+      let nodes, segments;
+      if (inMeasure) {
+        nodes = allSnapNodes(st.bars, st.concretes, st.refLines);
+        segments = allSnapSegments(st.bars, st.concretes, st.refLines);
+      } else {
+        nodes = rebarSnapNodes(st.bars, st.concretes, inPick ? st.selectedBar : -1);
+        segments = rebarSegments(st.bars, st.concretes, inPick ? st.selectedBar : -1);
+      }
+      const sn = snapNodesAndEdges(ev, camera, rect, nodes, segments);
       setHover((h) => {
         const key = sn ? sn.join(',') : '';
         return (h?.join(',') ?? '') === key ? h : sn;

@@ -30,6 +30,7 @@ function resolveConcreteHostId(snapPos, hitObject, concretes) {
 // changes (covers dim edits + IFC placement offsets/rotations).
 const boxCache = new WeakMap();
 function cachedWorldBox(obj) {
+  if (!obj) return new THREE.Box3();
   const entry = boxCache.get(obj);
   const el = obj.matrixWorld?.elements;
   if (entry && entry.g === obj.geometry && el && entry.m.every((v, i) => v === el[i])) {
@@ -37,7 +38,9 @@ function cachedWorldBox(obj) {
   }
   let box;
   try {
-    box = obj.userData?.ifcKey ? subsetBox(obj) : new THREE.Box3().setFromObject(obj);
+    box = (obj.userData?.ifcKey || obj.geometry?.index || obj.parent?.userData?.pickRoot === 'ifc')
+      ? subsetBox(obj)
+      : new THREE.Box3().setFromObject(obj);
   } catch {
     box = new THREE.Box3();
   }
@@ -244,9 +247,38 @@ export default function TraceTool() {
       downPos = null;
       if (dx * dx + dy * dy > 25) return; // Ignore drags
 
-      const currentSnap = liveSnapRef.current;
-      if (!currentSnap || !drawMode) return;
+      if (!drawMode) return;
       if (useStore.getState().measure?.active) return; // measuring owns clicks
+
+      // Fallback: resolve snap or direct hit at click coordinates if liveSnap is null
+      let currentSnap = liveSnapRef.current;
+      if (!currentSnap) {
+        const rect = el.getBoundingClientRect();
+        const nx = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+        const ny = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.current.setFromCamera(new THREE.Vector2(nx, ny), camera);
+        const roots = [];
+        scene.traverse((o) => { if (o.userData?.pickRoot) roots.push(o); });
+        const targets = [];
+        for (const r of roots) {
+          if (!r.visible) continue;
+          if (r.userData.pickRoot === 'concrete' && r.isMesh) targets.push(r);
+          else r.traverse((o) => { if (o.isMesh && o.visible && !o.userData?.stencil) targets.push(o); });
+        }
+        const hits = raycaster.current.intersectObjects(targets, false);
+        if (hits.length) {
+          const hit = hits[0];
+          currentSnap = {
+            x: Math.round(hit.point.x * 1000),
+            y: Math.round(-hit.point.z * 1000),
+            z: Math.round(hit.point.y * 1000),
+            worldPos: [hit.point.x, hit.point.y, hit.point.z],
+            type: 'Surface Point',
+            hitObject: hit.object,
+          };
+        }
+      }
+      if (!currentSnap) return;
 
       // MODE 1: 1-Click IFC Element Auto-Tracing
       if (drawMode === 'trace_ifc') {
@@ -263,7 +295,7 @@ export default function TraceTool() {
           const ifcKey = targetMesh.userData?.ifcKey || null;
           const elData = ifcMeta?.elements?.find((e) => e.key === ifcKey);
 
-          const bb = subsetBox(targetMesh);
+          const bb = targetMesh.userData?.ifcKey ? subsetBox(targetMesh) : cachedWorldBox(targetMesh);
           if (bb.isEmpty() || !Number.isFinite(bb.min.x + bb.max.x)) return;
 
           const x = Math.round(bb.min.x * 1000);
@@ -274,19 +306,20 @@ export default function TraceTool() {
           const lz = Math.max(Math.round((bb.max.y - bb.min.y) * 1000), 50);
 
           const type = elData?.type || '';
-          let prefix = elData?.typeLabel ? elData.typeLabel.replace(/s$/, '') : 'Concrete';
+          let prefix = elData?.typeLabel ? elData.typeLabel.replace(/s\b/i, '').replace(/\(.*\)/, '').trim() : 'Concrete';
           if (/BEAM/i.test(type)) prefix = 'Beam';
           else if (/COLUMN/i.test(type)) prefix = 'Column';
           else if (/SLAB/i.test(type)) prefix = 'Slab';
           else if (/WALL/i.test(type)) prefix = 'Wall';
-          else if (/FOOTING/i.test(type)) prefix = 'Footing';
+          else if (/FOOTING|PILE/i.test(type)) prefix = 'Footing';
           else {
             if (lz > lx && lz > ly) prefix = 'Column';
             else if (lx >= lz && lx >= ly && lz > 250) prefix = 'Beam';
             else if (lx > 1000 && ly > 1000 && lz <= 400) prefix = 'Slab';
           }
 
-          const count = concretes.filter((c) => c.name.startsWith(prefix)).length + 1;
+          const existingConcretes = useStore.getState().concretes || [];
+          const count = existingConcretes.filter((c) => c.name.startsWith(prefix)).length + 1;
           const name = elData?.name || `${prefix} ${count}`;
 
           addConcrete({ name, lx, ly, lz, x, y, z });

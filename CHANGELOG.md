@@ -2,6 +2,14 @@
 
 ## Unreleased (working tree → next push)
 
+- **IFC Loading & Auto-Trace Fixes**:
+  - **Schema compatibility**: Expanded schema validation in `session.js` to support all standard IFC versions (`IFC2X3`, `IFC4`, `IFC4X3`, etc.) rather than rejecting non-IFC4 files.
+  - **Expanded IFC element types**: Added standard case and common structural types (`IFCBEAMSTANDARDCASE`, `IFCCOLUMNSTANDARDCASE`, `IFCSLABSTANDARDCASE`, `IFCSLABELEMENTEDCASE`, `IFCWALLELEMENTEDCASE`, `IFCSTAIR`, `IFCRAMP`, `IFCCOVERING`, `IFCRAILING`) to `IFC_TYPES` and `SOLID_CAP_TYPES`.
+  - **Enhanced unit detection**: Improved `detectLengthUnit` to handle full unit keywords (`MILLIMETRE`, `CENTIMETRE`, `FOOT`, `INCH`) and `IFCCONVERSIONBASEDUNIT` definitions.
+  - **Index-aware IFC subset bounding**: Fixed `cachedWorldBox` in `TraceTool.jsx` to always compute index-aware subset bounding boxes for IFC meshes, preventing pointer snapping and hover previews from collapsing to the entire IFC model's global bounding box.
+  - **Auto-Trace direct raycast fallback**: Added pointerup raycasting fallback in `TraceTool.jsx` to ensure 1-click Auto-Trace reliably captures the target IFC element even without prior mousemove events.
+  - **Shading effect reactivity & panel fixes**: Added `shading`/`isWireframe` to `IfcModel.jsx` effect dependencies and fixed concrete array reference in `IfcPanel.jsx` Trace Concrete button.
+
 - **Measure controller bar/ref roles fix**:
   - Root cause: the HUD always assumed Point 1 = fixed ref and Point 2 = on the
     bar, so clicking rebar-first (or measuring an unselected bar) moved the

@@ -1,7 +1,34 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
 import { UNIT_CHOICES } from './units.js';
+
+// Draft-text number input: keeps "-", "" typable so negative placement /
+// rotation values can be entered. Commits only finite numbers.
+function Num({ value, onCommit }) {
+  const [text, setText] = useState(value ?? '');
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setText(value ?? '');
+  }, [value]);
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={text}
+      onFocus={() => { focused.current = true; }}
+      onChange={(e) => {
+        setText(e.target.value);
+        const t = String(e.target.value).trim();
+        if (t === '' || t === '-' || t === '+' || t === '.' || t === '-.' || t === '+.') return;
+        const n = Number(t);
+        if (Number.isFinite(n)) onCommit(n);
+      }}
+      onBlur={() => { focused.current = false; setText(value ?? ''); }}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+    />
+  );
+}
 
 // ---- helpers ---------------------------------------------------------------
 const mm = (modelVal, u) => `${Math.round(modelVal * u * 1000).toLocaleString('en-US')}`;
@@ -195,8 +222,8 @@ export default function IfcPanel() {
       <div className="grid3">
         {[['X', 0], ['Y', 1], ['Z', 2]].map(([l, i]) => (
           <label key={l} className="fld"><span>{l} mm</span>
-            <input type="number" value={xform.pos[i]} onChange={(e) => {
-              const v = [...xform.pos]; v[i] = Number(e.target.value); setIfcXform({ pos: v });
+            <Num value={xform.pos[i]} onCommit={(n) => {
+              const v = [...xform.pos]; v[i] = n; setIfcXform({ pos: v });
             }} />
           </label>
         ))}
@@ -204,8 +231,8 @@ export default function IfcPanel() {
       <div className="grid3">
         {[['Rx°', 0], ['Ry°', 1], ['Rz°', 2]].map(([l, i]) => (
           <label key={l} className="fld"><span>{l}</span>
-            <input type="number" value={xform.rot[i]} onChange={(e) => {
-              const v = [...xform.rot]; v[i] = Number(e.target.value); setIfcXform({ rot: v });
+            <Num value={xform.rot[i]} onCommit={(n) => {
+              const v = [...xform.rot]; v[i] = n; setIfcXform({ rot: v });
             }} />
           </label>
         ))}
@@ -249,7 +276,8 @@ export default function IfcPanel() {
               const lx = Math.max(Math.round((bb.max.x - bb.min.x) * 1000), 50);
               const ly = Math.max(Math.round((bb.max.z - bb.min.z) * 1000), 50);
               const lz = Math.max(Math.round((bb.max.y - bb.min.y) * 1000), 50);
-              const name = sel.name || `${sel.typeLabel || 'Concrete'} ${concretes.length + 1}`;
+              const existingConcretes = useStore.getState().concretes || [];
+              const name = sel.name || `${sel.typeLabel || 'Concrete'} ${existingConcretes.length + 1}`;
               useStore.getState().addConcrete({ name, lx, ly, lz, x, y, z });
             }} title="Convert this IFC element into a concrete member with exact dimensions">⚡ Trace Concrete</button>
             <button onClick={() => solo(sel.key)}>Isolate</button>

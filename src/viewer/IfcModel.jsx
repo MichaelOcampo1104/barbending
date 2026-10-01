@@ -75,7 +75,7 @@ export default function IfcModel() {
       }
     }
     group.updateMatrixWorld(true);
-  }, [group, ifc, selected, xform, xray, rev]);
+  }, [group, ifc, selected, xform, shading, isWireframe, xray, rev]);
 
   // Solid-cut stencil children: same geometry, no colour/depth writes, inherit
   // the subset transform automatically. Removed when caps are off/unloaded.

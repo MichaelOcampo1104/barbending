@@ -72,9 +72,43 @@ export const useStore = create((set, get) => ({
     concretes: [...s.concretes, { id: `c${Date.now()}`, ...c }],
     selectedConcrete: `c${Date.now()}`,
   })),
-  updateConcrete: (id, patch) => set((s) => withHist(s, {
-    concretes: s.concretes.map((c) => (c.id === id ? { ...c, ...patch } : c)),
-  })),
+  updateConcrete: (id, patch) => set((s) => {
+    const old = s.concretes.find((c) => c.id === id);
+    // Host-follow: translating a member (x/y/z edit) carries its explicit
+    // children — hosted bars shift Pos, hosted refLines shift p1/p2 by the
+    // same delta, atomically (one undo step). Resize (lx/ly/lz), rename, and
+    // visibility never move children. Only explicit b.host/l.host === id
+    // follow; spatially-coincident but unhosted bars stay put.
+    let dx = 0, dy = 0, dz = 0;
+    if (old) {
+      const nx = patch.x !== undefined ? Number(patch.x) : Number(old.x);
+      const ny = patch.y !== undefined ? Number(patch.y) : Number(old.y);
+      const nz = patch.z !== undefined ? Number(patch.z) : Number(old.z);
+      if (Number.isFinite(nx) && Number.isFinite(Number(old.x))) dx = nx - Number(old.x);
+      if (Number.isFinite(ny) && Number.isFinite(Number(old.y))) dy = ny - Number(old.y);
+      if (Number.isFinite(nz) && Number.isFinite(Number(old.z))) dz = nz - Number(old.z);
+    }
+    if (dx === 0 && dy === 0 && dz === 0) {
+      return withHist(s, {
+        concretes: s.concretes.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+      });
+    }
+    const r1 = (v) => Math.round(v * 10) / 10;
+    return withHist(s, {
+      concretes: s.concretes.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+      bars: s.bars.map((b) => (b.host === id ? {
+        ...b,
+        Pos_x: r1((Number(b.Pos_x) || 0) + dx),
+        Pos_y: r1((Number(b.Pos_y) || 0) + dy),
+        Pos_z: r1((Number(b.Pos_z) || 0) + dz),
+      } : b)),
+      refLines: (s.refLines || []).map((l) => (l.host === id ? {
+        ...l,
+        p1: l.p1 ? [r1(l.p1[0] + dx), r1(l.p1[1] + dy), r1(l.p1[2] + dz)] : l.p1,
+        p2: l.p2 ? [r1(l.p2[0] + dx), r1(l.p2[1] + dy), r1(l.p2[2] + dz)] : l.p2,
+      } : l)),
+    });
+  }),
   removeConcrete: (id) => set((s) => withHist(s, {
     concretes: s.concretes.filter((c) => c.id !== id),
     // bars hosted on the removed member become unhosted (stay visible)

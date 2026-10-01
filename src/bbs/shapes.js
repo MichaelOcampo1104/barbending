@@ -585,6 +585,16 @@ export function concreteSnapNodes(concretes) {
         }
       }
     }
+    // 12 edge midpoints (4 along each axis)
+    for (const dy of [0, ly]) {
+      for (const dz of [0, lz]) nodes.push([x0 + lx / 2, y0 + dy, z0 + dz]);
+    }
+    for (const dx of [0, lx]) {
+      for (const dz of [0, lz]) nodes.push([x0 + dx, y0 + ly / 2, z0 + dz]);
+    }
+    for (const dx of [0, lx]) {
+      for (const dy of [0, ly]) nodes.push([x0 + dx, y0 + dy, z0 + lz / 2]);
+    }
     // 6 face centers
     nodes.push([x0 + lx / 2, y0 + ly / 2, z0]);
     nodes.push([x0 + lx / 2, y0 + ly / 2, z0 + lz]);
@@ -594,6 +604,58 @@ export function concreteSnapNodes(concretes) {
     nodes.push([x0 + lx / 2, y0 + ly, z0 + lz / 2]);
   });
   return nodes;
+}
+
+// Box edges of visible concrete members as app-mm [p1, p2] pairs (12 per
+// member). Drives true edge snapping so the magnet grabs anywhere along an
+// edge, not just at corners/midpoints.
+export function concreteEdges(concretes) {
+  const segs = [];
+  (concretes || []).forEach((c) => {
+    if (c.visible === false) return;
+    const x0 = Number(c.x) || 0, y0 = Number(c.y) || 0, z0 = Number(c.z) || 0;
+    const lx = Number(c.lx) || 0, ly = Number(c.ly) || 0, lz = Number(c.lz) || 0;
+    const X = [x0, x0 + lx], Y = [y0, y0 + ly], Z = [z0, z0 + lz];
+    for (const y of Y) for (const z of Z) segs.push([[X[0], y, z], [X[1], y, z]]);
+    for (const x of X) for (const z of Z) segs.push([[x, Y[0], z], [x, Y[1], z]]);
+    for (const x of X) for (const y of Y) segs.push([[x, y, Z[0]], [x, y, Z[1]]]);
+  });
+  return segs;
+}
+
+// Centerline segments of visible bars (app-mm [p1, p2] pairs, every polyline
+// leg of every rendered distribution copy). Same visibility rules as
+// rebarSnapNodes; excludeIdx skips the bar being placed itself.
+export function rebarSegments(bars, concretes, excludeIdx = -1) {
+  const hiddenIds = new Set((concretes || []).filter((c) => c.visible === false).map((c) => c.id));
+  const hiddenBoxes = (concretes || []).filter((c) => c.visible === false)
+    .map((c) => ({ minX: c.x, minY: c.y, minZ: c.z, maxX: c.x + c.lx, maxY: c.y + c.ly, maxZ: c.z + c.lz }));
+  const segs = [];
+  (bars || []).forEach((b, bi) => {
+    if (bi === excludeIdx || b.hidden) return;
+    if (b.host && hiddenIds.has(b.host)) return;
+    if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return;
+    const g = genBarPoints(b);
+    const px = Number(b.Pos_x) || 0, py = Number(b.Pos_y) || 0, pz = Number(b.Pos_z) || 0;
+    const transformed = g.points.map((pt) => transformBarLocalPoint(b, pt));
+    for (const [ox, oy, oz] of distOffsets(b).slice(0, MAX_RENDER_COPIES)) {
+      const world = transformed.map(([tx, ty, tz]) => [px + ox + tx, py + oy + ty, pz + oz + tz]);
+      for (let i = 1; i < world.length; i++) segs.push([world[i - 1], world[i]]);
+    }
+  });
+  return segs;
+}
+
+// Reference-line segments of visible lines attached to visible concrete.
+export function refLineSegments(refLines = [], concretes = []) {
+  const hiddenConcreteIds = new Set((concretes || []).filter((c) => c.visible === false).map((c) => c.id));
+  const segs = [];
+  for (const l of refLines || []) {
+    if (l.visible === false) continue;
+    if (l.host && hiddenConcreteIds.has(l.host)) continue;
+    if (l.p1 && l.p2) segs.push([l.p1, l.p2]);
+  }
+  return segs;
 }
 
 // Centerline, endpoint, and midpoint snap nodes of visible reference lines attached to visible concrete
@@ -623,6 +685,13 @@ export function allSnapNodes(bars, concretes, refLines = [], excludeIdx = -1, in
   if (!includeConcrete) return [...rNodes, ...refNodes];
   const cNodes = concreteSnapNodes(concretes);
   return [...rNodes, ...cNodes, ...refNodes];
+}
+
+// All snap segments ([p1, p2] app-mm pairs) matching allSnapNodes coverage.
+export function allSnapSegments(bars, concretes, refLines = [], excludeIdx = -1, includeConcrete = true) {
+  const segs = [...rebarSegments(bars, concretes, excludeIdx), ...refLineSegments(refLines, concretes)];
+  if (includeConcrete) segs.push(...concreteEdges(concretes));
+  return segs;
 }
 
 // Distribution grid — mirrors FreeCAD parametric_utils.py place_c_link_*:

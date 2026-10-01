@@ -6,15 +6,20 @@
 //  - getSpatialStructure() comes back empty -> storeys mapped via
 //    IFCRELCONTAINEDINSPATIALSTRUCTURE rels (RelatedElements -> RelatingStructure)
 //  - COORDINATE_TO_ORIGIN recenters huge site coords for stable rendering
-export const MAX_IFC_ELEMENTS = 1000; // above this: per-type subsets only
+export const MAX_IFC_ELEMENTS = 10000; // above this: per-type subsets only
 
 // Element types solid enough for stencil caps. Thin shells (plates, members
 // like mullions, roofs, proxies, coverings) project their whole surface onto
 // the cut face instead of a cut line, so their caps look like grey walls:
 // they still clip (thin hollow cut = correct) but never fill.
 export const SOLID_CAP_TYPES = new Set([
-  'IFCBEAM', 'IFCCOLUMN', 'IFCSLAB', 'IFCWALL', 'IFCWALLSTANDARDCASE',
-  'IFCFOOTING', 'IFCPILE', 'IFCSTAIRFLIGHT', 'IFCRAMPFLIGHT',
+  'IFCBEAM', 'IFCBEAMSTANDARDCASE',
+  'IFCCOLUMN', 'IFCCOLUMNSTANDARDCASE',
+  'IFCSLAB', 'IFCSLABSTANDARDCASE', 'IFCSLABELEMENTEDCASE',
+  'IFCWALL', 'IFCWALLSTANDARDCASE', 'IFCWALLELEMENTEDCASE',
+  'IFCFOOTING', 'IFCPILE',
+  'IFCSTAIR', 'IFCSTAIRFLIGHT',
+  'IFCRAMP', 'IFCRAMPFLIGHT',
 ]);
 
 const val = (v) => (v && typeof v === 'object' && 'value' in v ? v.value : v);
@@ -96,18 +101,27 @@ export const ifcSession = { group: null, modelID: null, meshes: {}, material: nu
 
 export const IFC_TYPES = [
   ['IFCBEAM', 'Beams'],
+  ['IFCBEAMSTANDARDCASE', 'Beams (std)'],
   ['IFCCOLUMN', 'Columns'],
+  ['IFCCOLUMNSTANDARDCASE', 'Columns (std)'],
   ['IFCSLAB', 'Slabs'],
+  ['IFCSLABSTANDARDCASE', 'Slabs (std)'],
+  ['IFCSLABELEMENTEDCASE', 'Slabs (elem)'],
   ['IFCWALL', 'Walls'],
   ['IFCWALLSTANDARDCASE', 'Walls (std)'],
+  ['IFCWALLELEMENTEDCASE', 'Walls (elem)'],
   ['IFCFOOTING', 'Footings'],
   ['IFCPILE', 'Piles'],
   ['IFCPLATE', 'Plates'],
   ['IFCMEMBER', 'Members'],
-  ['IFCSTAIRFLIGHT', 'Stairs'],
-  ['IFCRAMPFLIGHT', 'Ramps'],
+  ['IFCSTAIR', 'Stairs'],
+  ['IFCSTAIRFLIGHT', 'Stair Flights'],
+  ['IFCRAMP', 'Ramps'],
+  ['IFCRAMPFLIGHT', 'Ramp Flights'],
   ['IFCROOF', 'Roofs'],
   ['IFCBUILDINGELEMENTPROXY', 'Proxies'],
+  ['IFCCOVERING', 'Coverings'],
+  ['IFCRAILING', 'Railings'],
 ];
 
 export const UNIT_CHOICES = [
@@ -129,9 +143,25 @@ export function detectLengthUnit(headerText) {
     const prefix = (toks[li + 1] || '$').toUpperCase();
     const name = (toks[li + 2] || 'METRE').toUpperCase();
     const pf = { $: 1, MILLI: 1e-3, CENTI: 1e-2, DECI: 1e-1, KILO: 1e3 }[prefix] ?? 1;
-    const base = { METRE: 1, METER: 1, INCH: 0.0254, FOOT: 0.3048 }[name] ?? 1;
+    const base = {
+      METRE: 1, METER: 1,
+      MILLIMETRE: 0.001, MILLIMETER: 0.001,
+      CENTIMETRE: 0.01, CENTIMETER: 0.01,
+      INCH: 0.0254, INCHES: 0.0254,
+      FOOT: 0.3048, FEET: 0.3048,
+    }[name] ?? 1;
     const tag = prefix === '$' ? name.toLowerCase() : `${name.toLowerCase()} (${prefix.toLowerCase()})`;
     return { label: tag, toMeters: base * pf };
+  }
+  const convRe = /IFCCONVERSIONBASEDUNIT\s*\([^,]*,\s*\.LENGTHUNIT\.\s*,\s*['"]([^'"]+)['"]/gi;
+  const convM = convRe.exec(headerText);
+  if (convM) {
+    const uName = convM[1].toUpperCase();
+    if (/MILLI|MM/i.test(uName)) return { label: 'millimetre', toMeters: 0.001 };
+    if (/CENTI|CM/i.test(uName)) return { label: 'centimetre', toMeters: 0.01 };
+    if (/INCH/i.test(uName)) return { label: 'inch', toMeters: 0.0254 };
+    if (/FOOT|FEET/i.test(uName)) return { label: 'foot', toMeters: 0.3048 };
+    if (/METRE|METER/i.test(uName)) return { label: 'metre', toMeters: 1 };
   }
   return { label: 'metre (assumed)', toMeters: 1 };
 }
@@ -181,8 +211,8 @@ export async function loadIfc(file) {
   await ld.ifcManager.applyWebIfcConfig({ COORDINATE_TO_ORIGIN: true });
   const buf = await file.arrayBuffer();
   const head = new TextDecoder().decode(buf.slice(0, 2000000));
-  if (!/FILE_SCHEMA\s*\(\s*\('IFC4/i.test(head)) {
-    throw new Error('Not an IFC4 file (FILE_SCHEMA check failed). IFC2x3 is not supported by this loader.');
+  if (!/FILE_SCHEMA\s*\(\s*\('IFC/i.test(head) && !/ISO-10303-21/i.test(head)) {
+    throw new Error('Not a valid IFC file (ISO-10303-21 / STEP format not found).');
   }
   const detected = detectLengthUnit(head);
   const model = await ld.parse(buf);
@@ -222,6 +252,7 @@ export async function loadIfc(file) {
         scene: group, modelID, ids, removePrevious: false,
         customID: `ifc_type_${key}`, material: mat,
       });
+      mesh.userData.ifcKey = `type:${key}`;
       meshes[`type:${key}`] = mesh;
       types.push({ key, label, count: ids.length, visible: true });
     }

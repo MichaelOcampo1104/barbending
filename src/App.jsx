@@ -11,13 +11,46 @@ import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
 import './App.css';
 
 function Field({ label, value, onChange, type = 'number' }) {
+  // Hooks run unconditionally (never after an early return).
+  // Number branch uses draft-text so intermediate states ("-", "", "-12.",
+  // ".5") stay typable. Previous direct Number(e.target.value) coercion turned
+  // a lone "-" into NaN and "" into 0, making negative positions untypable.
+  // Commits only finite numbers; text input (not type=number) is required so
+  // the browser doesn't swallow the lone "-" sign.
+  const [text, setText] = useState(value ?? '');
+  const focused = useRef(false);
+  useEffect(() => {
+    if (type === 'number' && !focused.current) setText(value ?? '');
+  }, [value, type]);
+  if (type !== 'number') {
+    return (
+      <label className="fld">
+        <span>{label}</span>
+        <input
+          type={type}
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </label>
+    );
+  }
+  const commitRaw = (raw) => {
+    const t = String(raw).trim();
+    if (t === '' || t === '-' || t === '+' || t === '.' || t === '-.' || t === '+.') return;
+    const n = Number(t);
+    if (Number.isFinite(n)) onChange(n);
+  };
   return (
     <label className="fld">
       <span>{label}</span>
       <input
-        type={type}
-        value={value ?? ''}
-        onChange={(e) => onChange(type === 'number' ? Number(e.target.value) : e.target.value)}
+        type="text"
+        inputMode="decimal"
+        value={text}
+        onFocus={() => { focused.current = true; }}
+        onChange={(e) => { setText(e.target.value); commitRaw(e.target.value); }}
+        onBlur={() => { focused.current = false; setText(value ?? ''); }}
+        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
       />
     </label>
   );
@@ -354,16 +387,12 @@ function ConcreteEditor() {
             </div>
             <div className="grid3">
               {[['lx', 'Lx'], ['ly', 'Ly'], ['lz', 'Hz']].map(([k, l]) => (
-                <label key={k} className="fld"><span>{l}</span>
-                  <input type="number" value={c[k]} onChange={(e) => updateConcrete(c.id, { [k]: Number(e.target.value) })} />
-                </label>
+                <Field key={k} label={l} value={c[k]} onChange={(v) => updateConcrete(c.id, { [k]: v })} />
               ))}
             </div>
             <div className="grid3">
               {[['x', 'X'], ['y', 'Y'], ['z', 'Z']].map(([k, l]) => (
-                <label key={k} className="fld"><span>{l}</span>
-                  <input type="number" value={c[k]} onChange={(e) => updateConcrete(c.id, { [k]: Number(e.target.value) })} />
-                </label>
+                <Field key={k} label={l} value={c[k]} onChange={(v) => updateConcrete(c.id, { [k]: v })} />
               ))}
             </div>
 
