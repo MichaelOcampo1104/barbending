@@ -360,7 +360,7 @@ export function autoAssignBarMarks(bars, { scopeByHost = false } = {}) {
 
 // Minimal CSV parser (handles quotes) -> array of objects
 export function parseCsv(text, existingBars = [], concretes = []) {
-  const lines = text.trim().split(/\r?\n/);
+  const lines = String(text ?? '').replace(/^\uFEFF/, '').trim().split(/\r?\n/);
   if (!lines.length) return [];
   const headers = splitLine(lines[0]);
 

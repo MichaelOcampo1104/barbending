@@ -1029,11 +1029,15 @@ function BbsStrip() {
     rd.onload = () => {
       try {
         const parsed = parseCsv(String(rd.result), append ? bars : [], concretes);
+        if (!parsed.length) { alert(`No rebar rows found in ${f.name}.`); return; }
         if (append) {
           appendBars(parsed);
         } else {
           setBars(parsed);
         }
+        // Imported bars often sit at site coordinates far from the current
+        // view — zoom out to them so the import is visible immediately.
+        requestFit('all');
       }
       catch (err) { alert('CSV parse failed: ' + err.message); }
     };
