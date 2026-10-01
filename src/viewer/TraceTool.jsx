@@ -3,7 +3,7 @@ import { useThree } from '@react-three/fiber';
 import { Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { subsetBox } from '../ifc/session.js';
+import { subsetBox, extractMeshGeometry } from '../ifc/session.js';
 import { fmtLen } from './Scene.jsx';
 
 const S = 0.001;
@@ -321,9 +321,10 @@ export default function TraceTool() {
           const existingConcretes = useStore.getState().concretes || [];
           const count = existingConcretes.filter((c) => c.name.startsWith(prefix)).length + 1;
           const name = elData?.name || `${prefix} ${count}`;
+          const meshData = extractMeshGeometry(targetMesh);
 
-          addConcrete({ name, lx, ly, lz, x, y, z });
-          console.info(`[TraceTool] Auto-traced ${name}: ${lx}x${ly}x${lz} mm @ (${x}, ${y}, ${z})`);
+          addConcrete({ name, lx, ly, lz, x, y, z, meshData });
+          console.info(`[TraceTool] Auto-traced ${name} (exact geometry preserved: ${!!meshData}): ${lx}x${ly}x${lz} mm @ (${x}, ${y}, ${z})`);
         } catch (err) {
           console.error('[TraceTool] Auto-trace failed:', err);
         }

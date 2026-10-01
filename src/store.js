@@ -548,6 +548,15 @@ export const useStore = create((set, get) => ({
   // Viewport (Blender-style): shading mode + live perf stats (2 Hz).
   shading: 'solid',
   setShading: (v) => set({ shading: v }),
+  // Concrete rendering options: 'ghost' | 'solid' | 'blueprint' | 'textured'
+  concreteStyle: 'ghost',
+  setConcreteStyle: (v) => set({ concreteStyle: v }),
+  concreteOpacity: 0.25,
+  setConcreteOpacity: (v) => set({ concreteOpacity: v }),
+  concreteColor: '#94a3b8',
+  setConcreteColor: (v) => set({ concreteColor: v }),
+  concreteEdges: true,
+  setConcreteEdges: (v) => set({ concreteEdges: v }),
   // navMode: 'select' (LMB picks, MMB orbits) or 'orbit' (LMB orbits too).
   navMode: 'select',
   setNavMode: (v) => set({ navMode: v }),

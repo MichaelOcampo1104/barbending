@@ -265,7 +265,7 @@ export default function IfcPanel() {
           <div className="btnrow">
             <button onClick={() => zoomTo(sel.key)}>Zoom to</button>
             <button onClick={async () => {
-              const { ifcSession, subsetBox } = await import('./session.js');
+              const { ifcSession, subsetBox, extractMeshGeometry } = await import('./session.js');
               const mesh = ifcSession.meshes[sel.key];
               if (!mesh) return;
               const bb = subsetBox(mesh);
@@ -278,7 +278,8 @@ export default function IfcPanel() {
               const lz = Math.max(Math.round((bb.max.y - bb.min.y) * 1000), 50);
               const existingConcretes = useStore.getState().concretes || [];
               const name = sel.name || `${sel.typeLabel || 'Concrete'} ${existingConcretes.length + 1}`;
-              useStore.getState().addConcrete({ name, lx, ly, lz, x, y, z });
+              const meshData = extractMeshGeometry(mesh);
+              useStore.getState().addConcrete({ name, lx, ly, lz, x, y, z, meshData });
             }} title="Convert this IFC element into a concrete member with exact dimensions">⚡ Trace Concrete</button>
             <button onClick={() => solo(sel.key)}>Isolate</button>
             <button onClick={() => toggleIfcElement(sel.key)}>{sel.visible ? 'Hide' : 'Show'}</button>

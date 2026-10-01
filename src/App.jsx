@@ -349,6 +349,15 @@ function ConcreteEditor() {
     });
   };
 
+  const concreteStyle = useStore((s) => s.concreteStyle || 'ghost');
+  const setConcreteStyle = useStore((s) => s.setConcreteStyle);
+  const concreteOpacity = useStore((s) => s.concreteOpacity ?? 0.25);
+  const setConcreteOpacity = useStore((s) => s.setConcreteOpacity);
+  const concreteColor = useStore((s) => s.concreteColor || '#94a3b8');
+  const setConcreteColor = useStore((s) => s.setConcreteColor);
+  const concreteEdges = useStore((s) => s.concreteEdges !== false);
+  const setConcreteEdges = useStore((s) => s.setConcreteEdges);
+
   return (
     <>
     <IfcLoadButton />
@@ -369,9 +378,30 @@ function ConcreteEditor() {
             : 'Tip: Reference lines attach to concrete members and provide snap guides for rebar alignment & checking clearance.'}
       </div>
 
+      <div className="sect">Concrete Appearance & Render Style</div>
+      <div className="segrow" style={{ marginBottom: 6 }}>
+        <button className={concreteStyle === 'ghost' ? 'on' : ''} onClick={() => setConcreteStyle('ghost')} title="Engineering transparent preview">◧ Ghost</button>
+        <button className={concreteStyle === 'solid' ? 'on' : ''} onClick={() => setConcreteStyle('solid')} title="Opaque architectural solid concrete">◼ Solid</button>
+        <button className={concreteStyle === 'blueprint' ? 'on' : ''} onClick={() => setConcreteStyle('blueprint')} title="Holographic blueprint mode">📐 Blueprint</button>
+        <button className={concreteStyle === 'textured' ? 'on' : ''} onClick={() => setConcreteStyle('textured')} title="Textured matte cast concrete">🧱 Textured</button>
+      </div>
+      <div className="grid3" style={{ alignItems: 'center' }}>
+        <label className="fld"><span>Opacity ({Math.round(concreteOpacity * 100)}%)</span>
+          <input type="range" min="0.05" max="1" step="0.05" value={concreteOpacity} onChange={(e) => setConcreteOpacity(Number(e.target.value))} />
+        </label>
+        <label className="fld"><span>Color Tint</span>
+          <input type="color" value={concreteColor} onChange={(e) => setConcreteColor(e.target.value)} style={{ height: 28, padding: 1 }} />
+        </label>
+        <label className="chk" style={{ marginTop: 12 }}>
+          <input type="checkbox" checked={concreteEdges} onChange={(e) => setConcreteEdges(e.target.checked)} />
+          Edges
+        </label>
+      </div>
+
       <div className="sect">Concrete Elements ({concretes.length})</div>
       {concretes.map((c) => {
         const memberRefLines = refLines.filter((l) => l.host === c.id);
+        const isCustom = !!(c.meshData && c.meshData.positions?.length);
         return (
           <div
             key={c.id}
@@ -385,6 +415,12 @@ function ConcreteEditor() {
               <button className="sm" title={c.visible === false ? 'Show (bars and ref lines inside reappear)' : 'Hide (bars and ref lines inside hide too)'} onClick={(e) => { e.stopPropagation(); updateConcrete(c.id, { visible: c.visible === false ? true : false }); }}>{c.visible === false ? '🚫' : '👁'}</button>
               <button className="danger sm" onClick={(e) => { e.stopPropagation(); removeConcrete(c.id); }}>×</button>
             </div>
+            {isCustom && (
+              <div style={{ fontSize: 11, color: '#38bdf8', fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span>✨ Exact IFC Profile</span>
+                <span className="hint">({c.meshData.indices.length / 3} tris · openings/chamfers)</span>
+              </div>
+            )}
             <div className="grid3">
               {[['lx', 'Lx'], ['ly', 'Ly'], ['lz', 'Hz']].map(([k, l]) => (
                 <Field key={k} label={l} value={c[k]} onChange={(v) => updateConcrete(c.id, { [k]: v })} />

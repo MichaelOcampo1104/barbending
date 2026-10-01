@@ -81,6 +81,54 @@ export function subsetBox(mesh) {
   }
   return bb;
 }
+
+// Extracts world-aligned exact mesh geometry (openings, chamfers, penetrations,
+// and complex profiles) converted to App frame mm coordinates [x, y, z].
+export function extractMeshGeometry(mesh) {
+  if (!mesh || !mesh.geometry) return null;
+  const g = mesh.geometry;
+  const pos = g.attributes?.position;
+  const idx = g.index;
+  if (!pos || pos.count === 0) return null;
+
+  mesh.updateWorldMatrix(true, false);
+  const mat = mesh.matrixWorld;
+
+  const positions = [];
+  const indices = [];
+  const vertMap = new Map();
+  const v = new THREE.Vector3();
+
+  const getOrAddVertex = (oldIdx) => {
+    if (vertMap.has(oldIdx)) return vertMap.get(oldIdx);
+    v.fromBufferAttribute(pos, oldIdx).applyMatrix4(mat);
+    // Three.js Scene m -> App mm:
+    // Scene X -> App X (x * 1000)
+    // Scene Y (up) -> App Z (y * 1000)
+    // Scene Z (depth) -> App Y (-z * 1000)
+    const appX = Math.round(v.x * 1000 * 10) / 10;
+    const appY = Math.round(-v.z * 1000 * 10) / 10;
+    const appZ = Math.round(v.y * 1000 * 10) / 10;
+
+    const newIdx = positions.length / 3;
+    positions.push(appX, appY, appZ);
+    vertMap.set(oldIdx, newIdx);
+    return newIdx;
+  };
+
+  if (idx && idx.count > 0) {
+    for (let i = 0; i < idx.count; i++) {
+      indices.push(getOrAddVertex(idx.getX(i)));
+    }
+  } else {
+    for (let i = 0; i < pos.count; i++) {
+      indices.push(getOrAddVertex(i));
+    }
+  }
+
+  if (positions.length < 9) return null;
+  return { positions, indices };
+}
 import { IFCLoader } from 'web-ifc-three';
 import * as WebIFC from 'web-ifc';
 import * as THREE from 'three';

@@ -575,6 +575,13 @@ export function concreteSnapNodes(concretes) {
   const nodes = [];
   (concretes || []).forEach((c) => {
     if (c.visible === false) return;
+    if (c.meshData && c.meshData.positions?.length) {
+      const pts = c.meshData.positions;
+      for (let i = 0; i < pts.length; i += 3) {
+        nodes.push([pts[i], pts[i + 1], pts[i + 2]]);
+      }
+      return;
+    }
     const x0 = Number(c.x) || 0, y0 = Number(c.y) || 0, z0 = Number(c.z) || 0;
     const lx = Number(c.lx) || 0, ly = Number(c.ly) || 0, lz = Number(c.lz) || 0;
     // 8 bounding corners
@@ -607,12 +614,23 @@ export function concreteSnapNodes(concretes) {
 }
 
 // Box edges of visible concrete members as app-mm [p1, p2] pairs (12 per
-// member). Drives true edge snapping so the magnet grabs anywhere along an
-// edge, not just at corners/midpoints.
+// member, or exact mesh triangle edges). Drives true edge snapping so the
+// magnet grabs anywhere along an edge, not just at corners/midpoints.
 export function concreteEdges(concretes) {
   const segs = [];
   (concretes || []).forEach((c) => {
     if (c.visible === false) return;
+    if (c.meshData && c.meshData.positions?.length && c.meshData.indices?.length) {
+      const pts = c.meshData.positions;
+      const idx = c.meshData.indices;
+      for (let i = 0; i < idx.length; i += 3) {
+        const i0 = idx[i] * 3, i1 = idx[i + 1] * 3, i2 = idx[i + 2] * 3;
+        segs.push([[pts[i0], pts[i0 + 1], pts[i0 + 2]], [pts[i1], pts[i1 + 1], pts[i1 + 2]]]);
+        segs.push([[pts[i1], pts[i1 + 1], pts[i1 + 2]], [pts[i2], pts[i2 + 1], pts[i2 + 2]]]);
+        segs.push([[pts[i2], pts[i2 + 1], pts[i2 + 2]], [pts[i0], pts[i0 + 1], pts[i0 + 2]]]);
+      }
+      return;
+    }
     const x0 = Number(c.x) || 0, y0 = Number(c.y) || 0, z0 = Number(c.z) || 0;
     const lx = Number(c.lx) || 0, ly = Number(c.ly) || 0, lz = Number(c.lz) || 0;
     const X = [x0, x0 + lx], Y = [y0, y0 + ly], Z = [z0, z0 + lz];

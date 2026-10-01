@@ -739,34 +739,101 @@ function RebarMesh({ bar, selected, onClick, onDoubleClick }) {
 }
 
 function ConcreteMesh({ c }) {
-  // Scene mapping (shared with rebar + pick): scene = (appX, appZ, −appY) × S.
-  // Box spans app [x,x+lx] × [y,y+ly] × [z,z+lz] (mm); ly = plan depth, lz = height.
-  const sx = c.lx * S, sy = c.lz * S, sz = c.ly * S;
-  const cx = (c.x + c.lx / 2) * S, cy = (c.z + c.lz / 2) * S, cz = -((c.y + c.ly / 2) * S);
-  const geom = useMemo(() => new THREE.BoxGeometry(sx, sy, sz), [sx, sy, sz]);
   const capsOn = useStore((s) => !!(s.section?.enabled && (s.section?.solidCut ?? true)));
-  const isWireframe = useStore((s) => s.shading === 'wireframe');
-  const xray = useStore((s) => s.shading === 'xray');
-  const opacity = isWireframe ? 0.08 : xray ? 0.1 : 0.22;
-  const noMarks = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('nomarks') === '1';
+  const shading = useStore((s) => s.shading);
+  const isWireframe = shading === 'wireframe';
+  const xray = shading === 'xray';
+  const concreteStyle = useStore((s) => s.concreteStyle || 'ghost');
+  const concreteOpacity = useStore((s) => s.concreteOpacity ?? 0.25);
+  const concreteColor = useStore((s) => s.concreteColor || '#94a3b8');
+  const concreteEdges = useStore((s) => s.concreteEdges !== false);
   const requestFit = useStore((s) => s.requestFit);
+  const noMarks = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('nomarks') === '1';
+
+  // Geometry: Exact mesh (openings, chamfers, penetrations) vs Parametric Box
+  const { geom, edgesGeom } = useMemo(() => {
+    let g;
+    if (c.meshData && c.meshData.positions?.length && c.meshData.indices?.length) {
+      g = new THREE.BufferGeometry();
+      const pts = c.meshData.positions;
+      const sceneCoords = new Float32Array(pts.length);
+      for (let i = 0; i < pts.length; i += 3) {
+        sceneCoords[i] = pts[i] * S;        // App X -> Three X
+        sceneCoords[i + 1] = pts[i + 2] * S; // App Z -> Three Y (Height)
+        sceneCoords[i + 2] = -pts[i + 1] * S; // App Y -> Three Z (Depth)
+      }
+      g.setAttribute('position', new THREE.BufferAttribute(sceneCoords, 3));
+      g.setIndex(c.meshData.indices);
+      g.computeVertexNormals();
+    } else {
+      const sx = c.lx * S, sy = c.lz * S, sz = c.ly * S;
+      g = new THREE.BoxGeometry(sx, sy, sz);
+      const cx = (c.x + c.lx / 2) * S, cy = (c.z + c.lz / 2) * S, cz = -((c.y + c.ly / 2) * S);
+      g.translate(cx, cy, cz);
+    }
+    const eg = new THREE.EdgesGeometry(g, 25);
+    return { geom: g, edgesGeom: eg };
+  }, [c.meshData, c.lx, c.ly, c.lz, c.x, c.y, c.z]);
+
+  // Dynamic Shading Material Styles
+  const { matColor, opacity, roughness, metalness, depthWrite, wire } = useMemo(() => {
+    if (isWireframe) {
+      return { matColor: '#38bdf8', opacity: 0.05, roughness: 0.9, metalness: 0, depthWrite: false, wire: true };
+    }
+    if (xray) {
+      return { matColor: concreteColor, opacity: 0.12, roughness: 0.5, metalness: 0.1, depthWrite: false, wire: false };
+    }
+    if (concreteStyle === 'solid') {
+      return { matColor: concreteColor, opacity: 1.0, roughness: 0.85, metalness: 0.05, depthWrite: true, wire: false };
+    }
+    if (concreteStyle === 'blueprint') {
+      return { matColor: '#0284c7', opacity: 0.35, roughness: 0.3, metalness: 0.2, depthWrite: false, wire: false };
+    }
+    if (concreteStyle === 'textured') {
+      return { matColor: '#78716c', opacity: 0.92, roughness: 0.95, metalness: 0, depthWrite: true, wire: false };
+    }
+    // Default 'ghost' style: transparent preview
+    return { matColor: concreteColor, opacity: concreteOpacity, roughness: 0.8, metalness: 0, depthWrite: concreteOpacity >= 0.95, wire: false };
+  }, [isWireframe, xray, concreteStyle, concreteOpacity, concreteColor]);
+
   return (
-    <mesh userData-pickRoot="concrete" userData-concreteId={c.id} position={[cx, cy, cz]} geometry={geom} onDoubleClick={(e) => {
-      e.stopPropagation();
-      requestFit('concrete', c.id);
-    }}>
-      <meshStandardMaterial color="#9ca3af" transparent opacity={opacity} roughness={0.9} depthWrite={false} clippingPlanes={sectionPlanes} />
-      <lineSegments>
-        <edgesGeometry args={[new THREE.BoxGeometry(sx, sy, sz)]} />
-        <lineBasicMaterial color={isWireframe ? "#38bdf8" : "#6b7280"} />
-      </lineSegments>
+    <group userData-pickRoot="concrete" userData-concreteId={c.id}>
+      <mesh
+        geometry={geom}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          requestFit('concrete', c.id);
+        }}
+      >
+        <meshStandardMaterial
+          color={matColor}
+          transparent={opacity < 0.99}
+          opacity={opacity}
+          roughness={roughness}
+          metalness={metalness}
+          depthWrite={depthWrite}
+          wireframe={wire}
+          side={THREE.DoubleSide}
+          clippingPlanes={sectionPlanes}
+        />
+      </mesh>
+      {concreteEdges && (
+        <lineSegments geometry={edgesGeom}>
+          <lineBasicMaterial
+            color={isWireframe ? "#38bdf8" : concreteStyle === 'blueprint' ? "#38bdf8" : "#475569"}
+            clippingPlanes={sectionPlanes}
+            transparent={opacity < 0.9}
+            opacity={0.85}
+          />
+        </lineSegments>
+      )}
       {capsOn && !noMarks && [0, 1, 2, 3, 4, 5].map((i) => (
         <group key={i}>
           <mesh geometry={geom} material={stencilMats[i].back} renderOrder={3 * i} raycast={noopStencilRaycast} />
           <mesh geometry={geom} material={stencilMats[i].front} renderOrder={3 * i + 1} raycast={noopStencilRaycast} />
         </group>
       ))}
-    </mesh>
+    </group>
   );
 }
 

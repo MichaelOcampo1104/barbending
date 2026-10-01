@@ -2,6 +2,12 @@
 
 ## Unreleased (working tree → next push)
 
+- **Concrete Element Rendering & Exact Geometry Enhancements**:
+  - **Exact Shape & Profile Capture**: Auto-Trace and sidebar "Trace Concrete" now extract the exact triangulated mesh (`c.meshData`) from IFC elements, capturing real-world openings, penetrations, chamfers, bevels, notches, and custom cross-sections rather than reducing everything to an axis-aligned bounding box.
+  - **Section Tool Clipping on Concrete**: Fixed clipping plane propagation on concrete elements so that both the mesh faces and edge outlines (`lineBasicMaterial`) react to the Section Box with full stencil solid-cut cap generation.
+  - **Concrete Render Styles & Appearance**: Added real-time style modes (◧ *Ghost*, ◼ *Solid*, 📐 *Blueprint*, 🧱 *Textured*), live opacity slider (5%–100%), custom color tint picker, and edge outlines toggle in the Concrete panel.
+  - **Mesh-Aware Snapping**: Updated `concreteSnapNodes` and `concreteEdges` in `shapes.js` to extract snapping points and edges directly from `c.meshData` vertices, enabling precise rebar alignment along opening edges and chamfers.
+
 - **IFC Loading & Auto-Trace Fixes**:
   - **Schema compatibility**: Expanded schema validation in `session.js` to support all standard IFC versions (`IFC2X3`, `IFC4`, `IFC4X3`, etc.) rather than rejecting non-IFC4 files.
   - **Expanded IFC element types**: Added standard case and common structural types (`IFCBEAMSTANDARDCASE`, `IFCCOLUMNSTANDARDCASE`, `IFCSLABSTANDARDCASE`, `IFCSLABELEMENTEDCASE`, `IFCWALLELEMENTEDCASE`, `IFCSTAIR`, `IFCRAMP`, `IFCCOVERING`, `IFCRAILING`) to `IFC_TYPES` and `SOLID_CAP_TYPES`.
