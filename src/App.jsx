@@ -865,6 +865,10 @@ function ViewportBar() {
   const setShading = useStore((s) => s.setShading);
   const navMode = useStore((s) => s.navMode);
   const setNavMode = useStore((s) => s.setNavMode);
+  const nav = useStore((s) => s.nav);
+  const setNav = useStore((s) => s.setNav);
+  const resetNav = useStore((s) => s.resetNav);
+  const [navMenu, setNavMenu] = useState(false);
   const requestView = useStore((s) => s.requestView);
   const requestFit = useStore((s) => s.requestFit);
   const duplicateBar = useStore((s) => s.duplicateBar);
@@ -901,6 +905,30 @@ function ViewportBar() {
         <span className="seg" title="Left-mouse behavior (middle-drag always orbits)">
           <button className={navMode === 'select' ? 'on' : ''} onClick={() => setNavMode('select')} title="LMB selects bars/IFC (orbit with MMB)">Select</button>
           <button className={navMode === 'orbit' ? 'on' : ''} onClick={() => setNavMode('orbit')} title="LMB orbits the view">Orbit</button>
+        </span>
+        <span style={{ position: 'relative', display: 'inline-flex', gap: 0 }}>
+          <button onClick={() => setNavMenu((v) => !v)} title="Navigation tuning: orbit / pan / zoom speeds, smoothing, zoom-to-cursor, keyboard map" style={{ borderRadius: 6 }}>⚙ Nav{(nav.rotateSpeed !== 1 || nav.panSpeed !== 1 || nav.zoomSpeed !== 1 || nav.damping === false || nav.zoomToCursor === false) ? ' ●' : ''}</button>
+          {navMenu && (
+            <div className="snap-pop" onClick={(e) => e.stopPropagation()} style={{ left: 0, right: 'auto', minWidth: 210 }}>
+              {[['rotateSpeed', 'Orbit speed', 'Left/Middle-drag rotation + Shift+arrows'], ['panSpeed', 'Pan speed', 'Right-drag pan + arrow keys'], ['zoomSpeed', 'Zoom speed', 'Wheel / pinch glide + +/− keys']].map(([k, label, tip]) => (
+                <label key={k} title={tip} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ width: 74 }}>{label}</span>
+                  <input type="range" min="0.2" max="2.5" step="0.1" value={nav[k]} onChange={(e) => setNav({ [k]: Number(e.target.value) })} style={{ flex: 1 }} />
+                  <span style={{ width: 30, textAlign: 'right' }}>{Number(nav[k]).toFixed(1)}×</span>
+                </label>
+              ))}
+              <label title="Smooth gliding camera (damping). Off = immediate 1:1 control">
+                <input type="checkbox" checked={nav.damping !== false} onChange={(e) => setNav({ damping: e.target.checked })} />
+                Smooth glide
+              </label>
+              <label title="Wheel zooms toward the cursor point. Off = classic dolly straight at the orbit pivot">
+                <input type="checkbox" checked={nav.zoomToCursor !== false} onChange={(e) => setNav({ zoomToCursor: e.target.checked })} />
+                Zoom to cursor
+              </label>
+              <button className="ghost sm" onClick={resetNav} title="Restore default navigation feel">Reset defaults</button>
+              <div className="snap-note">Arrows pan · Shift+arrows orbit · +/− zoom · Home fits all</div>
+            </div>
+          )}
         </span>
         <label className="cover" title="Blender-style preset view — jumps the camera, keeps the orbit focus. The axis gizmo top-right does the same on click.">
           view

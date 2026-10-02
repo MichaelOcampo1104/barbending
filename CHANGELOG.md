@@ -2,6 +2,11 @@
 
 ## Unreleased (working tree → next push)
 
+- **Adjustable navigation (⚙ Nav panel + keyboard map)**:
+  - Session-only `nav` prefs (never saved/undo): orbit / pan / zoom speed multipliers (0.2×–2.5×), smooth-glide damping toggle, zoom-to-cursor toggle (off = classic dolly at the pivot); toolbar button shows a ● when customized, with Reset defaults.
+  - Speeds feed `OrbitControls` (`rotateSpeed`, `panSpeed`, `enableDamping`) and `DiveZoom` (wheel gain + cursor-vs-pivot branch); new `NavKeys` driver: arrows pan, Shift+arrows orbit in polar-clamped 15° steps, +/− dolly, Home fits all (typing + Ctrl/Meta guarded).
+  - Verified headless over CDP: popover renders, slider→store round-trip exact (2.0×/0.5×/1.0× labels), keys exception-free; `npm run build`.
+
 - **ⓘ Object Query tool (click-to-inspect coordinates)**:
   - Armed via the ⓘ Query toolbar button (next to Measure); `QueryHandler` in `Scene.jsx` raycasts `collectPickTargets` and builds a result row set per kind into ephemeral `store.query` (never saved, never in BBS/CSV).
   - Rebar: mark/type/Ø, bar index (`userData-barIndex` on the rebar group), Pos, bbox min/max/size (`barAppBox`), distribution count, cut length (`enrichBar`), click point. Concrete: name, origin, Lx·Ly·Lz, bbox min/max, center, click point. IFC: name/type/storey/GlobalId/Express ID, live index-aware `subsetBox` bbox restated in mm incl. placement, click point in model-mm + app-mm (per-type subsets handled).

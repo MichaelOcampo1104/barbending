@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Local reference inputs (large project files, never commit)
+inputs/P103-TCSJV-CP03-ZZ-S-STR-M3-PIM-0001.ifc
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

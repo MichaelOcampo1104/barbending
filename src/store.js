@@ -681,6 +681,11 @@ export const useStore = create((set, get) => ({
   // navMode: 'select' (LMB picks, MMB orbits) or 'orbit' (LMB orbits too).
   navMode: 'select',
   setNavMode: (v) => set({ navMode: v }),
+  // Navigation tuning (session-only view prefs: never saved, never in history).
+  // Speeds are multipliers on the Blender-style defaults (1.0 = current feel).
+  nav: { rotateSpeed: 1, panSpeed: 1, zoomSpeed: 1, damping: true, zoomToCursor: true },
+  setNav: (patch) => set((s) => ({ nav: { ...s.nav, ...patch } })),
+  resetNav: () => set({ nav: { rotateSpeed: 1, panSpeed: 1, zoomSpeed: 1, damping: true, zoomToCursor: true } }),
   // Preset view request (Blender-style Top/Bottom/Left/Right/Front/Back/Iso).
   // Scene consumes {dir, n} and keeps the current orbit target (focus stays).
   viewReq: null,

@@ -159,9 +159,10 @@ function DiveZoom() {
       // Trackpad pinch-zoom multiplier
       if (ev.ctrlKey) delta *= 2.5;
 
-      // Cap extreme delta spikes to keep motion continuous
+      // Cap extreme delta spikes to keep motion continuous; Nav panel scales it.
       const clamped = Math.max(-250, Math.min(250, delta));
-      zoomVel.current += clamped * 0.0022;
+      const gain = useStore.getState().nav?.zoomSpeed ?? 1;
+      zoomVel.current += clamped * 0.0022 * gain;
     };
 
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -178,6 +179,15 @@ function DiveZoom() {
     const decay = Math.exp(-20 * Math.min(deltaSec, 0.1));
     const step = zoomVel.current * (1 - decay);
     zoomVel.current *= decay;
+
+    // Zoom→cursor off: classic orbit dolly straight at the pivot (pivot stays).
+    if ((useStore.getState().nav?.zoomToCursor ?? true) === false) {
+      const r0 = Math.max(camera.position.distanceTo(ctl.target), 0.005);
+      dir.current.subVectors(ctl.target, camera.position).normalize();
+      camera.position.addScaledVector(dir.current, -step * Math.max(r0 * 0.5, 0.02));
+      ctl.update();
+      return;
+    }
 
     dir.current.set(cursorNDC.current.x, cursorNDC.current.y, 1)
       .unproject(camera)
@@ -1331,6 +1341,81 @@ function ViewPreset() {
   return null;
 }
 
+// Keyboard navigation: arrows pan, Shift+arrows orbit in 15° steps, +/−
+// dolly, Home fits the model. Speeds follow the Nav panel. Skipped while
+// typing or with Ctrl/Meta held (those belong to undo/copy/paste).
+function NavKeys() {
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls);
+  useEffect(() => {
+    const off = new THREE.Vector3();
+    const right = new THREE.Vector3();
+    const up = new THREE.Vector3();
+    const onKey = (ev) => {
+      const t = ev.target;
+      if (t && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      const ctl = controls;
+      if (!ctl) return;
+      const st = useStore.getState();
+      const k = ev.key;
+      const isArrow = k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown';
+      const isZoom = k === '+' || k === '=' || k === '-' || k === '_';
+      const isHome = k === 'Home';
+      if (!isArrow && !isZoom && !isHome) return;
+      ev.preventDefault();
+      if (isHome) { st.requestFit('all'); return; }
+      const r = Math.max(camera.position.distanceTo(ctl.target), 0.05);
+      if (isZoom) {
+        const dirIn = k === '+' || k === '=';
+        const f = Math.pow(dirIn ? 1 / 1.2 : 1.2, st.nav?.zoomSpeed ?? 1);
+        off.subVectors(camera.position, ctl.target).multiplyScalar(f);
+        // Clamp mega-zoom-outs so one key repeat can't lose the model.
+        if (off.length() > 500) off.setLength(500);
+        camera.position.copy(ctl.target).add(off);
+        ctl.update();
+        return;
+      }
+      const panMul = st.nav?.panSpeed ?? 1;
+      if (ev.shiftKey) {
+        // Orbit the camera around the pivot in fixed steps.
+        const rotMul = st.nav?.rotateSpeed ?? 1;
+        const a = (Math.PI / 12) * Math.min(Math.max(rotMul, 0.2), 2.5);
+        off.subVectors(camera.position, ctl.target);
+        const yaw = (k === 'ArrowLeft' ? 1 : k === 'ArrowRight' ? -1 : 0) * a;
+        const pitch = (k === 'ArrowUp' ? 1 : k === 'ArrowDown' ? -1 : 0) * a;
+        if (yaw) off.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+        if (pitch) {
+          right.setFromMatrixColumn(camera.matrix, 0);
+          const pol = Math.atan2(Math.hypot(off.x, off.z), off.y);
+          const np = Math.min(Math.max(pol - pitch, 0.05), Math.PI - 0.05);
+          const rr = off.length();
+          const phi = Math.atan2(off.z, off.x);
+          off.set(rr * Math.sin(np) * Math.cos(phi), rr * Math.cos(np), rr * Math.sin(np) * Math.sin(phi));
+        }
+        camera.position.copy(ctl.target).add(off);
+        ctl.update();
+        return;
+      }
+      // Pan target + camera together in the screen plane.
+      const step = Math.max(r * 0.12, 0.01) * panMul;
+      right.setFromMatrixColumn(camera.matrix, 0);
+      up.setFromMatrixColumn(camera.matrix, 1);
+      off.set(0, 0, 0);
+      if (k === 'ArrowLeft') off.addScaledVector(right, -step);
+      if (k === 'ArrowRight') off.addScaledVector(right, step);
+      if (k === 'ArrowUp') off.addScaledVector(up, step);
+      if (k === 'ArrowDown') off.addScaledVector(up, -step);
+      camera.position.add(off);
+      ctl.target.add(off);
+      ctl.update();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [camera, controls]);
+  return null;
+}
+
 // Focus / Fit model or selected rebar/beam bounds on request or hotkey
 function FitModelHandler() {
   const fitReq = useStore((s) => s.fitReq);
@@ -1466,6 +1551,7 @@ export default function Scene() {
   const showConcrete = useStore((s) => s.showConcrete);
   const ifcActive = useStore((s) => s.ifcActive);
   const navOrbit = useStore((s) => s.navMode === 'orbit');
+  const nav = useStore((s) => s.nav);
   // Ids of hidden concrete members — bars hosted on them hide too.
   // Tiny array; recomputed per render, no memo needed.
   const hiddenHosts = new Set(concretes.filter((c) => c.visible === false).map((c) => c.id));
@@ -1544,10 +1630,12 @@ export default function Scene() {
           />
         );
       })}
-      <OrbitControls makeDefault enableDamping dampingFactor={0.08} panSpeed={1.8} screenSpacePanning enableZoom={false} minDistance={0} maxDistance={Infinity}
+      <OrbitControls makeDefault enableDamping={nav.damping !== false} dampingFactor={0.08}
+        rotateSpeed={nav.rotateSpeed ?? 1} panSpeed={1.8 * (nav.panSpeed ?? 1)} screenSpacePanning enableZoom={false} minDistance={0} maxDistance={Infinity}
         mouseButtons={{ LEFT: navOrbit ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN }} />
       <FitIfc />
       <FitModelHandler />
+      <NavKeys />
       <AutoClipping />
       <DiveZoom />
       <ViewPreset />
