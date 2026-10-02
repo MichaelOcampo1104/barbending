@@ -130,6 +130,12 @@ export function collectPickTargets(scene) {
 //  - Walks both camera and pivot target forward when diving deep, so distance r never collapses
 //    to 0, eliminating the classic OrbitControls "brick wall" / Zeno slowdown.
 //  - Zoom-out smoothly expands compressed pivot radii, making escape from micro scale immediate.
+// Runaway-zoom guardrails (a trackpad fling used to slingshot the camera
+// hundreds of metres out so the model vanished): momentum cap, hard
+// camera-pivot range, and a last-good restore if math ever goes non-finite.
+const VEL_MAX = 0.6;
+const CAM_MIN_R = 0.002;
+const CAM_MAX_R = 400;
 function DiveZoom() {
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
@@ -137,6 +143,9 @@ function DiveZoom() {
   const zoomVel = useRef(0);
   const cursorNDC = useRef(new THREE.Vector2(0, 0));
   const dir = useRef(new THREE.Vector3());
+  const clampV = useRef(new THREE.Vector3());
+  const lastPos = useRef(null);
+  const lastTgt = useRef(null);
 
   useEffect(() => {
     const el = gl.domElement;
@@ -160,9 +169,10 @@ function DiveZoom() {
       if (ev.ctrlKey) delta *= 2.5;
 
       // Cap extreme delta spikes to keep motion continuous; Nav panel scales it.
+      // Velocity itself is capped so one fling can't build runaway momentum.
       const clamped = Math.max(-250, Math.min(250, delta));
       const gain = useStore.getState().nav?.zoomSpeed ?? 1;
-      zoomVel.current += clamped * 0.0022 * gain;
+      zoomVel.current = Math.max(-VEL_MAX, Math.min(VEL_MAX, zoomVel.current + clamped * 0.0022 * gain));
     };
 
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -179,49 +189,75 @@ function DiveZoom() {
     const decay = Math.exp(-20 * Math.min(deltaSec, 0.1));
     const step = zoomVel.current * (1 - decay);
     zoomVel.current *= decay;
+    const r = Math.max(camera.position.distanceTo(ctl.target), 0.005);
 
     // Zoom→cursor off: classic orbit dolly straight at the pivot (pivot stays).
     if ((useStore.getState().nav?.zoomToCursor ?? true) === false) {
-      const r0 = Math.max(camera.position.distanceTo(ctl.target), 0.005);
       dir.current.subVectors(ctl.target, camera.position).normalize();
-      camera.position.addScaledVector(dir.current, -step * Math.max(r0 * 0.5, 0.02));
-      ctl.update();
-      return;
+      camera.position.addScaledVector(dir.current, -step * Math.max(r * 0.5, 0.02));
+    } else {
+      dir.current.set(cursorNDC.current.x, cursorNDC.current.y, 1)
+        .unproject(camera)
+        .sub(camera.position)
+        .normalize();
+
+      const d = dir.current;
+
+      if (step < 0) {
+        // Zoom in towards cursor
+        const speed = Math.max(r * 0.5, 0.02);
+        const move = -step * speed;
+        camera.position.addScaledVector(d, move);
+
+        // Unlimited dive: if camera approaches pivot, glide pivot forward along ray
+        const newR = camera.position.distanceTo(ctl.target);
+        const toTgt = new THREE.Vector3().subVectors(ctl.target, camera.position);
+        const forwardDot = toTgt.dot(d);
+
+        if (forwardDot < 0.1 || newR < Math.max(r * 0.4, 0.05)) {
+          ctl.target.addScaledVector(d, move);
+        }
+      } else {
+        // Zoom out away from cursor
+        const speed = Math.max(r * 0.55, 0.04);
+        const move = step * speed;
+        camera.position.addScaledVector(d, -move);
+
+        // Re-inflate target if we backed out from a sub-mm micro inspection
+        const newR = camera.position.distanceTo(ctl.target);
+        if (newR < 0.1) {
+          ctl.target.copy(camera.position).addScaledVector(d, 0.4);
+        }
+      }
     }
 
-    dir.current.set(cursorNDC.current.x, cursorNDC.current.y, 1)
-      .unproject(camera)
-      .sub(camera.position)
-      .normalize();
-
-    const d = dir.current;
-    const r = Math.max(camera.position.distanceTo(ctl.target), 0.005);
-
-    if (step < 0) {
-      // Zoom in towards cursor
-      const speed = Math.max(r * 0.5, 0.02);
-      const move = -step * speed;
-      camera.position.addScaledVector(d, move);
-
-      // Unlimited dive: if camera approaches pivot, glide pivot forward along ray
-      const newR = camera.position.distanceTo(ctl.target);
-      const toTgt = new THREE.Vector3().subVectors(ctl.target, camera.position);
-      const forwardDot = toTgt.dot(d);
-
-      if (forwardDot < 0.1 || newR < Math.max(r * 0.4, 0.05)) {
-        ctl.target.addScaledVector(d, move);
+    // Guardrails: clamp the camera-pivot range so a fling can fling the view
+    // at most 400 m out (model stays findable; Home/F recover), never through
+    // the pivot (which flips the orbit), and restore last-good on NaN.
+    const o = clampV.current.subVectors(camera.position, ctl.target);
+    const rr = o.length();
+    if (!Number.isFinite(rr)) {
+      if (lastPos.current && lastTgt.current) {
+        camera.position.copy(lastPos.current);
+        ctl.target.copy(lastTgt.current);
       }
+      zoomVel.current = 0;
+    } else if (rr > CAM_MAX_R) {
+      camera.position.copy(ctl.target).addScaledVector(o, CAM_MAX_R / rr);
+      if (zoomVel.current > 0) zoomVel.current = 0;
+    } else if (rr < CAM_MIN_R) {
+      if (rr > 1e-9) camera.position.copy(ctl.target).addScaledVector(o, CAM_MIN_R / rr);
+      else camera.position.copy(ctl.target).add(new THREE.Vector3(0, 0, CAM_MIN_R));
+      if (zoomVel.current < 0) zoomVel.current = 0;
+      if (!lastPos.current) lastPos.current = new THREE.Vector3();
+      if (!lastTgt.current) lastTgt.current = new THREE.Vector3();
+      lastPos.current.copy(camera.position);
+      lastTgt.current.copy(ctl.target);
     } else {
-      // Zoom out away from cursor
-      const speed = Math.max(r * 0.55, 0.04);
-      const move = step * speed;
-      camera.position.addScaledVector(d, -move);
-
-      // Re-inflate target if we backed out from a sub-mm micro inspection
-      const newR = camera.position.distanceTo(ctl.target);
-      if (newR < 0.1) {
-        ctl.target.copy(camera.position).addScaledVector(d, 0.4);
-      }
+      if (!lastPos.current) lastPos.current = new THREE.Vector3();
+      if (!lastTgt.current) lastTgt.current = new THREE.Vector3();
+      lastPos.current.copy(camera.position);
+      lastTgt.current.copy(ctl.target);
     }
 
     ctl.update();

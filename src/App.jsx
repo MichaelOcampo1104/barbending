@@ -926,7 +926,7 @@ function ViewportBar() {
                 Zoom to cursor
               </label>
               <button className="ghost sm" onClick={resetNav} title="Restore default navigation feel">Reset defaults</button>
-              <div className="snap-note">Arrows pan · Shift+arrows orbit · +/− zoom · Home fits all</div>
+              <div className="snap-note">Arrows pan · Shift+arrows orbit · +/− zoom · Home fits all · zoom range guarded (flings stop at 400 m)</div>
             </div>
           )}
         </span>
