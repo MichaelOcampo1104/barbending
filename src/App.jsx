@@ -783,6 +783,56 @@ function MeasureHud() {
   );
 }
 
+function QueryHud() {
+  const query = useStore((s) => s.query);
+  const setQueryActive = useStore((s) => s.setQueryActive);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return undefined;
+    const t = setTimeout(() => setCopied(false), 1200);
+    return () => clearTimeout(t);
+  }, [copied]);
+  if (!query?.active) return null;
+  const r = query?.result;
+  const copyText = () => {
+    if (!r) return;
+    const txt = [`${r.title}${r.sub ? ` · ${r.sub}` : ''}`,
+      ...(r.rows || []).map(([k, v]) => `${k}: ${v}`)].join('\n');
+    const done = () => setCopied(true);
+    try {
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(txt).then(done).catch(done);
+      else done();
+    } catch { done(); }
+  };
+  return (
+    <div className="measure-hud">
+      <div className="measure-hud-header">
+        <span>ⓘ Object Query</span>
+        <span style={{ display: 'flex', gap: 4 }}>
+          {r && <button className="ghost sm" onClick={copyText} title="Copy all coordinates as text">{copied ? 'Copied ✓' : 'Copy'}</button>}
+          <button className="ghost sm" onClick={() => setQueryActive(false)} title="Close query tool (Esc)">✕</button>
+        </span>
+      </div>
+      {!r ? (
+        <div className="distnote">Click any rebar, concrete member, or IFC object — exact surface point, no snap. Misses keep the last result.</div>
+      ) : (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>{r.title}</div>
+          {r.sub && <div className="hint" style={{ marginBottom: 4 }}>{r.sub}</div>}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {(r.rows || []).map(([k, v]) => (
+              <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11 }}>
+                <span style={{ color: '#93c5fd' }}>{k}</span>
+                <span style={{ color: '#e2e8f0', fontFamily: 'monospace', textAlign: 'right' }}>{v}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ViewportBar() {
   const showConcrete = useStore((s) => s.showConcrete);
   const toggleConcrete = useStore((s) => s.toggleConcrete);
@@ -797,6 +847,8 @@ function ViewportBar() {
   const setIfcPick = useStore((s) => s.setIfcPick);
   const measure = useStore((s) => s.measure);
   const setMeasureActive = useStore((s) => s.setMeasureActive);
+  const query = useStore((s) => s.query);
+  const setQueryActive = useStore((s) => s.setQueryActive);
   const snapEnabled = useStore((s) => s.snapEnabled);
   const setSnapEnabled = useStore((s) => s.setSnapEnabled);
   const snapOpts = useStore((s) => s.snapOpts);
@@ -885,6 +937,7 @@ function ViewportBar() {
         )}
         <button className={ifcPick ? 'on' : ''} onClick={() => setIfcPick(!ifcPick)} title="Click IFC / concrete / bar surfaces to move the selected bar there">🎯 Pick pos</button>
         <button className={measure.active ? 'on' : ''} onClick={() => setMeasureActive(!measure.active)} title="Measure: LMB clicks drop points on surfaces, RMB removes last, Esc exits (view-only)">📏 Measure</button>
+        <button className={query.active ? 'on' : ''} onClick={() => setQueryActive(!query.active)} title="Query: click any rebar, concrete, or IFC object to read its coordinates (Esc exits)">ⓘ Query</button>
         <span style={{ position: 'relative', display: 'inline-flex', gap: 0 }}>
           <button className={snapEnabled !== false ? 'on' : ''} onClick={() => setSnapEnabled(!(snapEnabled !== false))} title={`Snap magnet (${['end', 'mid', 'center', 'nearest', 'perp'].filter((k) => snapOpts?.[k]).join(' · ') || 'nothing enabled'}): pick & measure snap to nearby targets`} style={{ borderRadius: '6px 0 0 6px' }}>🧲 Snap</button>
           <button onClick={() => setSnapMenu((v) => !v)} title="Snap options: endpoint / midpoint / center / nearest / perpendicular" style={{ borderRadius: '0 6px 6px 0', borderLeft: '1px solid #0f172a' }}>▾</button>
@@ -923,6 +976,7 @@ function ViewportBar() {
         {section?.enabled && <b> — drag ◼ face cubes to push/pull the section</b>}
         {ifcPick && <b> — pick mode: click IFC / concrete to place the selected bar (cover {cover}mm + Ø/2 inside the face){snapEnabled !== false && ' · snap ⚓ (▾ options)'}</b>}
         {measure.active && <b> — 📏 {measure.points.length} pts{measure.points.length > 1 && ` · total ${fmtLen(measureTotal(measure.points))}`} · click surfaces{snapEnabled !== false && ' · snap ⚓ (▾ options)'} · RMB removes last · Esc done</b>}
+        {query.active && <b> — ⓘ query: click a rebar / concrete / IFC object for its coordinates · Esc done</b>}
         {lapArmed && <b> — 🔗 lap: click {lapAnchor == null ? 'anchor bar' : 'lapping bar'}{lapAnchor != null && bars[lapAnchor] ? ` (anchor ${bars[lapAnchor].Bar_mark})` : ''} · Esc cancels</b>}
         {lastLap && <b> — 🔗 {lastLap.b} → {lastLap.a} · lap {lastLap.len.toLocaleString('en-US')} mm ({lastLap.bond} bond, Ø{lastLap.dia})</b>}
         {lastPick && <b> — placed ({lastPick.Pos_x}, {lastPick.Pos_y}, {lastPick.Pos_z}){lastPick.snapped ? ' ⚓ rebar' : ''}</b>}
@@ -1538,7 +1592,7 @@ export default function App() {
         ) : (
           <div className="rail"><button onClick={() => setLeftOpen(true)} title="Expand panel">»</button></div>
         )}
-        <section className="view"><Scene /><ViewportBar /><MeasureHud /></section>
+        <section className="view"><Scene /><ViewportBar /><MeasureHud /><QueryHud /></section>
         {ifcActive && (
           <aside className="rside">
             <div className="rsidehead">IFC control</div>

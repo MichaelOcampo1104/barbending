@@ -3,7 +3,9 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, AdaptiveDpr, Line, Html, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
-import { genBarPoints, transformBarLocalPoint, distOffsets, barOverlapsBoxes, snapPrimitives, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES, barAppBox } from '../bbs/shapes.js';
+import { genBarPoints, transformBarLocalPoint, distOffsets, distCount, barOverlapsBoxes, snapPrimitives, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES, barAppBox } from '../bbs/shapes.js';
+import { enrichBar } from '../bbs/csv.js';
+import { ifcSession, subsetBox } from '../ifc/session.js';
 import FitIfc from './FitIfc.jsx';
 import AutoClipping from './AutoClipping.jsx';
 import SectionBox from './SectionBox.jsx';
@@ -546,6 +548,155 @@ function MeasureHandler() {
   return null;
 }
 
+// ⓘ Query tool: while armed, LMB click reads the clicked rebar / concrete /
+// IFC object into store.query.result (floating panel). Exact surface point,
+// no snap; misses keep the last result. Measuring / drawing / box-select own
+// their clicks, so the handler steps aside for them. Esc exits (consumed).
+function QueryHandler() {
+  const gl = useThree((s) => s.gl);
+  const camera = useThree((s) => s.camera);
+  const scene = useThree((s) => s.scene);
+  const raycaster = useRef(null);
+  if (!raycaster.current) raycaster.current = new THREE.Raycaster();
+  const fmtPt = (p) => p.map((v) => (+v).toFixed(1)).join(', ');
+  useEffect(() => {
+    const el = gl.domElement;
+    let down = null;
+    const onDown = (ev) => {
+      if (ev.button === 0) down = [ev.clientX, ev.clientY];
+    };
+    const onUp = (ev) => {
+      if (!down) return;
+      const dx = ev.clientX - down[0];
+      const dy = ev.clientY - down[1];
+      down = null;
+      if (dx * dx + dy * dy > 25) return; // drag (orbit/pan), not a click
+      const st = useStore.getState();
+      if (!st.query?.active || st.measure?.active || st.drawMode || st.boxSelect) return;
+      if (ev.button !== 0) return;
+      const rect = el.getBoundingClientRect();
+      raycaster.current.setFromCamera(new THREE.Vector2(
+        ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+        -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+      ), camera);
+      const hits = raycaster.current.intersectObjects(collectPickTargets(scene), false);
+      if (!hits.length) return; // miss keeps the last result
+      const h = hits[0];
+      let root = h.object;
+      while (root && root !== scene && !root.userData?.pickRoot) root = root.parent;
+      const kind = root?.userData?.pickRoot || null;
+      const wp = h.point;
+      // App frame (mm), exact surface point — same mapping as MeasureHandler.
+      const appPt = [wp.x * 1000, -wp.z * 1000, wp.y * 1000].map((v) => Math.round(v * 10) / 10);
+      let result = null;
+      if (kind === 'rebar') {
+        const i = root.userData?.barIndex;
+        const b = Number.isInteger(i) ? st.bars[i] : null;
+        if (!b) return;
+        const bb = barAppBox(b);
+        const en = enrichBar(b);
+        result = {
+          kind,
+          title: `Rebar ${b.Bar_mark || `#${i}`}`,
+          sub: `${b.Rebar_Type} · Ø${b.Dia}`,
+          point: appPt,
+          rows: [
+            ['Bar index', String(i)],
+            ['Position (app mm)', fmtPt([b.Pos_x || 0, b.Pos_y || 0, b.Pos_z || 0])],
+            ['Bbox min (app mm)', fmtPt([bb.minX, bb.minY, bb.minZ])],
+            ['Bbox max (app mm)', fmtPt([bb.maxX, bb.maxY, bb.maxZ])],
+            ['Bbox size (mm)', fmtPt([bb.maxX - bb.minX, bb.maxY - bb.minY, bb.maxZ - bb.minZ])],
+            ['Distribution', `${en._copies ?? distCount(b)} bars`],
+            ['Cut length', `${(en._cut || 0).toLocaleString('en-US')} mm`],
+            ['Click point (app mm)', fmtPt(appPt)],
+          ],
+        };
+      } else if (kind === 'concrete') {
+        const c = (st.concretes || []).find((k) => k.id === root.userData?.concreteId);
+        if (!c) return;
+        result = {
+          kind,
+          title: `Concrete ${c.name || c.id}`,
+          sub: `${c.lx}×${c.ly}×${c.lz} mm`,
+          point: appPt,
+          rows: [
+            ['Origin (app mm)', fmtPt([c.x, c.y, c.z])],
+            ['Size Lx·Ly·Lz (mm)', fmtPt([c.lx, c.ly, c.lz])],
+            ['Bbox min (app mm)', fmtPt([c.x, c.y, c.z])],
+            ['Bbox max (app mm)', fmtPt([c.x + c.lx, c.y + c.ly, c.z + c.lz])],
+            ['Center (app mm)', fmtPt([c.x + c.lx / 2, c.y + c.ly / 2, c.z + c.lz / 2])],
+            ['Click point (app mm)', fmtPt(appPt)],
+          ],
+        };
+      } else if (kind === 'ifc') {
+        const key = h.object.userData?.ifcKey || root.userData?.ifcKey || null;
+        const meta = st.ifc;
+        const found = (meta?.elements || []).find((e) => e.key === key);
+        const typ = !found && key && key.startsWith('type:')
+          ? (meta?.types || []).find((t) => `type:${t.key}` === key)
+          : null;
+        const elName = found?.name || typ?.label || key || '(unknown)';
+        const elType = found?.typeLabel || found?.type || typ?.label || '';
+        // Model-frame click mm — same math as the MeasureHandler IFC branch
+        // (group-local coords × unit → metres → mm).
+        let ifcPt = null;
+        if (root) {
+          const u = st.ifc?.unitToMeters || 1;
+          const lp = root.worldToLocal(wp.clone());
+          ifcPt = [lp.x * u * 1000, -lp.z * u * 1000, lp.y * u * 1000].map((v) => Math.round(v * 10) / 10);
+        }
+        // Live index-aware world bbox (subsetBox skips the shared-buffer trap),
+        // restated on app-like axes in mm — includes user placement.
+        const rows = [
+          ['Key', String(key || '—')],
+          ['Type', String(elType || '—')],
+          ['Storey', String(found?.storey || '—')],
+          ['Express ID', String(found?.expressID ?? '—')],
+        ];
+        const mesh = key && ifcSession.meshes[key];
+        if (mesh) {
+          try {
+            const bb = subsetBox(mesh);
+            if (!bb.isEmpty()) {
+              const mn = [bb.min.x * 1000, -bb.max.z * 1000, bb.min.y * 1000];
+              const mx = [bb.max.x * 1000, -bb.min.z * 1000, bb.max.y * 1000];
+              rows.push(
+                ['Bbox min (mm, placed)', fmtPt(mn)],
+                ['Bbox max (mm, placed)', fmtPt(mx)],
+                ['Bbox size (mm)', fmtPt([mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]])],
+                ['Center (mm, placed)', fmtPt([(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2])],
+              );
+            }
+          } catch { /* degenerate geometry — meta rows still stand */ }
+        }
+        if (ifcPt) rows.push(['Click point (model mm)', fmtPt(ifcPt)]);
+        rows.push(['Click point (app mm)', fmtPt(appPt)]);
+        result = {
+          kind, title: `IFC ${elName}`, sub: elType, point: appPt, rows,
+        };
+      } else {
+        return;
+      }
+      st.setQueryResult({ ...result, at: Date.now() });
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape' && useStore.getState().query?.active) {
+        useStore.getState().setQueryActive(false);
+        e.preventDefault(); // consumed — App's Esc cascade must not clear the selection too
+      }
+    };
+    el.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [gl, camera, scene]);
+  return null;
+}
+
 // Snap magnet preview: while pick-to-place or measure is armed (and snap is
 // enabled), hovering near an enabled osnap target shows exactly where a click
 // would snap — pink for Endpoint/Midpoint/Center/Nearest, green for
@@ -845,7 +996,7 @@ const S = 0.001;
 const DIA_COLORS = { 10: '#22c55e', 12: '#84cc16', 16: '#f59e0b', 20: '#ef4444', 25: '#a855f7', 32: '#3b82f6', 40: '#e11d48' };
 const colorFor = (dia) => DIA_COLORS[dia] || '#f59e0b';
 
-function RebarMesh({ bar, selected, onClick, onDoubleClick }) {
+function RebarMesh({ bar, index, selected, onClick, onDoubleClick }) {
   const tube = useMemo(() => {
     const g = genBarPoints(bar);
     // App coords in mm: [ax, ay, az] via transformBarLocalPoint(bar, pt)
@@ -880,7 +1031,7 @@ function RebarMesh({ bar, selected, onClick, onDoubleClick }) {
   const by = -(Number(bar.Pos_y) || 0) * S;
 
   return (
-    <group userData-pickRoot="rebar"
+    <group userData-pickRoot="rebar" userData-barIndex={index}
       onClick={(e) => { e.stopPropagation(); onClick?.(e); }}
       onDoubleClick={(e) => { e.stopPropagation(); onDoubleClick?.(); }}
     >
@@ -1365,6 +1516,7 @@ export default function Scene() {
           <RebarMesh
             key={i}
             bar={b}
+            index={i}
             selected={(selectedBars || []).includes(i)}
             onClick={(ev) => {
               const st = useStore.getState();
@@ -1412,6 +1564,7 @@ export default function Scene() {
       <TraceTool />
       <PickHandler />
       <BoxSelect />
+      <QueryHandler />
       <MeasureHandler />
       <MeasureView />
       <SnapPreview />

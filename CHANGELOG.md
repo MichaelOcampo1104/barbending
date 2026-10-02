@@ -2,6 +2,12 @@
 
 ## Unreleased (working tree → next push)
 
+- **ⓘ Object Query tool (click-to-inspect coordinates)**:
+  - Armed via the ⓘ Query toolbar button (next to Measure); `QueryHandler` in `Scene.jsx` raycasts `collectPickTargets` and builds a result row set per kind into ephemeral `store.query` (never saved, never in BBS/CSV).
+  - Rebar: mark/type/Ø, bar index (`userData-barIndex` on the rebar group), Pos, bbox min/max/size (`barAppBox`), distribution count, cut length (`enrichBar`), click point. Concrete: name, origin, Lx·Ly·Lz, bbox min/max, center, click point. IFC: name/type/storey/GlobalId/Express ID, live index-aware `subsetBox` bbox restated in mm incl. placement, click point in model-mm + app-mm (per-type subsets handled).
+  - Floating `QueryHud` panel with Copy-as-text; misses keep the last result; Esc exits the mode without clearing the bar selection (consumed in the Esc cascade). Query clicks also select the inspected bar/element so editors follow.
+  - Verified headless over CDP with trusted clicks: concrete + rebar panels byte-correct (rebar pixels projected with the repo's own `genBarPoints`/`transformBarLocalPoint`), Esc close, zero page exceptions; `npm run build`.
+
 - **FreeCAD-style window multi-select (Shift+B) + bulk rebar ops + deselect**:
   - `selectedBars` in store (active `selectedBar` = last of set, so the single-bar editor is unchanged); `setSelectedBars` / `toggleBarSelected` / `clearBarSelection` plus undoable bulk `removeBars` / `duplicateBars` / `hideBars` / `moveBars`; persisted in project save/load and undo snapshots.
   - `BoxSelect` in `Scene.jsx`: Shift+B (or ⊞ Box toolbar button) arms one-shot window select — LMB drag collects every visible bar whose projected bbox touches the rectangle, Ctrl-drag adds, Esc cancels; Ctrl/Cmd/Shift-click toggles single bars, BBS rows follow the same rule.

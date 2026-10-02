@@ -437,6 +437,19 @@ export const useStore = create((set, get) => ({
     console.info(`[lap] ${B.Bar_mark} → ${A.Bar_mark}: ${L} mm (${s.bond} bond, Ø${dia})`);
     return { ok: true, len: L };
   },
+  // Query tool (ephemeral inspect aid — never saved, never in BBS/CSV).
+  // Armed via ⓘ Query; click any rebar / concrete / IFC object to read its
+  // coordinates into a floating panel. result: {kind, title, sub, point,
+  // rows:[[label, value]...]} built by QueryHandler in Scene.jsx.
+  query: { active: false, result: null },
+  setQueryActive: (v) => set((s) => ({
+    query: v
+      ? { active: true, result: s.query?.result ?? null }
+      : { active: false, result: null },
+  })),
+  setQueryResult: (r) => set((s) => ({
+    query: { active: s.query?.active ?? false, result: r },
+  })),
   // Measure tool (ephemeral view aid — never saved, never in BBS/CSV).
   // points: app-mm [x, y, z] surface picks.
   // barPointIdx: which point rides on the controlled rebar (the other is the
