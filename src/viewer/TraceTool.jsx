@@ -126,11 +126,12 @@ export default function TraceTool() {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape') {
-        if (drawStart) setDrawStart(null);
-        else if (drawMode) setDrawMode(null);
+        if (drawStart) { setDrawStart(null); e.preventDefault(); }
+        else if (drawMode) { setDrawMode(null); e.preventDefault(); }
         else {
           const st = useStore.getState();
-          if (st.lapArmed) st.setLapArmed(false);
+          // Consumed — App's Esc cascade must not clear the selection too.
+          if (st.lapArmed) { st.setLapArmed(false); e.preventDefault(); }
         }
       }
     };

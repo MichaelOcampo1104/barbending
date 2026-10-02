@@ -15,6 +15,7 @@ const snap = (s) => ({
   concretes: structuredClone(s.concretes),
   refLines: structuredClone(s.refLines || []),
   selectedBar: s.selectedBar,
+  selectedBars: Array.isArray(s.selectedBars) ? [...s.selectedBars] : [],
   cover: s.cover,
 });
 // Push pre-mutation snapshot, drop redo branch. Called inside set() updaters
@@ -63,6 +64,12 @@ export const useStore = create((set, get) => ({
   selectedRefLine: null,
   selectRefLine: (id) => set({ selectedRefLine: id }),
   selectedBar: 0,
+  // Multi-selection (rebar indices). selectedBar stays the active/edited bar
+  // (last of the set) so the single-bar editor keeps working unchanged.
+  selectedBars: [0],
+  // Box/window select armed by Shift+B (one-shot: next LMB drag selects).
+  boxSelect: false,
+  setBoxSelect: (v) => set({ boxSelect: !!v }),
   selectedConcrete: 'c1',
   showConcrete: true,
 
@@ -153,12 +160,14 @@ export const useStore = create((set, get) => ({
     set((state) => withHist(state, {
       bars: [...state.bars, bar],
       selectedBar: state.bars.length,
+      selectedBars: [state.bars.length],
       selectedConcrete: hostObj ? hostObj.id : state.selectedConcrete,
     }));
   },
   appendBars: (newBars) => set((s) => withHist(s, {
     bars: [...s.bars, ...newBars],
     selectedBar: s.bars.length,
+    selectedBars: newBars.length ? [s.bars.length] : (s.selectedBars || []),
   })),
   updateBar: (idx, patch) => set((s) => withHist(s, {
     bars: s.bars.map((b, i) => (i === idx ? { ...b, ...patch } : b)),
@@ -195,6 +204,7 @@ export const useStore = create((set, get) => ({
     set((state) => withHist(state, {
       bars: newBars,
       selectedBar: insertIdx,
+      selectedBars: [insertIdx],
     }));
   },
   clipboardBar: null,
@@ -235,17 +245,94 @@ export const useStore = create((set, get) => ({
     set((state) => withHist(state, {
       bars: newBars,
       selectedBar: insertIdx,
+      selectedBars: [insertIdx],
     }));
   },
   removeBar: (idx) => set((s) => withHist(s, {
     bars: s.bars.filter((_, i) => i !== idx),
     selectedBar: Math.max(0, s.selectedBar - 1),
+    selectedBars: (Array.isArray(s.selectedBars) ? s.selectedBars : [s.selectedBar])
+      .filter((i) => i !== idx).map((i) => (i > idx ? i - 1 : i)),
   })),
-  setBars: (bars) => set((s) => withHist(s, { bars, selectedBar: 0 })),
+  setBars: (bars) => set((s) => withHist(s, { bars, selectedBar: 0, selectedBars: bars.length ? [0] : [] })),
   selectBar: (idx) => set((s) => {
     const bar = s.bars[idx];
     const host = bar ? (resolveBarHost(bar, s.concretes) || bar.host) : s.selectedConcrete;
-    return { selectedBar: idx, selectedConcrete: host || s.selectedConcrete };
+    return { selectedBar: idx, selectedBars: [idx], selectedConcrete: host || s.selectedConcrete };
+  }),
+  // Replace the whole multi-selection (box select / BBS ctrl-click).
+  // Active bar = last index so the single-bar form follows the set.
+  setSelectedBars: (idxs) => set((s) => {
+    const clean = [...new Set((idxs || []).filter((i) => Number.isInteger(i) && i >= 0 && i < s.bars.length))].sort((a, b) => a - b);
+    if (!clean.length) return { selectedBars: [] };
+    const active = clean[clean.length - 1];
+    const bar = s.bars[active];
+    const host = bar ? (resolveBarHost(bar, s.concretes) || bar.host) : s.selectedConcrete;
+    return { selectedBar: active, selectedBars: clean, selectedConcrete: host || s.selectedConcrete };
+  }),
+  toggleBarSelected: (idx) => set((s) => {
+    const cur = new Set(Array.isArray(s.selectedBars) ? s.selectedBars : [s.selectedBar]);
+    if (cur.has(idx)) cur.delete(idx);
+    else if (Number.isInteger(idx) && idx >= 0 && idx < s.bars.length) cur.add(idx);
+    const clean = [...cur].filter((i) => i >= 0 && i < s.bars.length).sort((a, b) => a - b);
+    if (!clean.length) return { selectedBars: [] };
+    const active = clean[clean.length - 1];
+    const bar = s.bars[active];
+    const host = bar ? (resolveBarHost(bar, s.concretes) || bar.host) : s.selectedConcrete;
+    return { selectedBar: active, selectedBars: clean, selectedConcrete: host || s.selectedConcrete };
+  }),
+  clearBarSelection: () => set({ selectedBars: [] }),
+  // Bulk ops over an explicit index list (defaults to current selection).
+  removeBars: (idxs) => set((s) => {
+    const set_idx = new Set(idxs ?? s.selectedBars ?? [s.selectedBar]);
+    if (!set_idx.size) return {};
+    const keep = s.bars.filter((_, i) => !set_idx.has(i));
+    return withHist(s, {
+      bars: keep,
+      selectedBar: 0,
+      selectedBars: keep.length ? [0] : [],
+    });
+  }),
+  duplicateBars: (idxs) => {
+    const s = get();
+    const list = [...new Set(idxs ?? s.selectedBars ?? [s.selectedBar])]
+      .filter((i) => Number.isInteger(i) && i >= 0 && i < s.bars.length).sort((a, b) => a - b);
+    if (!list.length) return;
+    let maxTag = s.bars.reduce((max, b) => Math.max(max, Number(b.Rebar_tag) || 0), 0);
+    const clones = list.map((i) => {
+      maxTag += 1;
+      const src = s.bars[i];
+      let newMark = src.Bar_mark || `B${maxTag}`;
+      const m = String(newMark).match(/^(.*?)(\d+)$/);
+      if (m) newMark = `${m[1]}${String(parseInt(m[2], 10) + 1).padStart(m[2].length, '0')}`;
+      else newMark = `${newMark}_copy`;
+      return { ...structuredClone(src), Rebar_tag: maxTag, Bar_mark: newMark };
+    });
+    set((s2) => withHist(s2, {
+      bars: [...s2.bars, ...clones],
+      selectedBar: s2.bars.length + clones.length - 1,
+      selectedBars: clones.map((_, k) => s2.bars.length + k),
+    }));
+  },
+  hideBars: (idxs, hidden = true) => set((s) => {
+    const set_idx = new Set(idxs ?? s.selectedBars ?? [s.selectedBar]);
+    if (!set_idx.size) return {};
+    return withHist(s, {
+      bars: s.bars.map((b, i) => (set_idx.has(i) ? { ...b, hidden: hidden ? true : undefined } : b)),
+    });
+  }),
+  moveBars: (idxs, dx = 0, dy = 0, dz = 0) => set((s) => {
+    const set_idx = new Set(idxs ?? s.selectedBars ?? [s.selectedBar]);
+    if (!set_idx.size || (!dx && !dy && !dz)) return {};
+    const r1 = (v) => Math.round(v * 10) / 10;
+    return withHist(s, {
+      bars: s.bars.map((b, i) => (set_idx.has(i) ? {
+        ...b,
+        Pos_x: r1((Number(b.Pos_x) || 0) + dx),
+        Pos_y: r1((Number(b.Pos_y) || 0) + dy),
+        Pos_z: r1((Number(b.Pos_z) || 0) + dz),
+      } : b)),
+    });
   }),
   toggleConcrete: () => set((s) => ({ showConcrete: !s.showConcrete })),
 
@@ -258,7 +345,7 @@ export const useStore = create((set, get) => ({
     return {
       bars: prev.bars, concretes: prev.concretes,
       refLines: prev.refLines || [],
-      selectedBar: prev.selectedBar, cover: prev.cover,
+      selectedBar: prev.selectedBar, selectedBars: prev.selectedBars || [prev.selectedBar], cover: prev.cover,
       past: s.past.slice(0, -1),
       future: [snap(s), ...s.future].slice(0, HIST_MAX),
     };
@@ -269,7 +356,7 @@ export const useStore = create((set, get) => ({
     return {
       bars: next.bars, concretes: next.concretes,
       refLines: next.refLines || [],
-      selectedBar: next.selectedBar, cover: next.cover,
+      selectedBar: next.selectedBar, selectedBars: next.selectedBars || [next.selectedBar], cover: next.cover,
       past: [...s.past, snap(s)].slice(-HIST_MAX),
       future: rest,
     };
@@ -344,6 +431,7 @@ export const useStore = create((set, get) => ({
         plan_rotation: A.plan_rotation,
       } : b)),
       selectedBar: bIdx,
+      selectedBars: [bIdx],
     }));
     set({ lastLap: { a: A.Bar_mark, b: B.Bar_mark, len: L, bond: s.bond, dia, at: Date.now() } });
     console.info(`[lap] ${B.Bar_mark} → ${A.Bar_mark}: ${L} mm (${s.bond} bond, Ø${dia})`);
@@ -440,16 +528,23 @@ export const useStore = create((set, get) => ({
       bars: s.bars, concretes: s.concretes,
       refLines: s.refLines || [],
       cover: s.cover, bond: s.bond, selectedBar: s.selectedBar,
+      selectedBars: Array.isArray(s.selectedBars) ? s.selectedBars : [s.selectedBar],
     };
   },
   _applyProject: (d) => {
     if (!d || d.v !== 1 || !Array.isArray(d.bars) || !Array.isArray(d.concretes)) return false;
+      const sel = Math.min(Number(d.selectedBar) || 0, Math.max(0, d.bars.length - 1));
+      const multi = Array.isArray(d.selectedBars)
+        ? [...new Set(d.selectedBars.filter((i) => Number.isInteger(i) && i >= 0 && i < d.bars.length))].sort((a, b) => a - b)
+        : [sel];
       set({
         bars: d.bars, concretes: d.concretes,
         refLines: Array.isArray(d.refLines) ? d.refLines : [],
         cover: typeof d.cover === 'number' ? d.cover : 40,
         bond: d.bond === 'good' || d.bond === 'poor' ? d.bond : 'poor',
-      selectedBar: Math.min(Number(d.selectedBar) || 0, Math.max(0, d.bars.length - 1)),
+      selectedBar: sel,
+      selectedBars: multi.length ? multi : (d.bars.length ? [sel] : []),
+      boxSelect: false,
       saveStamp: d.savedAt || null,
       past: [], future: [],
     });

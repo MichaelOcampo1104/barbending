@@ -2,6 +2,15 @@
 
 ## Unreleased (working tree → next push)
 
+- **FreeCAD-style window multi-select (Shift+B) + bulk rebar ops + deselect**:
+  - `selectedBars` in store (active `selectedBar` = last of set, so the single-bar editor is unchanged); `setSelectedBars` / `toggleBarSelected` / `clearBarSelection` plus undoable bulk `removeBars` / `duplicateBars` / `hideBars` / `moveBars`; persisted in project save/load and undo snapshots.
+  - `BoxSelect` in `Scene.jsx`: Shift+B (or ⊞ Box toolbar button) arms one-shot window select — LMB drag collects every visible bar whose projected bbox touches the rectangle, Ctrl-drag adds, Esc cancels; Ctrl/Cmd/Shift-click toggles single bars, BBS rows follow the same rule.
+  - Rebar panel shows a bulk card when 2+ selected (Duplicate / Hide / Show / Delete with confirm, dX/dY/dZ Move, Keep 1 / All).
+  - Deselect via viewport empty-click (never while placing/lapping/measuring/drawing/box-selecting), ✕ button, or Esc — Esc cascades (measure / draw / lap / box / delete-mode exit first via `preventDefault`, selection clears last); lap-picking Esc cancel now actually works.
+- **Concrete pickable again for measure & pick-to-place**:
+  - Root cause: `collectPickTargets` assumed the concrete pick root is a mesh (`if (r.isMesh)`), but `ConcreteMesh` renders it as a group — the box mesh was never raycast, so measure points and cover-offset picks silently missed concrete (IFC/rebar unaffected).
+  - Group roots now traverse children with the same visible-mesh / stencil-ghost guards; verified headless with real three.js raycast (0 hits before → hit after, ghosts/edges excluded) + `npm run build`.
+
 - **Concrete Element Rendering & Exact Geometry Enhancements**:
   - **Exact Shape & Profile Capture**: Auto-Trace and sidebar "Trace Concrete" now extract the exact triangulated mesh (`c.meshData`) from IFC elements, capturing real-world openings, penetrations, chamfers, bevels, notches, and custom cross-sections rather than reducing everything to an axis-aligned bounding box.
   - **Section Tool Clipping on Concrete**: Fixed clipping plane propagation on concrete elements so that both the mesh faces and edge outlines (`lineBasicMaterial`) react to the Section Box with full stencil solid-cut cap generation.

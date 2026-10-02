@@ -88,14 +88,65 @@ function BarEditor() {
   const lastLap = useStore((s) => s.lastLap);
   const requestFit = useStore((s) => s.requestFit);
   const duplicateBar = useStore((s) => s.duplicateBar);
+  const selectedBars = useStore((s) => s.selectedBars);
+  const setSelectedBars = useStore((s) => s.setSelectedBars);
+  const removeBars = useStore((s) => s.removeBars);
+  const duplicateBars = useStore((s) => s.duplicateBars);
+  const hideBars = useStore((s) => s.hideBars);
+  const moveBars = useStore((s) => s.moveBars);
+  const setBoxSelect = useStore((s) => s.setBoxSelect);
+  const clearBarSelection = useStore((s) => s.clearBarSelection);
   const [hostId, setHostId] = useState(null);
+  const [mvX, setMvX] = useState('');
+  const [mvY, setMvY] = useState('');
+  const [mvZ, setMvZ] = useState('');
   const bar = bars[idx];
   if (!bar) return <div className="panel"><p>No bars yet — pick a type below.</p><TypeGrid onAdd={addBar} /></div>;
   const set = (k, v) => updateBar(idx, { [k]: v });
   const extra = FIELDS_BY_TYPE[bar.Rebar_Type] || [];
+  const multi = (selectedBars || []).filter((i) => i >= 0 && i < bars.length);
+  const multiOn = multi.length > 1;
 
   return (
     <div className="panel">
+      {multiOn && (
+        <div className="cbox sel" style={{ borderColor: '#38bdf8', marginBottom: 8 }}>
+          <div className="crow">
+            <strong>⊞ {multi.length} bars selected</strong>
+            <span style={{ display: 'inline-flex', gap: 4 }}>
+              <button className="ghost sm" onClick={() => setSelectedBars([idx])} title="Keep only the active bar">Keep 1</button>
+              <button className="ghost sm" onClick={() => setSelectedBars(bars.map((_, i) => i))} title="Select all bars">All</button>
+            </span>
+          </div>
+          <div className="distnote" style={{ margin: '4px 0' }}>
+            {multi.map((i) => bars[i]?.Bar_mark).filter(Boolean).slice(0, 12).join(', ')}
+            {multi.length > 12 ? ` … +${multi.length - 12} more` : ''} · edits below apply to the active bar ({bar.Bar_mark})
+          </div>
+          <div className="btnrow inline" style={{ marginBottom: 6 }}>
+            <button className="sm" onClick={() => duplicateBars(multi)} title="Duplicate every selected bar">📋 Duplicate {multi.length}</button>
+            <button className="sm" onClick={() => hideBars(multi, true)} title="Hide selected bars (stay in BBS + CSV)">👁 Hide</button>
+            <button className="sm" onClick={() => hideBars(multi, false)} title="Unhide selected bars">☀ Show</button>
+            <button className="danger sm" onClick={() => { if (window.confirm(`Delete ${multi.length} selected bars? (Ctrl+Z undoes)`)) removeBars(multi); }} title="Delete every selected bar (undoable)">🗑 Delete {multi.length}</button>
+          </div>
+          <div className="crow">
+            <input type="number" placeholder="dX mm" value={mvX} onChange={(e) => setMvX(e.target.value)} style={{ width: 72 }} title="Shift all selected bars in X (mm)" />
+            <input type="number" placeholder="dY mm" value={mvY} onChange={(e) => setMvY(e.target.value)} style={{ width: 72 }} title="Shift all selected bars in Y (mm)" />
+            <input type="number" placeholder="dZ mm" value={mvZ} onChange={(e) => setMvZ(e.target.value)} style={{ width: 72 }} title="Shift all selected bars in Z (mm)" />
+            <button className="sm" onClick={() => {
+              const dx = Number(mvX) || 0, dy = Number(mvY) || 0, dz = Number(mvZ) || 0;
+              if (!dx && !dy && !dz) return;
+              moveBars(multi, dx, dy, dz);
+              setMvX(''); setMvY(''); setMvZ('');
+            }} title="Move every selected bar by dX/dY/dZ (mm)">Move ⭢</button>
+          </div>
+        </div>
+      )}
+      {!multiOn && (
+        <div className="crow" style={{ marginBottom: 6 }}>
+          <span className="hint">Tip: Shift+B then drag a window — or Ctrl-click bars / BBS rows — to multi-select for bulk delete, copy or move.</span>
+          <button className="ghost sm" onClick={() => setBoxSelect(true)} title="Arm window select (Shift+B)">⊞ Box select</button>
+        </div>
+      )}
       <div className="row2" style={{ alignItems: 'center', marginBottom: 4 }}>
         <label className="fld" style={{ flex: 1 }}><span>Selected bar ({bars.length} total)</span>
           <select value={idx} onChange={(e) => selectBar(Number(e.target.value))}>
@@ -109,6 +160,7 @@ function BarEditor() {
         <div style={{ display: 'flex', gap: 4, marginTop: 16 }}>
           <button className="sm" onClick={() => requestFit('bar', idx)} title="Zoom camera directly to this rebar (Hotkey: F)">🎯 Zoom [F]</button>
           <button className="sm" onClick={() => duplicateBar(idx)} title="Duplicate / Copy this rebar (Hotkey: Ctrl+D or C)">📋 Copy [Ctrl+D]</button>
+          <button className="sm" onClick={clearBarSelection} title="Deselect all bars (also: Esc or click empty space)">✕</button>
         </div>
       </div>
       {bar.host && (
@@ -775,6 +827,9 @@ function ViewportBar() {
   const setDrawMode = useStore((s) => s.setDrawMode);
   const drawStart = useStore((s) => s.drawStart);
   const snapNode = useStore((s) => s.snapNode);
+  const boxSelect = useStore((s) => s.boxSelect);
+  const setBoxSelect = useStore((s) => s.setBoxSelect);
+  const selectedBars = useStore((s) => s.selectedBars);
 
   return (
     <>
@@ -809,6 +864,7 @@ function ViewportBar() {
           </select>
         </label>
         <button onClick={() => requestFit('auto')} title="Zoom camera to selected rebar or beam (Hotkey: F)">🎯 Zoom Sel [F]</button>
+        <button className={boxSelect ? 'on' : ''} onClick={() => setBoxSelect(!boxSelect)} title="Window select rebars: arm (or press Shift+B), then drag a rectangle in the viewport. Ctrl-drag adds to the selection · Esc cancels">⊞ Box{(selectedBars?.length || 0) > 1 ? ` (${selectedBars.length})` : ''} [Shift+B]</button>
         <button onClick={() => duplicateBar()} title="Duplicate / Copy selected rebar (Hotkey: Ctrl+D or C)">📋 Copy [Ctrl+D]</button>
         <button onClick={() => requestFit('all')} title="Fit entire model in view">⛶ Fit All</button>
         <button className={section?.enabled ? 'on' : ''} onClick={toggleSection} title="Revit-style section box: push/pull faces, move or rotate gizmo">◫ Section</button>
@@ -859,7 +915,8 @@ function ViewportBar() {
         <span className="vstat">{totalBars} bars · {totalW.toFixed(1)} kg</span>
       </div>
       <div className="overlay">
-        drag = orbit · wheel = zoom · right-drag = pan · click bar = select · F = zoom · Ctrl+D/C = copy rebar
+        drag = orbit · wheel = zoom · right-drag = pan · click bar = select · click empty/Esc = deselect · Ctrl-click = multi · Shift+B = box select · F = zoom · Ctrl+D/C = copy rebar
+        {boxSelect && <b> — ⊞ BOX SELECT armed: drag a rectangle to select rebars · Ctrl-drag adds · Esc cancels</b>}
         {drawMode && !drawStart && <b> — 📐 [{drawMode.toUpperCase()} TOOL] Click 1st corner/node (snapping active) · Esc to cancel</b>}
         {drawMode && drawStart && <b> — 📐 [{drawMode.toUpperCase()} TOOL] Click opposite corner/node to complete member · Esc to cancel</b>}
         {snapNode && <b> — 📍 Snapped: ({snapNode.x}, {snapNode.y}, {snapNode.z}) [{snapNode.type}]</b>}
@@ -882,7 +939,8 @@ function BbsStrip() {
   const appendBars = useStore((s) => s.appendBars);
   const updateBar = useStore((s) => s.updateBar);
   const selectBar = useStore((s) => s.selectBar);
-  const selectedBar = useStore((s) => s.selectedBar);
+  const selectedBars = useStore((s) => s.selectedBars);
+  const toggleBarSelected = useStore((s) => s.toggleBarSelected);
   const duplicateBar = useStore((s) => s.duplicateBar);
   const removeBar = useStore((s) => s.removeBar);
   const requestFit = useStore((s) => s.requestFit);
@@ -1003,6 +1061,7 @@ function BbsStrip() {
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       setDeleteArmed(false);
+      e.preventDefault(); // consumed — App's Esc cascade must not clear the selection too
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -1050,14 +1109,18 @@ function BbsStrip() {
     return (
       <tr
         key={i}
-        className={(i === selectedBar ? 'sel' : '') + (r.hidden ? ' hidden' : '') + (deleteArmed ? ' del' : '')}
-        onClick={() => { if (deleteArmed) removeBar(i); else selectBar(i); }}
+        className={((selectedBars || []).includes(i) ? 'sel' : '') + (r.hidden ? ' hidden' : '') + (deleteArmed ? ' del' : '')}
+        onClick={(e) => {
+          if (deleteArmed) { removeBar(i); return; }
+          if (e.ctrlKey || e.metaKey || e.shiftKey) toggleBarSelected(i);
+          else selectBar(i);
+        }}
         onDoubleClick={() => {
           if (deleteArmed) return;
           selectBar(i);
           requestFit('bar', i);
         }}
-        title={deleteArmed ? 'Delete mode: click to delete this bar (Ctrl+Z undoes)' : 'Click to select · Double-click to zoom directly to this bar'}
+        title={deleteArmed ? 'Delete mode: click to delete this bar (Ctrl+Z undoes)' : 'Click to select · Ctrl-click to multi-select · Double-click to zoom directly to this bar'}
         style={{ cursor: 'pointer' }}
       >
         <td onClick={(e) => e.stopPropagation()} style={{ whiteSpace: 'nowrap' }}>
@@ -1185,7 +1248,7 @@ function BbsStrip() {
           <button onClick={() => fileRef.current?.click()} title="Import and replace all bars in model (Defaults to XY plane)">⤒ Replace CSV</button>
           <input ref={fileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, false)} />
         </span>
-        <span className="hint">{deleteArmed ? '🗑 Delete mode: click a row to delete · Esc to exit · Ctrl+Z undoes' : 'Tip: Double-click any row to zoom · Press F to center'}</span>
+        <span className="hint">{deleteArmed ? '🗑 Delete mode: click a row to delete · Esc to exit · Ctrl+Z undoes' : 'Tip: Double-click any row to zoom · Ctrl-click rows to multi-select · Press F to center'}</span>
       </div>
       <div className="tblwrap">
         <table>
@@ -1240,7 +1303,7 @@ function StatusBar() {
     : `${Math.round(perf.dist * 1000).toLocaleString('en-US')} mm`;
   return (
     <footer className="statusbar">
-      <span>{navMode === 'orbit' ? 'LMB orbit' : 'LMB select'} · MMB orbit · RMB pan · wheel zoom-to-cursor · Esc deselect IFC</span>
+      <span>{navMode === 'orbit' ? 'LMB orbit' : 'LMB select'} · MMB orbit · RMB pan · wheel zoom-to-cursor · Esc deselect</span>
       <span>{perf.fps} fps · cam {dist} · {totalBars} bars · {totalW.toFixed(1)} kg</span>
     </footer>
   );
@@ -1371,6 +1434,24 @@ export default function App() {
       if (isInput) return;
 
       const st = useStore.getState();
+
+      // Esc cascade (last resort — tool handlers run first and preventDefault
+      // when they consume it: measure / draw / lap / box / delete-mode all
+      // exit themselves without touching the selection).
+      if (e.key === 'Escape') {
+        if (e.defaultPrevented) return;
+        if (st.boxSelect) { st.setBoxSelect(false); return; } // fallback (BoxSelect owns it)
+        if ((st.selectedBars?.length || 0) > 0) st.clearBarSelection();
+        return;
+      }
+      // FreeCAD-style Shift+B arms the window select (rebar only). Ignored
+      // while typing, measuring, or drawing so the drag goes to that tool.
+      if (e.shiftKey && (k === 'b' || e.code === 'KeyB') && !e.ctrlKey && !e.metaKey) {
+        if (st.measure?.active || st.drawMode) return;
+        e.preventDefault();
+        st.setBoxSelect(!st.boxSelect);
+        return;
+      }
 
       if (e.ctrlKey || e.metaKey) {
         const redoKey = k === 'y' || (k === 'z' && e.shiftKey);

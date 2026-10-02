@@ -99,6 +99,16 @@ export function collectPickTargets(scene) {
   const targets = [];
   for (const r of roots) {
     if (!isShown(r)) continue;
+    // Concrete root is a group (box mesh + edge lines + stencil ghosts), not
+    // a mesh — traverse its children like any other root so the box stays
+    // pickable for measure + pick-to-place. Stencil ghosts stay excluded.
+    if (r.userData.pickRoot === 'concrete' && !r.isMesh) {
+      r.traverse((o) => {
+        if (!o.isMesh || !isShown(o) || o.userData?.stencil) return;
+        targets.push(o);
+      });
+      continue;
+    }
     if (r.userData.pickRoot === 'concrete') { if (r.isMesh) targets.push(r); continue; }
     r.traverse((o) => {
       if (!o.isMesh || !isShown(o) || o.userData?.stencil) return;
@@ -233,7 +243,7 @@ function PickHandler() {
       down = null;
       if (dx * dx + dy * dy > 25) return; // drag, not a click
       const st = useStore.getState();
-      if (st.drawMode || st.measure?.active) return; // Drawing / tracing / measuring own their clicks
+      if (st.drawMode || st.measure?.active || st.boxSelect) return; // Drawing / tracing / measuring / box-select own their clicks
       const t0 = performance.now();
       const rect = el.getBoundingClientRect();
       const nx = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
@@ -244,7 +254,12 @@ function PickHandler() {
       const ms = performance.now() - t0;
       // Always-on one-liner (remote diagnosis: slow raycast vs clean miss).
       console.info(`[pick] targets=${targets.length} hits=${hits.length} raycast=${ms < 10 ? ms.toFixed(1) : Math.round(ms)}ms pick=${st.ifcPick}`);
-      if (!hits.length) return;
+      if (!hits.length) {
+        // Clicked empty space: drop the bar selection. Never while placing
+        // (that would lose the bar being positioned) or lap-picking.
+        if (!st.ifcPick && !st.lapArmed) st.clearBarSelection();
+        return;
+      }
       const h = hits[0];
       let root = h.object;
       while (root && root !== scene && !root.userData?.pickRoot) root = root.parent;
@@ -306,6 +321,149 @@ function PickHandler() {
   return null;
 }
 
+// FreeCAD-style window select (Shift+B arms, then LMB drags a rectangle).
+// Rebar only: every visible bar whose projected bbox touches the window joins
+// the selection (Ctrl held = add to current set, else replace). One-shot —
+// the mode disarms on mouse-up or Esc so normal orbit/click resumes.
+function BoxSelect() {
+  const gl = useThree((s) => s.gl);
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls);
+  const boxSelect = useStore((s) => s.boxSelect);
+  useEffect(() => {
+    const el = gl.domElement;
+    if (!boxSelect) { el.style.cursor = ''; return; }
+    el.style.cursor = 'crosshair';
+    // Floating rectangle, parked in the canvas wrapper (pointer-events none
+    // so the drag keeps flowing to the canvas).
+    const box = document.createElement('div');
+    box.style.cssText = 'position:absolute;display:none;z-index:50;pointer-events:none;'
+      + 'border:1px dashed #38bdf8;background:rgba(56,189,248,0.12);';
+    const wrap = el.parentElement;
+    const prevPos = wrap ? window.getComputedStyle(wrap).position : '';
+    if (wrap && (prevPos === 'static' || !prevPos)) wrap.style.position = 'relative';
+    if (wrap) wrap.appendChild(box);
+    let start = null;
+    let additive = false;
+    let moved = false;
+    const paint = (a, b) => {
+      const r = el.getBoundingClientRect();
+      const x1 = Math.min(a[0], b[0]) - r.left;
+      const y1 = Math.min(a[1], b[1]) - r.top;
+      const x2 = Math.max(a[0], b[0]) - r.left;
+      const y2 = Math.max(a[1], b[1]) - r.top;
+      box.style.display = 'block';
+      box.style.left = `${x1}px`;
+      box.style.top = `${y1}px`;
+      box.style.width = `${Math.max(0, x2 - x1)}px`;
+      box.style.height = `${Math.max(0, y2 - y1)}px`;
+    };
+    const onDown = (ev) => {
+      if (ev.button !== 0) return;
+      const st = useStore.getState();
+      if (!st.boxSelect || st.drawMode || st.measure?.active) return;
+      start = [ev.clientX, ev.clientY];
+      additive = !!(ev.ctrlKey || ev.metaKey);
+      moved = false;
+      if (controls) controls.enabled = false;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    const onMove = (ev) => {
+      if (!start) return;
+      moved = true;
+      paint(start, [ev.clientX, ev.clientY]);
+    };
+    const onUp = (ev) => {
+      if (!start) return;
+      const s = start;
+      const wasAdd = additive || ev.ctrlKey || ev.metaKey;
+      start = null;
+      box.style.display = 'none';
+      if (controls) controls.enabled = true;
+      const st = useStore.getState();
+      const dx = ev.clientX - s[0];
+      const dy = ev.clientY - s[1];
+      if (!moved || dx * dx + dy * dy < 25) {
+        // Click, not a window — disarm and let the next click select normally.
+        st.setBoxSelect(false);
+        return;
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      const rx0 = (Math.min(s[0], ev.clientX) - rect.left);
+      const ry0 = (Math.min(s[1], ev.clientY) - rect.top);
+      const rx1 = (Math.max(s[0], ev.clientX) - rect.left);
+      const ry1 = (Math.max(s[1], ev.clientY) - rect.top);
+      const v = new THREE.Vector3();
+      const toPx = ([x, y, z]) => {
+        v.set(x * S, z * S, -y * S).project(camera);
+        if (v.z > 1) return null; // behind camera
+        return [(v.x * 0.5 + 0.5) * rect.width, (-v.y * 0.5 + 0.5) * rect.height];
+      };
+      const hiddenHosts = new Set((st.concretes || []).filter((c) => c.visible === false).map((c) => c.id));
+      const hiddenBoxes = (st.concretes || []).filter((c) => c.visible === false)
+        .map((c) => ({ minX: c.x, minY: c.y, minZ: c.z, maxX: c.x + c.lx, maxY: c.y + c.ly, maxZ: c.z + c.lz }));
+      const hit = [];
+      (st.bars || []).forEach((b, i) => {
+        if (b.hidden) return;
+        if (b.host && hiddenHosts.has(b.host)) return;
+        if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return;
+        let bb;
+        try { bb = barAppBox(b); } catch { return; }
+        if (![bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ].every(Number.isFinite)) return;
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        let any = false;
+        for (const cx of [bb.minX, bb.maxX]) {
+          for (const cy of [bb.minY, bb.maxY]) {
+            for (const cz of [bb.minZ, bb.maxZ]) {
+              const p = toPx([cx, cy, cz]);
+              if (!p) continue;
+              any = true;
+              if (p[0] < x0) x0 = p[0];
+              if (p[0] > x1) x1 = p[0];
+              if (p[1] < y0) y0 = p[1];
+              if (p[1] > y1) y1 = p[1];
+            }
+          }
+        }
+        if (!any) return;
+        if (x0 <= rx1 && x1 >= rx0 && y0 <= ry1 && y1 >= ry0) hit.push(i);
+      });
+      if (wasAdd) {
+        const merged = [...new Set([...(st.selectedBars || []), ...hit])].sort((a, b) => a - b);
+        if (merged.length) st.setSelectedBars(merged);
+      } else {
+        st.setSelectedBars(hit);
+      }
+      console.info(`[box] window ${Math.round(rx1 - rx0)}x${Math.round(ry1 - ry0)}px → ${hit.length} bars${wasAdd ? ' (added)' : ''}`);
+      st.setBoxSelect(false);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        useStore.getState().setBoxSelect(false);
+        e.preventDefault(); // consumed — App's Esc cascade must not clear the selection too
+      }
+    };
+    // Capture phase: beat OrbitControls / R3F click handling to the drag.
+    el.addEventListener('pointerdown', onDown, { capture: true });
+    window.addEventListener('pointermove', onMove, { capture: true });
+    window.addEventListener('pointerup', onUp, { capture: true });
+    window.addEventListener('keydown', onKey);
+    return () => {
+      el.style.cursor = '';
+      el.removeEventListener('pointerdown', onDown, { capture: true });
+      window.removeEventListener('pointermove', onMove, { capture: true });
+      window.removeEventListener('pointerup', onUp, { capture: true });
+      window.removeEventListener('keydown', onKey);
+      box.remove();
+      if (controls) controls.enabled = true;
+    };
+  }, [gl, camera, controls, boxSelect]);
+  return null;
+}
+
 // Measure tool: LMB drops surface points (exact hit, no cover offset),
 // RMB-click removes the last point, Esc exits. Ephemeral — never saved.
 function MeasureHandler() {
@@ -328,7 +486,7 @@ function MeasureHandler() {
       down = null;
       if (dx * dx + dy * dy > 25) return; // drag (orbit/pan), not a click
       const st = useStore.getState();
-      if (!st.measure?.active) return;
+      if (!st.measure?.active || st.boxSelect) return;
       if (ev.button === 2) { st.popMeasurePoint(); return; } // right-click: drop last
       if (ev.button !== 0 || btn !== 0) return;
       const rect = el.getBoundingClientRect();
@@ -370,6 +528,7 @@ function MeasureHandler() {
     const onKey = (e) => {
       if (e.key === 'Escape' && useStore.getState().measure?.active) {
         useStore.getState().setMeasureActive(false);
+        e.preventDefault(); // consumed — App's Esc cascade must not clear the selection too
       }
     };
     const noMenu = (e) => e.preventDefault(); // static right-click is "remove last", not a menu
@@ -722,7 +881,7 @@ function RebarMesh({ bar, selected, onClick, onDoubleClick }) {
 
   return (
     <group userData-pickRoot="rebar"
-      onClick={(e) => { e.stopPropagation(); onClick?.(); }}
+      onClick={(e) => { e.stopPropagation(); onClick?.(e); }}
       onDoubleClick={(e) => { e.stopPropagation(); onDoubleClick?.(); }}
     >
       {copies.map(([ox, oy, oz], i) => (
@@ -1151,7 +1310,7 @@ function FitModelHandler() {
 export default function Scene() {
   const concretes = useStore((s) => s.concretes);
   const bars = useStore((s) => s.bars);
-  const selectedBar = useStore((s) => s.selectedBar);
+  const selectedBars = useStore((s) => s.selectedBars);
   const selectBar = useStore((s) => s.selectBar);
   const showConcrete = useStore((s) => s.showConcrete);
   const ifcActive = useStore((s) => s.ifcActive);
@@ -1206,10 +1365,10 @@ export default function Scene() {
           <RebarMesh
             key={i}
             bar={b}
-            selected={i === selectedBar}
-            onClick={() => {
+            selected={(selectedBars || []).includes(i)}
+            onClick={(ev) => {
               const st = useStore.getState();
-              if (st.measure?.active) return;
+              if (st.measure?.active || st.boxSelect) return;
               // Lap picking: first click anchors, second click laps + selects.
               if (st.lapArmed) {
                 if (st.lapAnchor == null) { st.setLapAnchor(i); return; }
@@ -1220,7 +1379,11 @@ export default function Scene() {
                 else { st.setLapAnchor(null); st.setLapArmed(false); }
                 return;
               }
-              selectBar(i);
+              // Ctrl/Cmd/Shift-click toggles into the multi-selection so the
+              // box result can be adjusted bar by bar.
+              const add = ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey);
+              if (add) st.toggleBarSelected(i);
+              else selectBar(i);
             }}
             onDoubleClick={() => {
               selectBar(i);
@@ -1248,6 +1411,7 @@ export default function Scene() {
       </GizmoHelper>
       <TraceTool />
       <PickHandler />
+      <BoxSelect />
       <MeasureHandler />
       <MeasureView />
       <SnapPreview />
