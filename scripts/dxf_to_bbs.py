@@ -13,6 +13,9 @@
 #   bent bars:  add "BENT H=<leg> UP|DOWN", e.g. "B3 H25-150-T BENT H=800 UP Z=500 EXT=1800"
 #   links: closed rect on REBAR-LINK-H<dia> (or REBAR-H<dia> + LINK tag for old
 #     files) + "LINK A=<a> B=<b>", e.g. "S1 H10-150 LINK A=400 B=600 Z=500 EXT=2000".
+#     Length/spine and legs come from the tag (L=/A=/B=), else host rules, else
+#     measurement (closed rects); where nothing is measurable (open lines,
+#     wall field rects) length defaults 110 and legs default 130, NOTEd.
 #     A closed rect on REBAR-LINK-H<dia> already declares a link; HOOK in the
 #     layer (or a LINK_HOOK tag) selects the hooked variant.
 #     Omit EXT=/SP= to zone the grid from the drawn rect itself (spacing from
@@ -24,6 +27,7 @@
 #     VIEW= sets Plane (default XY), ROT= overrides Pos_Rotation; DOUBLE = hook both ends
 #   columns: closed rect on CONC-* + "C1 COLUMN C1 THK=<height> Z=<base> ...".
 #     verticals need no centerlines: "V1 VERT 8xH25 [H=<height>] HOST=<col>"
+#     (or spacing form "V1 VERT H25-150": count from the ring perimeter) —
 #     generates one straight bar per perimeter position (cover inset from the
 #     rect), height from H= else host internal depth, seated on base cover,
 #     stock-split upward; place the tag inside its column. Column ties: closed
@@ -32,11 +36,31 @@
 #     cover (count auto from host height unless NZ= given); loop sides are
 #     axis-locked to the rect bbox. New shape code 51 (BS8666 closed link).
 #     starters: "ST1 STARTER 8xH25 [AT=BOT|TOP] [HB=<bent leg>] HOST=<col>"
+#     (count or spacing form like VERT — same spacing keeps laps aligned)
 #     makes bent dowels (legs aimed outward from the column center):
 #     vertical lap above the SFL plus straight-then-bent below, one good-bond
 #     tension lap each way (bent leg HB=, else lap minus straight; straight
 #     limited by the lower-slab depth; AT=TOP mirrors into the slab above with
 #     the vertical leg hanging down).
+#   walls: closed rect on CONC-* + "W1 WALL W1 THK=<height> Z=<base> ...".
+#     Mains are verticals: "WV1 VERT 34xH12 HOST=<wall>" rings the rect like a
+#     column (perimeter positions, full internal height, good bond).
+#     Distribution is horizontal: drawn plan centerline (one per curtain, at
+#     its Y) + "WH1 H12-150 NZ=20 SZ=150 HOST=<wall>" — length from the line,
+#     stacked in Z from the base cover (count auto from host height unless
+#     NZ= given); bond stays poor unless GOOD=/POOR= overrides.
+#     Wall links reuse the slab U-hook shape laid flat: closed rect on
+#     REBAR-LINK + "WL1 H13 LINK_HOOK A=<leg> B=<leg> HOST=<wall>" forces
+#     Plane XY / ROT 90 (spine across the thickness, legs along the wall;
+#     explicit VIEW=/ROT= still win). Spine auto = wall thickness - covers;
+#     hook leg (c_length_b) follows thickness-covers, superseding B= (NOTEd).
+#     Field = along-wall spread (EXT width or tick, rect-long-side driven,
+#     spine centered on cover inside the rect) x stacked height (NZ=/SZ= or
+#     host height, capped so the tallest leg stays under the top cover);
+#     spacing inputs: SP=<along>x<vertical> (sx, else H-sp; sz from SZ=, else
+#     SP= second value, else H-sp), length L= and leg A= explicit (B= follows
+#     thickness); a second EXT axis is ignored with a NOTE. Legs trail -X past
+#     the rect start when the rect is drawn tight — warned with the overhang.
 #   grids are CENTERED on the drawn anchor via offset_x/offset_y (the app copies
 #   one-sided from Pos, but the tick straddles the line / the grid sits mid-rect).
 #   Column ties stack the same grid in Z via qty_z/spacing_z (NZ=/SZ= or auto).
@@ -89,7 +113,7 @@ def lap_len(dia, bond):
         L = t[a]+(t[b]-t[a])*(d-a)/(b-a)
     return int(math.ceil(L/10)*10)
 
-TAG = re.compile(r'^\s*([BSTV]\w+|\d+)?\s*(?:H(\d+)|VERT\s*\d+\s*[x×]\s*H(\d+)|\bTIE\b|\bSTARTER\b)', re.I)
+TAG = re.compile(r'^\s*([BSTVW]\w+|\d+)?\s*(?:H(\d+)|VERT\s*(?:\d+\s*[x×]\s*)?H(\d+)|\bTIE\b|\bSTARTER\b)', re.I)
 BTMARK = re.compile(r'^\s*([BT])\s*0*(\d+)\s*$', re.I)
 # explicit location keywords (side/role/layer/parent/bond); all optional,
 # classic B/T+number inference fills whatever is missing
@@ -107,7 +131,8 @@ def _tagdia(tm):
 LEGSP = re.compile(r'H\d+\s*-\s*(\d+)', re.I)
 TYPEW = re.compile(r'\b(BENT|LINK_HOOK|LINK|C_LINK|HOOK|STRAIGHT|TIE|VERT|STARTER)\b', re.I)
 VERTCOUNT = re.compile(r'\bVERT\s*(\d+)\s*[x×]\s*H(\d+)', re.I)
-STARTERCOUNT = re.compile(r'\bSTARTER\s*(\d+)\s*[x×]\s*H(\d+)', re.I)
+VERTSP = re.compile(r'\bVERT\s+H(\d+)\s*-\s*(\d+)', re.I)
+STARTERCOUNT = re.compile(r'\bSTARTER\s*(?:(\d+)\s*[x×]\s*)?H(\d+)(?:\s*-\s*(\d+))?', re.I)
 STAT = re.compile(r'\bAT\s*=\s*(TOP|BOT)', re.I)
 STARTHB = re.compile(r'\bHB\s*=\s*([\d.]+)', re.I)
 TIENZ = re.compile(r'\bNZ\s*=\s*(\d+)', re.I)
@@ -188,7 +213,7 @@ def main():
         covs = {k.upper(): float(v) for k, v in re.findall(r'COV([BT])?\s*=\s*([\d.]+)', ctag, re.I)}
         cov = covs.get('', a.cover)
         covB, covT = covs.get('B', cov), covs.get('T', cov)
-        concretes.append({'id': cid.lower(), 'name': name,
+        concretes.append({'id': cid.lower(), 'name': name, 'kind': kind,
             'lx': round(max(xs)-min(xs), 1), 'ly': round(max(ys)-min(ys), 1),
             'lz': thk, 'x': round(x0, 2), 'y': round(y0, 2), 'z': z,
             'covB': covB, 'covT': covT})
@@ -245,29 +270,45 @@ def main():
         return out
     for ttxt, tpos in texts:
         vm = VERTCOUNT.search(ttxt)
-        if not vm:
+        sm = None if vm else VERTSP.search(ttxt)
+        if not vm and not sm:
+            if 'VERT' in ttxt.upper():
+                print(f'WARN VERT tag {ttxt[:44]!r} needs VERT nxH<dia> or VERT H<dia>-<sp> — skipped')
             continue
         tm = TAG.search(ttxt); vmark = tm.group(1) if tm and tm.group(1) else None
-        if not vmark:
+        if not vmark or vmark.upper() in ('VERT', 'TIE', 'LINK', 'STARTER', 'BENT', 'HOOK'):
             print(f'WARN VERT tag {ttxt[:44]!r} needs a mark like V1 — skipped')
             continue
-        vn, vdia = max(1, int(vm.group(1))), int(vm.group(2))
+        if vm:
+            vn, vdia, vsp = max(1, int(vm.group(1))), int(vm.group(2)), 0
+        else:
+            vdia, vsp, vn = int(sm.group(1)), int(sm.group(2)), 0
         vslab = host_for(ttxt, tpos, vmark)
         if vslab is None:
             continue
         ins = max(1.0, vslab.get('covB', a.cover) + vdia/2)
+        if not vn:
+            # spacing form: count from the ring perimeter (closed loop, no +1)
+            x0t, y0t = vslab['x']+ins, vslab['y']+ins
+            x1t, y1t = vslab['x']+vslab['lx']-ins, vslab['y']+vslab['ly']-ins
+            vn = max(4, round(2*(max(0.0, x1t-x0t)+max(0.0, y1t-y0t))/max(1, vsp)))
+            print(f'NOTE {vmark}: spacing {vsp} -> {vn} bars')
         for i, (px, py) in enumerate(ring_pts(vslab, ins, vn)):
             bars.append(_VBar(f'REBAR-VERT-H{vdia}', px, py, i, vmark))
         print(f'{vmark}: {vn} vertical H{vdia} around {vslab["name"]} (inset {round(ins,1)})')
     for ttxt, tpos in texts:
         sm = STARTERCOUNT.search(ttxt)
         if not sm:
+            if 'STARTER' in ttxt.upper():
+                print(f'WARN STARTER tag {ttxt[:44]!r} needs STARTER [nx]H<dia>[-<sp>] — skipped')
             continue
         tm = TAG.search(ttxt); smark = tm.group(1) if tm and tm.group(1) else None
-        if not smark:
+        if not smark or smark.upper() in ('VERT', 'TIE', 'LINK', 'STARTER', 'BENT', 'HOOK'):
             print(f'WARN STARTER tag {ttxt[:44]!r} needs a mark like ST1 — skipped')
             continue
-        sn, sdia = max(1, int(sm.group(1))), int(sm.group(2))
+        sCount = int(sm.group(1)) if sm.group(1) else 0
+        sn, sdia = max(1, sCount) if sCount else 0, int(sm.group(2))
+        ssp = int(sm.group(3)) if sm.group(3) else 0
         col = host_for(ttxt, tpos, smark)
         if col is None:
             continue
@@ -315,6 +356,13 @@ def main():
             hleg = hleg_fix or (lap - sbelow)
             mainL, pz, rotO, legO = lap + sbelow, sfl + lap, -90.0, 0.0
         ins = max(1.0, col.get('covB', a.cover) + sdia/2)
+        if not sn:
+            # spacing form: same ring count as VERT so laps align
+            x0t, y0t = col['x']+ins, col['y']+ins
+            x1t, y1t = col['x']+col['lx']-ins, col['y']+col['ly']-ins
+            eff = ssp or 150
+            sn = max(4, round(2*(max(0.0, x1t-x0t)+max(0.0, y1t-y0t))/max(1, eff)))
+            print(f'NOTE {smark}: spacing {eff} -> {sn} starters')
         for i, (px, py) in enumerate(ring_pts(col, ins, sn)):
             prot = round((math.degrees(math.atan2(py-cy, px-cx)) + legO) % 360, 1)
             bars.append(_VBar(f'REBAR-VERT-H{sdia}', px, py, i, smark,
@@ -437,8 +485,8 @@ def main():
         link_a = float(ma.group(1)) if (ma and rtype in ('c_link', 'c_link_with_hook', 'tie')) else 0.0
         link_b = float(mb.group(1)) if (mb and rtype in ('c_link', 'c_link_with_hook', 'tie')) else 0.0
         vert_h = float(mh.group(1)) if (mh and vert) else 0.0
-        mnz = TIENZ.search(raw); tie_nz = int(mnz.group(1)) if (mnz and rtype == 'tie') else 0
-        msz = TIESZ.search(raw); tie_sz = float(msz.group(1)) if (msz and rtype == 'tie') else 0.0
+        mnz = TIENZ.search(raw); tie_nz = int(mnz.group(1)) if mnz else 0
+        msz = TIESZ.search(raw); tie_sz = float(msz.group(1)) if msz else 0.0
         ml = LEGLEN.search(raw); exp_len = float(ml.group(1)) if ml else 0.0
         # host slab lookup (HOST tag, else spatial containment, else first) —
         # drives slab covers for auto-level and link spine length
@@ -452,6 +500,9 @@ def main():
                     return cc
             return concretes[0] if concretes else None
         slab = find_slab()
+        # wall-hosted links run re-oriented (VIEW=YZ): spine through the wall
+        # thickness, field spread along the wall, stacked in Z like ties
+        wallFlag = bool(slab) and str(slab.get('kind') or '').upper() == 'WALL'
         # link spine: explicit L= wins, else slab internal depth (THK - covers),
         # else rect-measured (closed) / line length. Legs stay tag-or-measured.
         def meas_rect():
@@ -463,13 +514,41 @@ def main():
         if exp_len:
             L, Lsrc = exp_len, 'tag'
         elif rtype in ('c_link', 'c_link_with_hook'):
-            if slab and slab['lz'] - slab.get('covT', 0) - slab.get('covB', 0) > 0:
+            if wallFlag:
+                if slab and min(slab['lx'], slab['ly']) - slab.get('covT', 0) - slab.get('covB', 0) > 0:
+                    L, Lsrc = round(min(slab['lx'], slab['ly']) - slab['covT'] - slab['covB'], 1), 'wall'
+                elif b.is_closed:
+                    L, Lsrc = 110.0, 'default'  # field rect is not a spine
+                # open line: keep the drawn length as the spine
+            elif slab and slab['lz'] - slab.get('covT', 0) - slab.get('covB', 0) > 0:
                 L, Lsrc = round(slab['lz'] - slab['covT'] - slab['covB'], 1), 'slab'
             elif b.is_closed:
                 L, Lsrc = meas_rect()[0], 'rect'
-        if rtype in ('c_link', 'c_link_with_hook') and b.is_closed:
+        if rtype in ('c_link', 'c_link_with_hook') and b.is_closed and not wallFlag:
+            # zone rects double as leg profiles for slab/column links
             _, lega, legb = meas_rect()
             link_a = link_a or lega; link_b = link_b or legb
+        if rtype in ('c_link', 'c_link_with_hook') and not (b.is_closed and not wallFlag):
+            # nothing measurable (open line, or wall rect = field not profile):
+            # small defaults instead of garbage
+            if not ma:
+                link_a = 130.0
+            if not mb and not wallFlag:
+                link_b = 130.0
+            if wallFlag and not ma:
+                print(f'NOTE {mark}: leg A defaults to {link_a} (nothing measurable)')
+        if wallFlag and rtype in ('c_link', 'c_link_with_hook'):
+            # flat (XY) wall links: hook leg follows the wall internal depth;
+            # legs run along the wall, so an explicit B= is superseded
+            if slab and min(slab['lx'], slab['ly']) - slab.get('covT', 0) - slab.get('covB', 0) > 0:
+                wall_int = round(min(slab['lx'], slab['ly']) - slab['covT'] - slab['covB'], 1)
+                if mb and abs(link_b - wall_int) > 1e-6:
+                    print(f'NOTE {mark}: wall B={link_b} follows thickness-covers {wall_int}')
+                link_b = wall_int
+            if mv is None:
+                plane = 'XY'  # wall links lie flat in plan
+            if mr is None:
+                rot = 90.0  # spine (local X) across the thickness
         if vert:
             # generated column vertical: height from H=, else host internal height
             plane, rot = 'XZ', 90.0  # local X stands up to App Z
@@ -543,6 +622,10 @@ def main():
             z, zsrc = round(slab['z'] + slab['covB'] + dia/2, 1), 'auto-vertBot'
         elif vert:
             z, zsrc = round(a.cover + dia/2, 1), 'auto-no-slab'
+        elif rtype == 'straight' and (tie_nz or tie_sz) and slab is not None:
+            # wall horizontals (NZ=/SZ=): base cover seat, stacked in Z;
+            # explicit NZ/SZ wins over any side inference
+            z, zsrc = round(slab['z'] + slab['covB'] + dia/2, 1), 'auto-wallBot'
         elif side and rtype == 'straight' and slab is not None:
             if role == 'dist':
                 praw = tag_raw_for(on_mark) if on_mark else None
@@ -575,7 +658,7 @@ def main():
                 z, zsrc = round(base_level(side, idx, dia), 1), f'auto-botL{Lnum}'
             else:
                 z, zsrc = round(base_level(side, idx, dia), 1), f'auto-topL{Lnum}'
-        elif side and rtype == 'straight':
+        elif rtype == 'straight' and (side or tie_nz or tie_sz):
             z, zsrc = round(a.cover + dia/2, 1), 'auto-no-slab'
         else:
             # links and ties with no explicit Z sit on the bottom cover (same
@@ -623,8 +706,18 @@ def main():
         s2 = float(ms.group(2)) if ms and ms.group(2) else 0.0
         ex1 = float(me.group(1)) if me else 0.0
         s1 = float(ms.group(1)) if ms else 0.0
+        wallLink = wallFlag and rtype in ('c_link', 'c_link_with_hook')
+        if wallLink:
+            # wall field = along-wall spread (sx) x stacked height (sz from
+            # SZ=, else SP= second value, else H-sp/default); a second EXT
+            # axis would stack through the thickness: ignored (s2 survives
+            # below for the Z spacing)
+            if ex2 and s2:
+                print(f'NOTE {mark}: wall link ignores second EXT axis {ex1}x{ex2} — height comes from the host')
+            ex2 = 0.0
         ext_src = 'tag' if (ex2 and s2) else ''
-        if not (ex2 and s2) and rtype in ('c_link', 'c_link_with_hook') and b.is_closed:
+        if not (ex2 and s2) and rtype in ('c_link', 'c_link_with_hook') and b.is_closed \
+                and not wallLink:
             q0 = [(p[0], p[1]) for p in b.vertices()]
             ex1 = round(max(p[0] for p in q0) - min(p[0] for p in q0), 1)
             ex2 = round(max(p[1] for p in q0) - min(p[1] for p in q0), 1)
@@ -677,11 +770,33 @@ def main():
             width = round(ext_tick) if ext_tick else ext_txt
             n = max(1, int(round(width/spacing))+1) if width and spacing else 1
             vertical = abs(x2-x1) < abs(y2-y1)
-            qx,sx,qy,sy = (n,spacing,1,0) if vertical else (1,0,n,spacing)
-            # center copies on the line: tick straddles it, app copies don't
-            ox = round(-(qx-1)*sx/2, 1) if qx > 1 else 0.0
-            oy = round(-(qy-1)*sy/2, 1) if qy > 1 else 0.0
+            if wallLink and b.is_closed:
+                # closed rect: spread along the long side, spine centered
+                # across the thickness (open-line centering would shove the
+                # field off the rect: -2400 in the WL1 case)
+                rq = [(p[0], p[1]) for p in b.vertices()]
+                rw = max(p[0] for p in rq)-min(p[0] for p in rq)
+                rh = max(p[1] for p in rq)-min(p[1] for p in rq)
+                if rw >= rh:
+                    qx, sx, qy, sy = n, spacing, 1, 0
+                    ox, oy = round((rw-(qx-1)*sx)/2, 1), round((rh-L)/2, 1)
+                else:
+                    qx, sx, qy, sy = 1, 0, n, spacing
+                    ox, oy = round((rw-L)/2, 1), round((rh-(qy-1)*sy)/2, 1)
+                # flat-U legs trail -X from each origin; flag rect spill
+                legX = max(link_a, link_b - (dia if rtype == 'c_link_with_hook' else 0))
+                if legX - ox > 1e-6:
+                    print(f'WARN {mark}: legs extend {round(legX-ox,1)} past rect start — widen rect or accept overhang')
+            else:
+                if wallLink:
+                    vertical = not vertical  # spread along the wall, not across it
+                qx,sx,qy,sy = (n,spacing,1,0) if vertical else (1,0,n,spacing)
+                # center copies on the line: tick straddles it, app copies don't
+                ox = round(-(qx-1)*sx/2, 1) if qx > 1 else 0.0
+                oy = round(-(qy-1)*sy/2, 1) if qy > 1 else 0.0
             width_txt = ext_txt
+        if rtype in ('c_link', 'c_link_with_hook', 'tie') and L <= 0:
+            L, Lsrc = 110.0, 'default'
         lap = 0 if rtype in ('c_link', 'c_link_with_hook', 'tie') else (lap_len(dia, bond_bar) if L > a.stock else 0)
 
         # split > stock into lapped pieces (verticals split upward in Z)
@@ -694,6 +809,15 @@ def main():
 
         vmark = getattr(b, '_vert_idx', None)
         bmark = f'{mark}-{vmark+1}' if vmark is not None else mark
+        def zstack_count(sz, legTop=0.0):
+            # stacked levels capped so the top copy (plus leg height) stays
+            # under the top cover; explicit NZ= always wins
+            if tie_nz:
+                return (tie_nz, sz) if sz > 0 else (tie_nz, 0)
+            if sz > 0 and slab and slab['lz'] - slab.get('covT', 0) - slab.get('covB', 0) > 0:
+                topLim = slab['z'] + slab['lz'] - slab['covT'] - dia/2 - legTop
+                return max(1, int((topLim-pz)//sz)+1), sz
+            return 1, 0
         for k,(off,seglen,ll) in enumerate(segs):
             tag += 1
             px, py = round(x1+ux*off,2), round(y1+uy*off,2)
@@ -717,16 +841,19 @@ def main():
             if rtype == 'tie':
                 # closed loop: length = X-side, c_length_a = Y-side; vertical
                 # stacking via qty_z (NZ=/auto from host height)
-                row['length'] = round(seglen,1); row['c_length_a'] = link_b or tie_h
+                row['length'] = round(seglen,1); row['c_length_a'] = tie_h
                 row.pop('Length of Bar', None)
-                t_sz = tie_sz or spacing or 150
-                if tie_nz:
-                    row['qty_z'], row['spacing_z'] = tie_nz, t_sz
-                elif slab and slab['lz'] - slab.get('covT', 0) - slab.get('covB', 0) > 0:
-                    hint = slab['lz'] - slab['covT'] - slab['covB']
-                    row['qty_z'], row['spacing_z'] = max(1, int(hint//t_sz)+1), t_sz
-                else:
-                    row['qty_z'], row['spacing_z'] = 1, 0
+                row['qty_z'], row['spacing_z'] = zstack_count(tie_sz or spacing or 150)
+            if wallFlag and rtype in ('c_link', 'c_link_with_hook'):
+                # wall links stack in Z like ties (SZ=, else SP= second value,
+                # else H-sp/default), capped so the tallest leg stays under
+                # the top cover; explicit L=/A= always win for spine/legs
+                row['qty_z'], row['spacing_z'] = zstack_count(
+                    tie_sz or s2 or spacing or 150, max(link_a, link_b))
+            if rtype == 'straight' and (tie_nz or tie_sz):
+                # wall horizontals: plan line + NZ=/SZ= (or host height);
+                # bond stays the safe poor default (GOOD/POOR to override)
+                row['qty_z'], row['spacing_z'] = zstack_count(tie_sz or spacing or 150)
             if rtype == 'c_link_with_hook':
                 row['double_hook'] = 'yes' if dbl else 'no'
             # direct host link so project JSON opens already hosted
