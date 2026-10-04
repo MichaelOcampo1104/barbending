@@ -1,0 +1,4 @@
+Rebar_tag,Bar_mark,Rebar_Type,Shape_Code,Dia,Pos_x,Pos_y,Pos_z,Group,Pos_Rotation,Plane,Length of Bar,H,bent_up_down,Long_length,Crank_step,Length of Lap,DC_Lap_Start,DC_Lap_Mid,DC_Tail_Length,c_length_a,c_length_b,length,double_hook,qty_x,spacing_x,qty_y,spacing_y,offset_x,offset_y,offset_z,plan_rotation,feature,qty,Total Length,Weight_kg,Visible
+1,B1,straight,,32,2455.02,2731.91,1000.0,GL23-Roof,-90.0,XY,2845.1,,,,,,,,,,,,,13,150,1,0,,,,,EXT tick=1800.0 TXT=1800.0 n=13,1,,,1
+2,B2-P1,straight,,40,2538.01,703.78,1000.0,GL23-Roof,-90.0,XY,12000,,,,,3200,,,,,,,,21,150,1,0,,,,,stock-split 1/2 poor lap=3200,1,,,1
+3,B2-P2,straight,,40,2538.01,-8096.22,1000.0,GL23-Roof,-90.0,XY,5200.0,,,,,3200,,,,,,,,21,150,1,0,,,,,stock-split 2/2 poor lap=3200,1,,,1

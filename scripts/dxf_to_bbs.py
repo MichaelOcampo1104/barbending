@@ -70,6 +70,9 @@
 #     straight bar at the nosing (marks SR1-i-S). Steps divide the run evenly
 #     up the member slope.
 #     The member box stays flat at the base (hosting only).
+#   All member rects and bar lines must be axis-aligned: rotated geometry gets
+#   a bbox approximation (lengths/levels/grids skew) with a WARN. Rotate the
+#   whole plan instead, or accept the approximation for checking.
 #   grids are CENTERED on the drawn anchor via offset_x/offset_y (the app copies
 #   one-sided from Pos, but the tick straddles the line / the grid sits mid-rect).
 #   Column ties stack the same grid in Z via qty_z/spacing_z (NZ=/SZ= or auto).
@@ -212,6 +215,16 @@ def main():
         xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
         x0, y0 = min(xs), min(ys)
         cx, cy = (min(xs)+max(xs))/2, (min(ys)+max(ys))/2
+        # rotated rects only get a bbox approximation (levels, run length and
+        # grids assume axis alignment) — shout instead of silently skewing
+        try:
+            eang = [math.degrees(math.atan2(pts[k+1][1]-pts[k][1], pts[k+1][0]-pts[k][0])) % 90
+                    for k in range(min(3, len(pts)-1))]
+            skew = min(min(a, 90-a) for a in eang)
+            if skew > 1.0:
+                print(f'WARN {r.dxf.layer}: rect rotated ~{round(skew,1)}° off axis — bbox approximation; draw axis-aligned for exact levels/grids')
+        except Exception:
+            pass
         ctag = ctag_of.get(id(r), '')
         m = CONCTAG.search(ctag) if ctag else None
         g = m.groups() if m else (None, None, None, None, None)
