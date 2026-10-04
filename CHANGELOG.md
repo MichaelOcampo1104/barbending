@@ -2,6 +2,11 @@
 
 ## Unreleased (working tree → next push)
 
+- **Coordination: multi-project insert (⤒+ Insert)**:
+  - New header button merges another project `.json` alongside the live model instead of replacing it: clashing concrete ids remap (`c1` + `c1` → `c1` + `c1_2`), incoming tags renumber past the max, hosted bars/refLines follow, globals and selection untouched, one undo step. Camera fits both on insert.
+  - Verified headless with the two sample projects: 11 + 49 = 60 bars, tags unique, zero orphaned hosts; lint clean, build passes.
+- **README: DXF importer CLI section** — copy-paste `dxf_to_bbs.py` commands (slab + column samples, options), tag cheat-sheet, and the ⤒+ Insert coordination flow.
+
 - **Column starters (bent dowels)**:
   - DXF: `ST1 STARTER 8xH25 [AT=BOT|TOP] [HB=<bent leg>] HOST=<col>` generates bent bars (legs aimed outward from the column center via per-bar `plan_rotation`): vertical lap above the SFL plus straight-then-bent below, one good-bond tension lap each way (bent leg `HB=`, else lap minus straight; straight limited by the lower-slab depth; `AT=TOP` is a true mirror — bend fixed at the upper-slab cover, vertical hanging down exactly one lap past the top SFL; slab-free fallbacks assume the embed depth with WARNs when no slab is drawn).
   - Also fixed en route: concrete tags now pair smallest-first (consumed), so a column stacked on a slab claims its own tag instead of both taking the nearest.

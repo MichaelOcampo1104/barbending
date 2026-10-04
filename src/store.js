@@ -589,6 +589,48 @@ export const useStore = create((set, get) => ({
   // Portable transfer (FileBar builds the Blob / reads the file around these).
   exportProject: () => JSON.stringify(get()._projectData(), null, 2),
   importProject: (d) => get()._applyProject(d),
+  // Coordination merge: append another project file's bars + concretes into
+  // the live model (Open-plus-Insert). Concrete ids are remapped on clash
+  // (both sample files use c1) and incoming Rebar_tags renumbered past the
+  // max; hosted bars/refLines follow their remapped member. Globals (cover,
+  // bond) and selection stay as-is. Returns {bars, concretes} or false.
+  appendProject: (d) => {
+    if (!d || d.v !== 1 || !Array.isArray(d.bars) || !Array.isArray(d.concretes)) return false;
+    const s = get();
+    const used = new Set((s.concretes || []).map((c) => c.id));
+    const idMap = {};
+    const freshConcretes = (d.concretes || []).map((c) => {
+      let nid = (c && c.id) || `c${Date.now()}`;
+      if (used.has(nid)) {
+        let k = 2;
+        while (used.has(`${nid}_${k}`)) k += 1;
+        nid = `${nid}_${k}`;
+      }
+      used.add(nid);
+      if (c && c.id) idMap[c.id] = nid;
+      return { ...c, id: nid };
+    });
+    let maxTag = s.bars.reduce((m, b) => Math.max(m, Number(b.Rebar_tag) || 0), 0);
+    const freshBars = (d.bars || []).map((b) => {
+      maxTag += 1;
+      const host = b.host && idMap[b.host] ? idMap[b.host] : b.host;
+      return { ...structuredClone(b), Rebar_tag: maxTag, host };
+    });
+    const freshRefs = (d.refLines || []).map((l) => ({
+      ...structuredClone(l),
+      id: `ref_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      host: l.host && idMap[l.host] ? idMap[l.host] : l.host,
+    }));
+    const at = s.bars.length;
+    set((s2) => withHist(s2, {
+      bars: [...s2.bars, ...freshBars],
+      concretes: [...s2.concretes, ...freshConcretes],
+      refLines: [...(s2.refLines || []), ...freshRefs],
+      selectedBar: freshBars.length ? at : s2.selectedBar,
+      selectedBars: freshBars.length ? [at] : s2.selectedBars,
+    }));
+    return { bars: freshBars.length, concretes: freshConcretes.length };
+  },
 
   // IFC reference model (three.js objects live in ifc/session.js; metadata here)
   ifc: null,

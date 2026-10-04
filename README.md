@@ -66,6 +66,34 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
    → 🎯 Pick pos or type coordinates → detail bars against the ghost.
 3. **Into FreeCAD:** take `rebar_scheduling.csv` → run `rebar_detailing.py`
    (reads the `Rebar_Type` column; extra columns are ignored).
+4. **Coordination:** ⤒ Project opens one `.json` (replaces model), then
+   **⤒+ Insert** merges another alongside it — concrete ids remap on clash,
+   tags renumber, hosts follow (undoable).
+
+## DXF plan → BBS importer (CLI)
+
+Draft bar plans in CAD on the layer/tag protocol (`scripts/dxf_to_bbs.py`
+header documents every keyword), then convert:
+
+```powershell
+# slab sample → bar_plan_bbs_auto.csv + bar_plan_bbs_auto_bbs.json
+py scripts/dxf_to_bbs.py inputs/bar_plan_bbs.dxf
+
+# 800 mm column sample (verticals + ties + base/top starters)
+py scripts/dxf_to_bbs.py inputs/column_sample_800.dxf
+
+# options: bond | stock length | fallback cover/gap | explicit output
+py scripts/dxf_to_bbs.py inputs/bar_plan_bbs.dxf --bond auto --stock 12000 --cover 40 --gap 25 --out out.csv
+```
+
+- `--bond auto` (default: `B` marks good, `T` marks poor) or force `good`/`poor`.
+- Bars over `--stock` split into lapped pieces (EC2 table); links/ties never split.
+- Tag cheat-sheet: `101 H40-150 BOT MAIN`, `102 H40-150 BOT DIST ON=101`,
+  `V1 VERT 8xH25 HOST=C1`, `T1 TIE SZ=150 HOST=C1`,
+  `ST1 STARTER 8xH25 HOST=C1` (`AT=TOP` mirrors at the head).
+- Open the `*_bbs.json` via ⤒ Project; the run log flags pairing guesses
+  (`WARN … wins by N`), auto-zoned link fields (`NOTE`), and level sources
+  (`zsrc=`) per bar.
 
 ## Troubleshooting
 

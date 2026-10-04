@@ -1484,6 +1484,7 @@ function FileBar() {
   const saveProject = useStore((s) => s.saveProject);
   const saveStamp = useStore((s) => s.saveStamp);
   const fileRef = useRef(null);
+  const insertRef = useRef(null);
 
   const downloadFile = () => {
     const data = useStore.getState().exportProject();
@@ -1507,6 +1508,22 @@ function FileBar() {
         if (!useStore.getState().importProject(d)) throw new Error('not a barbending project file (v1 with bars + concretes arrays)');
         console.info(`[save] opened project file: ${f.name}`);
       } catch (err) { alert('Project open failed: ' + err.message); }
+    };
+    rd.readAsText(f);
+    e.target.value = '';
+  };
+  const onInsertFile = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const d = JSON.parse(String(rd.result));
+        const r = useStore.getState().appendProject(d);
+        if (!r) throw new Error('not a barbending project file (v1 with bars + concretes arrays)');
+        console.info(`[save] inserted project file: ${f.name} (+${r.bars} bars, +${r.concretes} members)`);
+        useStore.getState().requestFit('all');
+      } catch (err) { alert('Project insert failed: ' + err.message); }
     };
     rd.readAsText(f);
     e.target.value = '';
@@ -1536,6 +1553,11 @@ function FileBar() {
         title="Open a project .json file — replaces current bars + concrete"
       >⤒ Project</button>
       <input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={onOpenFile} />
+      <button
+        className="hbtn" onClick={() => insertRef.current?.click()}
+        title="Insert another project .json file alongside the current model (ids/tags remapped, undoable) — for coordination"
+      >⤒+ Insert</button>
+      <input ref={insertRef} type="file" accept=".json,application/json" hidden onChange={onInsertFile} />
       {saveStamp && <span className="saveinfo">saved {new Date(saveStamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
     </>
   );
