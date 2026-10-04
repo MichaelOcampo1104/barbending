@@ -2,6 +2,13 @@
 
 ## Unreleased (working tree → next push)
 
+- **DXF plan → BBS importer (`scripts/dxf_to_bbs.py`, Python + ezdxf)**:
+  - Drafting protocol: bar centerlines on `REBAR-H<dia>`, distribution width as cyan `REBAR-EXTENT` tick (length = zone width) or `EXT=` in the tag, per-bar TEXT tag `MARK H<dia>[-sp] Z=<z> EXT=<w> HOST=<group>` (plan has no Z — tag is the only source of `Pos_z`/spacing/host); concrete as closed `CONC-*` rect + `ID KIND NAME THK=<lz> Z=<z>` tag (footprint from bbox, name must equal bars' `HOST` so `resolveBarHost` auto-hosts).
+  - Shape keywords: `BENT H=<leg> UP|DOWN`, `LINK A=<a> B=<b>` (closed stirrup rect), `LINK_HOOK L=<spine> A=<a> B=<b> [DOUBLE]` with `L/A/B` overriding measurement; 2-axis grids via `EXT=wxh SP=sxsy`; `VIEW=` sets `Plane`, `ROT=` overrides `Pos_Rotation`.
+  - Grids are centered on the drawn anchor via `offset_x/offset_y` (the app copies one-sided from `Pos`, drafters center the line in its zone — unverified one-sided output spilled B2's 21 bars past the slab edge); closed rects anchor at bbox-min.
+  - Stock-length splitting (>12 m) with EC2 lap table mirroring `src/bbs/calc.js` (`--bond poor|good`; H40 poor lap 3200 → 14000 splits 12000+5200); links never split. Emits `MASTER_HEADERS` CSV (FreeCAD-compatible, `Shape_Code/Total/Weight` left for `enrichBar`) plus a `*_bbs.json` project (bars + concretes) that opens via ⤒ Project.
+  - Verified: `barAppBox` containment of every exported bar vs slab, `parseCsv`+`enrichBar` round-trip with weights; sample `inputs/bar_plan_bbs.dxf` → `bar_plan_bbs_linktest.*` (B1/B2 straights, B1155 `c_link_with_hook` 4×10 grid).
+
 - **Adjustable navigation (⚙ Nav panel + keyboard map)**:
   - Session-only `nav` prefs (never saved/undo): orbit / pan / zoom speed multipliers (0.2×–2.5×), smooth-glide damping toggle, zoom-to-cursor toggle (off = classic dolly at the pivot); toolbar button shows a ● when customized, with Reset defaults.
   - Speeds feed `OrbitControls` (`rotateSpeed`, `panSpeed`, `enableDamping`) and `DiveZoom` (wheel gain + cursor-vs-pivot branch); new `NavKeys` driver: arrows pan, Shift+arrows orbit in polar-clamped 15° steps, +/− dolly, Home fits all (typing + Ctrl/Meta guarded).
