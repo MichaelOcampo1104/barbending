@@ -849,7 +849,12 @@ export function meshVolumeM3(meshData) {
 //            Pos_z + offset_z). Applies to ALL bar types in the browser so
 // straight/bent/crank runs distribute like the Reinforcement workbench.
 // Total placed bars = qty (sets) × qty_x × qty_y.
-export const MAX_RENDER_COPIES = 200;
+// Render/snap cap on distribution copies per bar. The 3D view draws one mesh
+// per copy (shared tube geometry), so this must cover realistic mats — a
+// full 5.5×16.7 m slab at 150 spacing is ~37×112 ≈ 4100 copies. Beyond the
+// cap the BBS table stays exact and the view marks the bar with a red dot
+// (hiddenCount in Scene.jsx) instead of silently dropping bars.
+export const MAX_RENDER_COPIES = 5000;
 
 const num = (v, fb) => {
   const n = Number(v);

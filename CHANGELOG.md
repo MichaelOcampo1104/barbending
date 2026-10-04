@@ -2,6 +2,11 @@
 
 ## Unreleased (working tree → next push)
 
+- **3D view render cap raised (incomplete link fields)**:
+  - Root cause: `Scene.jsx` drew at most `MAX_RENDER_COPIES = 200` distribution copies per bar (plus a red-dot marker for the remainder) while the BBS counted all — the 256-copy 1156 link field rendered 200/256, smaller fields were unaffected. Parsing/CSV were verified correct throughout.
+  - `MAX_RENDER_COPIES` 200 → 5000 (a full 5.5×16.7 m slab at 150 spacing is ~4100 copies); all 12 sample bars render fully, BBS stays exact, red dot remains the over-cap signal. Lint clean, build passes.
+  - Sample DXF gained the second link box (1156, 16×16 @300×450 from its rect), redrawn ticks/lengths flow through (201: 36→40, 102: 17→28, 104: 17→44); regenerated `bar_plan_bbs_auto.*` (12 rows).
+
 - **Per-bar bond condition end-to-end (DXF → CSV → GUI)**:
   - `dxf_to_bbs.py` persists `bond_condition` per row (`B*` good / `T*` poor per EC2 §8.2, links blank); `MASTER_HEADERS`/`parseCsv`/`toCsv` round-trip it, legacy CSVs without the column infer `B`→good / `T`→poor (links stay blank).
   - GUI: `barBond`/`lapBondFor` in `calc.js` (poor wins a mixed pair, global bond is fallback only); `applyLapSplice` laps with the pair's effective bond; bar editor has a per-bar bond dropdown (auto shows inferred value); BBS table has a `Bond` column; new bars default to auto.
