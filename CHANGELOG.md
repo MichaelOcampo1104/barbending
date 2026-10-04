@@ -2,6 +2,16 @@
 
 ## Unreleased (working tree → next push)
 
+- **Stairs phase 1: riser L-bars (mains need pitch support — next)**:
+  - Member: closed rect on `CONC-*` + `ST1 STAIR ST1 THK=<waist> Z=<soffit-low> SLOPE=<deg> ...` (rect = plan footprint, run along the longer side, low end at bbox min; flat box at base for hosting only). `STAIR` concrete kind + GUI `Stairs` join group.
+  - Risers: `SR1 RISER 12xH12 [SP=<sp>] HOST=<stair>` makes per step one section L (main=going along run + riser down, copies across the width at SP=) plus one transverse straight bar across the full width at the nosing line (SR1-i-S) whose line the L corner sits on (rot 180, flat leg back uphill) — steps divide the run evenly up the slope (main = going, H = riser), copies across the width at `SP=` (H-sp, else 150); no centerlines drawn. Bond poor-safe (`GOOD`/`POOR` overrides).
+  - Verified on a 1200×3000, 30° sample: 12 steps (going 250, rise 144.3) × 9 across (cut 370, 2.96 kg each); slab + column files convert byte-identical; lint clean, build passes.
+- **Stairs phase 2: sloped mains + stepped distribution (no model change)**:
+  - Key finding: `Pos_Rotation` in the section plane already pitches bars (verified: XZ/YZ + 30° → 866 along run, 500 up), so no pitch field was needed.
+  - Mains: drawn centerline + `SM1 H20-150 MAIN EXT=<width> HOST=<stair>` — full-run length (plan/cos slope) re-rooted at the low end regardless of draw direction (short direction ticks pair cleanly where coincident full lines tie); ROT = ±slope (explicit `ROT=` wins); bottom cover seat, bond good, stock splits climb. Top mat: same with `TOP` (`SM2`, poor bond, top-cover seat). Verified: bottom (600,0,1050)→(600,3000,2782), top +200 parallel.
+  - Distribution: `SD1 H12-150 DIST [NZ=] HOST=<stair>` generates stepped full-width rows (length = width − covers, z ridden on the mains via the same-host MAIN dia + gap); count even over the slope with `NZ=`, else from-low at spacing; `TOP` variant hangs under the top mains (poor bond). Verified: 24 + 24 rows; slab/column/wall files convert byte-identical.
+  - Explicit `MAIN`/`DIST` now only act as fallback behind `BOT`/`TOP` in level and bond (fixes a regression that flattened TOP mains to the soffit).
+
 - **Walls: flat U-hook links**:
   - Same `c_link_with_hook` shape (code 85), drawn on `REBAR-LINK` + `WL1 H13 LINK_HOOK A=<leg> B=<leg> HOST=<wall>`: wall links force Plane XY / ROT 90 (spine across the thickness, legs along the wall; explicit `VIEW=`/`ROT=` still win). Spine auto = wall thickness − covers; hook leg follows thickness-covers, superseding `B=` (NOTEd).
   - Wall rules keyed off the member `kind` (now stored on concretes): spine auto = wall thickness − covers (`wall` source); field = along-wall spread (EXT width/tick, rect-long-side driven, spine centered on cover inside the rect) × stacked height from the host (`NZ=`/`SZ=` or auto, capped so the tallest leg stays under the top cover); second EXT axis ignored with NOTE; base at bottom cover.

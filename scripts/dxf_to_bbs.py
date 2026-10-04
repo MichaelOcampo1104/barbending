@@ -61,6 +61,15 @@
 #     SP= second value, else H-sp), length L= and leg A= explicit (B= follows
 #     thickness); a second EXT axis is ignored with a NOTE. Legs trail -X past
 #     the rect start when the rect is drawn tight — warned with the overhang.
+#   stairs: closed rect on CONC-* + "ST1 STAIR ST1 THK=<waist> Z=<soffit-low>
+#     SLOPE=<deg> ..." (rect = plan footprint incl. landings, run along the
+#     longer side, low end at the bbox min; Z = soffit at the low end).
+#     Riser L-bars need no centerlines: "SR1 RISER 12xH12 [SP=<sp>] HOST=<st>"
+#     makes per step one section L (main=going along run + riser down) with
+#     copies across the width at SP= (H-sp, else 150), plus one same-size
+#     straight bar at the nosing (marks SR1-i-S). Steps divide the run evenly
+#     up the member slope.
+#     The member box stays flat at the base (hosting only).
 #   grids are CENTERED on the drawn anchor via offset_x/offset_y (the app copies
 #   one-sided from Pos, but the tick straddles the line / the grid sits mid-rect).
 #   Column ties stack the same grid in Z via qty_z/spacing_z (NZ=/SZ= or auto).
@@ -113,7 +122,7 @@ def lap_len(dia, bond):
         L = t[a]+(t[b]-t[a])*(d-a)/(b-a)
     return int(math.ceil(L/10)*10)
 
-TAG = re.compile(r'^\s*([BSTVW]\w+|\d+)?\s*(?:H(\d+)|VERT\s*(?:\d+\s*[x×]\s*)?H(\d+)|\bTIE\b|\bSTARTER\b)', re.I)
+TAG = re.compile(r'^\s*([BSTVW]\w+|\d+)?\s*(?:H(\d+)|VERT\s*(?:\d+\s*[x×]\s*)?H(\d+)|\bTIE\b|\bSTARTER\b|\bRISER\b)', re.I)
 BTMARK = re.compile(r'^\s*([BT])\s*0*(\d+)\s*$', re.I)
 # explicit location keywords (side/role/layer/parent/bond); all optional,
 # classic B/T+number inference fills whatever is missing
@@ -129,7 +138,9 @@ def _tagdia(tm):
         return 0
     return int(tm.group(2) or tm.group(3) or 0)
 LEGSP = re.compile(r'H\d+\s*-\s*(\d+)', re.I)
-TYPEW = re.compile(r'\b(BENT|LINK_HOOK|LINK|C_LINK|HOOK|STRAIGHT|TIE|VERT|STARTER)\b', re.I)
+TYPEW = re.compile(r'\b(BENT|LINK_HOOK|LINK|C_LINK|HOOK|STRAIGHT|TIE|VERT|STARTER|RISER)\b', re.I)
+RISERCOUNT = re.compile(r'\bRISER\s*(\d+)\s*[x×]\s*H(\d+)', re.I)
+SLOPERE = re.compile(r'\bSLOPE\s*=\s*([\d.]+)', re.I)
 VERTCOUNT = re.compile(r'\bVERT\s*(\d+)\s*[x×]\s*H(\d+)', re.I)
 VERTSP = re.compile(r'\bVERT\s+H(\d+)\s*-\s*(\d+)', re.I)
 STARTERCOUNT = re.compile(r'\bSTARTER\s*(?:(\d+)\s*[x×]\s*)?H(\d+)(?:\s*-\s*(\d+))?', re.I)
@@ -149,7 +160,7 @@ LEGE = re.compile(r'\bA\s*=\s*([\d.]+)', re.I)
 LEGB = re.compile(r'\bB\s*=\s*([\d.]+)', re.I)
 LEGVW = re.compile(r'\bVIEW\s*=\s*(XY|XZ|YZ)\b', re.I)
 LEGROT = re.compile(r'\bROT\s*=\s*([-\d.]+)', re.I)
-CONCTAG = re.compile(r'(C\w+)?\s*(SLAB|BEAM|COLUMN|WALL|FOOTING)?\s*(\S+)?\s*THK\s*=\s*([\d.]+).*?Z\s*=\s*([-\d.]+)', re.I)
+CONCTAG = re.compile(r'(C\w+)?\s*(SLAB|BEAM|COLUMN|WALL|FOOTING|STAIR)?\s*(\S+)?\s*THK\s*=\s*([\d.]+).*?Z\s*=\s*([-\d.]+)', re.I)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -213,10 +224,11 @@ def main():
         covs = {k.upper(): float(v) for k, v in re.findall(r'COV([BT])?\s*=\s*([\d.]+)', ctag, re.I)}
         cov = covs.get('', a.cover)
         covB, covT = covs.get('B', cov), covs.get('T', cov)
+        sl = SLOPERE.search(ctag); slope = float(sl.group(1)) if sl else 0.0
         concretes.append({'id': cid.lower(), 'name': name, 'kind': kind,
             'lx': round(max(xs)-min(xs), 1), 'ly': round(max(ys)-min(ys), 1),
             'lz': thk, 'x': round(x0, 2), 'y': round(y0, 2), 'z': z,
-            'covB': covB, 'covT': covT})
+            'covB': covB, 'covT': covT, 'slope': slope})
         print(f'{r.dxf.layer} bbox x={x0:.1f} y={y0:.1f} lx={max(xs)-min(xs):.1f} ly={max(ys)-min(ys):.1f} -> id={cid.lower()} name={name} lz={thk} z={z} covB={covB} covT={covT}')
     cmap = {c['id']: c['id'] for c in concretes} | {c['name'].lower(): c['id'] for c in concretes}
     cobj = {c['id']: c for c in concretes}
@@ -373,6 +385,170 @@ def main():
         print(f'{smark}: {sn} starter H{sdia} at {"TOP" if atop else "BOT"} SFL={round(sfl,1)} [{shape}] '
               f'(vert {lap} + straight {round(sbelow,1)} + bent {round(hleg,1)})')
 
+    # ---- stair risers: one bent L-bar (facing down) per step from
+    # "SR<n> RISER n x H<dia> [SP=<sp>] HOST=<stair>" tags. Steps divide the
+    # run evenly up the member slope (run along the longer plan axis, low end
+    # at the bbox min); each step gets main=going + H=riser with copies
+    # across the width. The member box stays flat at the base (hosting only).
+    for ttxt, tpos in texts:
+        rm = RISERCOUNT.search(ttxt)
+        if not rm:
+            if 'RISER' in ttxt.upper():
+                print(f'WARN RISER tag {ttxt[:44]!r} needs RISER nxH<dia> — skipped')
+            continue
+        tm = TAG.search(ttxt); rmark = tm.group(1) if tm and tm.group(1) else None
+        if not rmark or rmark.upper() in ('VERT', 'TIE', 'LINK', 'STARTER', 'RISER', 'BENT', 'HOOK'):
+            print(f'WARN RISER tag {ttxt[:44]!r} needs a mark like SR1 — skipped')
+            continue
+        rn, rdia = max(1, int(rm.group(1))), int(rm.group(2))
+        rst = host_for(ttxt, tpos, rmark)
+        if rst is None:
+            continue
+        rslope = rst.get('slope', 0) or 0.0
+        if rslope <= 0:
+            print(f'WARN {rmark}: host {rst["name"]} has no SLOPE= — risers skipped')
+            continue
+        if rst['ly'] >= rst['lx']:
+            run, width = rst['ly'], rst['lx']
+            runMin, widthMin, alongX = rst['y'], rst['x'], False
+        else:
+            run, width = rst['lx'], rst['ly']
+            runMin, widthMin, alongX = rst['x'], rst['y'], True
+        if run <= 0:
+            print(f'WARN {rmark}: zero run — risers skipped')
+            continue
+        sp0 = LEGSP.search(ttxt); rsp = int(sp0.group(1)) if sp0 else 0
+        if not rsp:
+            ms2 = LEGSP2.search(ttxt)
+            rsp = int(float(ms2.group(1))) if ms2 and ms2.group(1) else 0
+        rsp = rsp or 150
+        going = run/rn
+        rise = run*math.tan(math.radians(rslope))/rn
+        # nosing steel per step: section L (main=going along run + riser down,
+        # copies across the width) plus one TRANSVERSE straight bar across the
+        # full width at the nosing line (marks SR1-i-S) — perpendicular to the
+        # L main so it actually renders instead of hiding inside it.
+        # The L corner sits ON the straight bar (rot 180 puts the bend at the
+        # main start = nosing); the flat leg trails back uphill.
+        qw = max(1, int(width//rsp)+1)
+        off = round((width-(qw-1)*rsp)/2, 1)
+        tOff = max(1.0, rst.get('covB', a.cover) + rdia/2)
+        tLen = max(rdia*2, round(width - 2*tOff, 1))
+        base = rst['z'] + rst['lz']
+        for i in range(rn):
+            zi = round(base + (i+1)*rise, 1)
+            # L corner at the nosing, flat leg back uphill (rot 180 + 'up'
+            # nets main-backwards with the leg still pointing down)
+            qx0 = round(runMin + (i+1)*going, 2) if alongX else widthMin
+            qy0 = widthMin if alongX else round(runMin + (i+1)*going, 2)
+            ov = {'riser': True, 'plane': 'XZ' if alongX else 'YZ', 'rot': 180.0,
+                  'L': round(going, 1), 'H': round(rise, 1), 'z': zi,
+                  'bent_up_down': 'up'}
+            if alongX:
+                ov.update(qty_x=1, spacing_x=0, qty_y=qw, spacing_y=rsp,
+                          offset_x=0.0, offset_y=off)
+            else:
+                ov.update(qty_x=qw, spacing_x=rsp, qty_y=1, spacing_y=0,
+                          offset_x=off, offset_y=0.0)
+            bars.append(_VBar(f'REBAR-VERT-H{rdia}', qx0, qy0, i, rmark, dict(ov)))
+            # transverse companion: face-to-face across the full width at the
+            # same nosing and level, so every L corner lands on it
+            if alongX:
+                qx, qy = round(runMin + i*going, 2), widthMin
+                splane = 'YZ'
+            else:
+                qx, qy = widthMin, round(runMin + i*going, 2)
+                splane = 'XZ'
+            bars.append(_VBar(f'REBAR-VERT-H{rdia}', qx, qy, i, rmark,
+                              dict(riser=True, plane=splane, rot=0.0,
+                                   rtype='straight', msuffix='-S',
+                                   L=round(width, 1), z=zi)))
+        print(f'{rmark}: {rn} nosing H{rdia} on {rst["name"]} '
+              f'(L going {round(going,1)} + H riser {round(rise,1)} + straight, x{qw} @ {rsp})')
+
+    # ---- stair distribution: one full-width horizontal bar per slope step from
+    # "SD1 H12-150 DIST [NZ=<n>] [SZ=<sp>] HOST=<stair>" tags (no centerlines;
+    # drawn bars never pair these tags). Steps run from the low end at SP
+    # pitch (NZ= count wins, even); each row sits on the mains (main dia from
+    # the same host's MAIN tag, else cover-only) so laps bear correctly.
+    for ttxt, tpos in texts:
+        dm = LOCROLE.search(ttxt)
+        if not (dm and dm.group(1).upper().startswith('DIST')):
+            continue
+        tm = TAG.search(ttxt); dmark = tm.group(1) if tm and tm.group(1) else None
+        if not dmark:
+            continue
+        dh = host_for(ttxt, tpos, dmark)
+        if dh is None or str(dh.get('kind') or '').upper() != 'STAIR':
+            continue
+        ddia = _tagdia(tm)
+        if not ddia:
+            print(f'WARN {dmark}: distribution needs H<dia> — skipped')
+            continue
+        dslope = dh.get('slope', 0) or 0.0
+        if dslope <= 0:
+            print(f'WARN {dmark}: host {dh["name"]} has no SLOPE= — skipped')
+            continue
+        if dh['ly'] >= dh['lx']:
+            drun, dwidth = dh['ly'], dh['lx']
+            drunMin, dwidthMin, dalongX = dh['y'], dh['x'], False
+        else:
+            drun, dwidth = dh['lx'], dh['ly']
+            drunMin, dwidthMin, dalongX = dh['x'], dh['y'], True
+        dsp0 = LEGSP.search(ttxt); dsp = int(dsp0.group(1)) if dsp0 else 0
+        if not dsp:
+            dms = LEGSP2.search(ttxt)
+            dsp = int(float(dms.group(1))) if dms and dms.group(1) else 0
+        dsz = TIESZ.search(ttxt); dsp = float(dsz.group(1)) if dsz else (dsp or 150)
+        dnz = TIENZ.search(ttxt); dnz = int(dnz.group(1)) if dnz else 0
+        dmside = LOCSIDE.search(ttxt)
+        dtop = bool(dmside and dmside.group(1).upper().startswith('TOP'))
+        slopeLen = drun/math.cos(math.radians(dslope))
+        nn = dnz or max(1, int(slopeLen//dsp)+1)
+        # stacking main: same-side MAIN first (TOP transverse hangs under TOP
+        # mains), then side-less, else cover-only
+        mainDia = 0
+        for want in (('TOP' if dtop else 'BOT'), None):
+            for ttx2, _ in texts:
+                if ttx2 == ttxt:
+                    continue
+                rm2 = LOCROLE.search(ttx2)
+                if not (rm2 and rm2.group(1).upper().startswith('MAIN')):
+                    continue
+                sm2 = LOCSIDE.search(ttx2)
+                side2 = ('TOP' if sm2.group(1).upper().startswith('TOP')
+                         else 'BOT') if sm2 else None
+                if side2 != want:
+                    continue
+                tm2 = TAG.search(ttx2)
+                mh2 = LEGHOST.search(ttx2); hh2 = mh2.group(1) if mh2 else ''
+                same = hh2 and hh2.lower() in cmap and cobj.get(cmap[hh2.lower()]) is dh
+                if same and _tagdia(tm2):
+                    mainDia = _tagdia(tm2)
+                    break
+            if mainDia > 0:
+                break
+        dinset = max(1.0, dh.get('covB', a.cover) + ddia/2)
+        dlen = max(ddia*2, round(dwidth - 2*dh.get('covB', a.cover) - ddia, 1))
+        for j in range(nn):
+            dd = (slopeLen*j/max(1, nn-1)) if dnz and nn > 1 else j*dsp
+            if dtop:
+                zalong = (dh['z'] + dh['lz'] + dd*math.sin(math.radians(dslope))
+                          - dh.get('covT', a.cover) - ddia/2)
+                if mainDia > 0:
+                    zalong -= mainDia + a.gap
+            else:
+                zalong = dh['z'] + dh.get('covB', a.cover) + ddia/2 + dd*math.sin(math.radians(dslope))
+                if mainDia > 0:
+                    zalong += mainDia + a.gap
+            px = round(drunMin + dd*math.cos(math.radians(dslope)), 2) if dalongX else round(dwidthMin + dinset, 2)
+            py = round(dwidthMin + dinset, 2) if dalongX else round(drunMin + dd*math.cos(math.radians(dslope)), 2)
+            bars.append(_VBar(f'REBAR-VERT-H{ddia}', px, py, j, dmark,
+                {'sdist': True, 'plane': 'YZ' if dalongX else 'XZ', 'rot': 0.0,
+                 'L': dlen, 'z': round(zalong, 1)}))
+        print(f'{dmark}: {nn} transverse H{ddia} on {dh["name"]} '
+              f'(L={dlen} {"even" if dnz else "@"+str(dsp)})')
+
     rows = []; tag = 0
     odir = []  # (mark, rtype, ang, len, slabId) for the parity-orientation check
     for b in bars:
@@ -408,10 +584,18 @@ def main():
                 if not m2 or (m2.group(1) or '').upper() != b._vert_mark.upper():
                     return 1e12
                 return dseg(t[1][0], t[1][1])
-            if kw2 in ('VERT', 'STARTER') or (m2 and VERTCOUNT.search(t[0])):
+            if kw2 in ('VERT', 'STARTER', 'RISER') or (m2 and VERTCOUNT.search(t[0])):
                 return 1e12
             if kw2 == 'TIE' and not (b.is_closed and 'LINK' in b.dxf.layer.upper()):
                 return 1e12
+            mr2 = LOCROLE.search(t[0])
+            if mr2 and mr2.group(1).upper().startswith('DIST'):
+                # stair distribution generates its own stepped rows; drawn
+                # bars (e.g. wall horizontals) keep pairing these tags
+                mhst2 = LEGHOST.search(t[0]); hh2 = mhst2.group(1) if mhst2 else ''
+                ks = cobj.get(cmap[hh2.lower()]) if hh2 and hh2.lower() in cmap else None
+                if ks is not None and str(ks.get('kind') or '').upper() == 'STAIR':
+                    return 1e12
             d = dseg(t[1][0], t[1][1])
             if b.is_closed:
                 # rect perimeter, not just the first edge (tags sit at any corner)
@@ -463,10 +647,15 @@ def main():
         # VERT only generates from synthesized perimeter bars (a drawn bar that
         # merely pairs a VERT tag keeps its drawn geometry)
         vert = (tword == 'VERT' and hasattr(b, '_vert_idx'))
-        if tword == 'BENT':
+        ov = getattr(b, '_ov', None)
+        if ov and 'rtype' in ov:
+            rtype = ov['rtype']  # generated rows declare their own shape
+        elif tword == 'BENT':
             rtype = 'bent'
         elif tword == 'STARTER':
             rtype = 'bent'  # only synthesized starter bars can pair these tags
+        elif tword == 'RISER':
+            rtype = 'bent'  # only synthesized riser steps can pair these tags
         elif tword in ('LINK_HOOK', 'HOOK'):
             rtype = 'c_link_with_hook'
         elif tword in ('LINK', 'C_LINK'):
@@ -610,6 +799,8 @@ def main():
         mlyr = LOCLYR.search(raw)
         lyr = int(mlyr.group(1)) if mlyr else None
         mon = LOCON.search(raw); on_mark = mon.group(1) if mon else None
+        mrole_main = bool(mrole and mrole.group(1).upper().startswith('MAIN'))
+        mrole_dist = bool(mrole and mrole.group(1).upper().startswith('DIST'))
         if lyr is not None:
             idx, Lnum = lyr - 1, lyr
         elif num is not None:
@@ -618,14 +809,19 @@ def main():
             idx, Lnum = 0, 1
         if zman is not None:
             z, zsrc = zman, 'tag'
+        elif rtype == 'straight' and mrole_main and slab is not None and side is None:
+            # side-less MAIN (stair mains): seat on the bottom cover; pitched
+            # bars re-root at the low end below. BOT/TOP mains keep going to
+            # the side branches so LYR/layering still applies.
+            z, zsrc = round(slab['z'] + slab['covB'] + dia/2, 1), f'auto-{str(slab.get("kind") or "member").lower()}Bot'
         elif vert and slab is not None:
             z, zsrc = round(slab['z'] + slab['covB'] + dia/2, 1), 'auto-vertBot'
         elif vert:
             z, zsrc = round(a.cover + dia/2, 1), 'auto-no-slab'
         elif rtype == 'straight' and (tie_nz or tie_sz) and slab is not None:
-            # wall horizontals (NZ=/SZ=): base cover seat, stacked in Z;
-            # explicit NZ/SZ wins over any side inference
-            z, zsrc = round(slab['z'] + slab['covB'] + dia/2, 1), 'auto-wallBot'
+            # horizontals with NZ=/SZ= (wall curtains, stair steps share): base
+            # cover seat, stacked in Z; explicit NZ/SZ wins over side inference
+            z, zsrc = round(slab['z'] + slab['covB'] + dia/2, 1), f'auto-{str(slab.get("kind") or "member").lower()}Bot'
         elif side and rtype == 'straight' and slab is not None:
             if role == 'dist':
                 praw = tag_raw_for(on_mark) if on_mark else None
@@ -671,7 +867,8 @@ def main():
             else:
                 z, zsrc = 0.0, 'none-WARN-no-Z'
         if ov and 'z' in ov:
-            z, zsrc = ov['z'], 'starter'
+            z, zsrc = ov['z'], ('starter' if ov.get('starter')
+                                else ('sdist' if ov.get('sdist') else 'riser'))
         # vertical-spine links (XZ plane, ROT 90) with an explicit Z that
         # pokes out of the host slab are almost certainly a stale tag value
         if (rtype in ('c_link', 'c_link_with_hook') and zman is not None
@@ -695,8 +892,34 @@ def main():
             bond_bar = 'good'
         elif side == 'T':
             bond_bar = 'poor'
+        elif mrole_main:
+            bond_bar = 'good'
+        elif mrole_dist and slab is not None and str(slab.get('kind') or '').upper() == 'STAIR':
+            bond_bar = 'good'
         else:
             bond_bar = 'poor'
+        # stair mains ride the slope: full-run bars re-rooted at the low end so
+        # Pos + base cover stay exact (explicit ROT= still wins). The drawn
+        # line only gives direction (ascending) and across-position — a short
+        # segment near its own tag pairs cleanly where coincident full lines
+        # tie and collapse onto one mark.
+        stSlope = (slab.get('slope', 0) or 0.0) if slab else 0.0
+        if rtype == 'straight' and mrole_main and slab and stSlope > 0:
+            horiz = slab['lx'] >= slab['ly']
+            runLen = slab['lx'] if horiz else slab['ly']
+            if runLen > 0:
+                if mv is None:
+                    plane = 'XZ' if horiz else 'YZ'  # section along the run
+                if horiz:
+                    x1 = slab['x']
+                    ux, uy = 1.0, 0.0
+                else:
+                    y1 = slab['y']
+                    ux, uy = 0.0, 1.0
+                L, Lsrc = round(runLen / math.cos(math.radians(stSlope)), 1), 'slope'
+                if mr is None:
+                    rot = stSlope
+                uz = round(math.sin(math.radians(stSlope)), 4)
         # distribution: 2-axis grid from tag (EXT=wxh SP=sxsy) or 1-axis tick.
         # Closed link rects with no EXT= fall back to the drawn rectangle as
         # the zone (spacing from SP=, else H<dia>-<sp>, else 150) — keep EXT=
@@ -731,8 +954,9 @@ def main():
         # tick straddles the bar), so emit negative offsets to recenter.
         # Closed rects: grid centered inside the rect (leftover splits evenly).
         ox, oy = 0.0, 0.0
-        if vert or (ov and ov.get('starter')):
-            # generated bars stand alone (no distribution, no tick)
+        if vert or ov:
+            # generated bars stand alone (no distribution, no tick; risers
+            # and stepped rows carry their own grid in ov)
             qx, sx, qy, sy = 1, 0, 1, 0
             n = 1; width_txt = 0.0
         elif ex2 and s2:
@@ -808,7 +1032,8 @@ def main():
             segs.append((s, L - s, lap))
 
         vmark = getattr(b, '_vert_idx', None)
-        bmark = f'{mark}-{vmark+1}' if vmark is not None else mark
+        msfx = (ov.get('msuffix', '') if ov else '')
+        bmark = (f'{mark}-{vmark+1}' if vmark is not None else mark) + msfx
         def zstack_count(sz, legTop=0.0):
             # stacked levels capped so the top copy (plus leg height) stays
             # under the top cover; explicit NZ= always wins
@@ -832,9 +1057,16 @@ def main():
                 'qty':1,'Visible':1,
                 'feature':f'stock-split {k+1}/{len(segs)} {bond_bar} lap={ll}' if len(segs)>1 else f'EXT tick={round(ext_tick,0)} TXT={round(width_txt,0)} n={qx}x{qy} zsrc={zsrc}'}
             if rtype == 'bent':
-                row['H'] = (ov['H'] if ov and 'H' in ov else leg_h); row['bent_up_down'] = updown or 'up'
+                row['H'] = (ov['H'] if ov and 'H' in ov else leg_h)
+                row['bent_up_down'] = (ov['bent_up_down'] if ov and 'bent_up_down' in ov
+                                       else (updown or 'up'))
                 if ov and 'plan_rotation' in ov:
                     row['plan_rotation'] = ov['plan_rotation']
+            if ov:
+                for gk in ('qty_x', 'spacing_x', 'qty_y', 'spacing_y',
+                           'qty_z', 'spacing_z', 'offset_x', 'offset_y', 'offset_z'):
+                    if gk in ov:
+                        row[gk] = ov[gk]
             if rtype in ('c_link', 'c_link_with_hook'):
                 row['length'] = round(seglen,1); row['c_length_a'] = link_a; row['c_length_b'] = link_b
                 row.pop('Length of Bar', None)
@@ -870,6 +1102,8 @@ def main():
     by_slab = {}
     for m0, r0, a0, l0, s0, role0 in odir:
         if r0 == 'straight':
+            if (m0 or '').upper().startswith('SR'):
+                continue  # generated nosing steel mixes orientations by design
             by_slab.setdefault(s0, []).append((m0, a0, l0, role0))
     for s0, items in by_slab.items():
         mains = [(m, a, l) for m, a, l, r in items if r == 'main']

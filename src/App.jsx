@@ -1150,7 +1150,7 @@ function BbsStrip() {
       if (!map.has(k)) map.set(k, []);
       map.get(k).push(c);
     }
-    return ['Beam', 'Column', 'Slab', 'Wall', 'Footing', 'Member'].filter((k) => map.has(k)).map((k) => ({ kind: k, members: map.get(k) }));
+    return ['Beam', 'Column', 'Slab', 'Wall', 'Footing', 'Stairs', 'Member'].filter((k) => map.has(k)).map((k) => ({ kind: k, members: map.get(k) }));
   }, [visibleConcretes]);
   const toggleKind = (members) => {
     const ids = members.map((c) => c.id);

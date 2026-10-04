@@ -1,7 +1,7 @@
 {
   "v": 1,
   "app": "barbending",
-  "savedAt": 1791126633866,
+  "savedAt": 1791129522404,
   "bars": [
     {
       "Rebar_tag": 1,
@@ -5527,7 +5527,8 @@
       "y": 0.0,
       "z": 0.0,
       "covB": 40.0,
-      "covT": 40.0
+      "covT": 40.0,
+      "slope": 0.0
     }
   ],
   "refLines": [],

@@ -861,6 +861,7 @@ export function memberKind(c) {
   if (n.includes('beam')) return 'Beam';
   if (n.includes('column') || /\bcol\b/.test(n)) return 'Column';
   if (n.includes('slab')) return 'Slab';
+  if (n.includes('stair')) return 'Stairs';
   if (n.includes('wall')) return 'Wall';
   if (n.includes('foot')) return 'Footing';
   const lx = Number(c?.lx) || 0, ly = Number(c?.ly) || 0, lz = Number(c?.lz) || 0;
