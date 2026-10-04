@@ -22,6 +22,44 @@ export function barWeightKg(dia, lengthMm, qty = 1) {
   return unitWeight(dia) * (lengthMm / 1000) * qty;
 }
 
+// Bond condition per EC2 §8.2: bottom steel casts in good bond, top-zone
+// steel in poor bond. Stored per bar as `bond_condition` ('good' | 'poor'
+// | '' = auto). The global store.bond stays as the default/fallback for
+// bars without an explicit or mark-inferrable value.
+export function normalizeBond(v) {
+  const s = String(v ?? '').trim().toLowerCase();
+  return s === 'good' || s === 'poor' ? s : '';
+}
+
+export function inferBondFromMark(mark) {
+  const m = /^\s*([BT])\s*0*\d+\s*$/i.exec(String(mark ?? ''));
+  if (!m) return '';
+  return m[1].toUpperCase() === 'T' ? 'poor' : 'good';
+}
+
+const STIRRUP_TYPES = new Set(['c_link', 'clink', 'c_link_with_hook']);
+
+// Effective bond for one bar: explicit value wins, else B/T mark inference
+// (longitudinal bars only — links carry no lap bond), else fallback.
+export function barBond(bar, fallback = 'poor') {
+  const exp = normalizeBond(bar?.bond_condition ?? bar?.bond);
+  if (exp) return exp;
+  if (bar && STIRRUP_TYPES.has(String(bar.Rebar_Type || '').toLowerCase())) {
+    return normalizeBond(fallback) || '';
+  }
+  return inferBondFromMark(bar?.Bar_mark) || normalizeBond(fallback) || '';
+}
+
+// Effective bond for a lap between anchor A and lapping bar B: poor wins
+// (conservative) when the pair disagrees, else the shared value.
+export function lapBondFor(aBar, bBar, fallback = 'poor') {
+  const a = barBond(aBar, '');
+  const b = barBond(bBar, '');
+  if (a === 'poor' || b === 'poor') return 'poor';
+  if (a === 'good' || b === 'good') return 'good';
+  return normalizeBond(fallback) || 'poor';
+}
+
 // Lap lengths (mm) by bar diameter — EC2 §8.7 bond-anchorage basis for the
 // project's concrete/steel grades, as specified by the user. Poor bond runs
 // ≈1/0.7 of good (EC2 η1 = 0.7 for poor bond conditions).

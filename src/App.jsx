@@ -2,9 +2,9 @@ import { useEffect, useRef, useState, useMemo, Fragment } from 'react';
 import Scene from './viewer/Scene.jsx';
 import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
-import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost, memberKind } from './bbs/shapes.js';
+import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost, memberKind, slabLinkSpine, getBentDefaults } from './bbs/shapes.js';
 import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES, autoAssignBarMarks, concreteVolumeM3, rebarRatioKgM3, concreteVolumeSource } from './bbs/csv.js';
-import { lapLengthMm } from './bbs/calc.js';
+import { lapLengthMm, barBond, lapBondFor } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
 // IFC load so the main bundle stays light. See IfcPanel handlers.
@@ -283,6 +283,27 @@ function BarEditor() {
                   Pos_z: Math.round((host.z + inset) * 10) / 10,
                   Pos_Rotation: 0,
                 });
+              } else if (host.lz <= host.lx && host.lz <= host.ly) {
+                // Through-slab link: spine = thickness − covers (same rule as
+                // the DXF importer). Rotation 90 stands the spine up to App Z.
+                const spine = slabLinkSpine(host, dia, cover);
+                const legA = Math.max(dia * 2, getBentDefaults(dia).H);
+                const legB = Math.max(dia * 2, getBentDefaults(dia).U || getBentDefaults(dia).H);
+                const covB = Number(host.covB ?? cover) || 0;
+                updateBar(idx, {
+                  host: host.id,
+                  Plane: 'XZ',
+                  c_length_a: legA,
+                  c_length_b: legB,
+                  length: spine,
+                  Pos_x: Math.round((host.x + inset + Math.max(legA, legB)) * 10) / 10,
+                  Pos_y: Math.round((host.y + inset) * 10) / 10,
+                  Pos_z: Math.round((host.z + covB + dia / 2) * 10) / 10,
+                  Pos_Rotation: 90,
+                  spacing_x: bar.spacing_x || 150,
+                  qty_x: Math.max(1, Math.floor((host.lx - 2 * cv) / (bar.spacing_x || 150))),
+                  qty_y: 1,
+                });
               } else {
                 updateBar(idx, {
                   host: host.id,
@@ -300,7 +321,7 @@ function BarEditor() {
         </>
       )}
       <div className="sect">🔗 Lap splice (EC2 bond table)</div>
-      <div className="distnote">This bar laps onto the anchor's end or start. Supports straight, bent, crank & double-crank bars; length from the smaller Ø (least size bar). Or arm 🔗 Lap above and click anchor, then a bar.</div>
+      <div className="distnote">This bar laps onto the anchor's end or start. Supports straight, bent, crank & double-crank bars; length from the smaller Ø (least size bar). Per-bar bond wins (poor wins a mixed pair) — the default below is only the fallback. Or arm 🔗 Lap above and click anchor, then a bar.</div>
       <div className="row2">
         <label className="fld"><span>Anchor bar</span>
           <select value={lapAnchor ?? ''} onChange={(e) => setLapAnchor(e.target.value === '' ? null : Number(e.target.value))}>
@@ -308,7 +329,16 @@ function BarEditor() {
             {bars.map((b, i) => i !== idx && <option key={i} value={i}>{b.Bar_mark} · {b.Rebar_Type} · Ø{b.Dia}</option>)}
           </select>
         </label>
-        <label className="fld"><span>Bond (default poor = safe)</span>
+        <label className="fld"><span>This bar bond (auto B→good/T→poor)</span>
+          <select value={bar.bond_condition || ''} onChange={(e) => set('bond_condition', e.target.value)}>
+            <option value="">auto ({barBond(bar, bond) || '—'})</option>
+            <option value="good">good</option>
+            <option value="poor">poor</option>
+          </select>
+        </label>
+      </div>
+      <div className="row2">
+        <label className="fld"><span>Default bond (fallback, poor = safe)</span>
           <select value={bond} onChange={(e) => setBond(e.target.value)}>
             <option value="good">good</option>
             <option value="poor">poor</option>
@@ -319,8 +349,9 @@ function BarEditor() {
         <span className="hint">lap {(() => {
           const diaA = Number(bar.Dia) || 0, diaB = Number(bars[lapAnchor]?.Dia) || 0;
           const dia = (diaA > 0 && diaB > 0) ? Math.min(diaA, diaB) : (diaA || diaB);
-          return lapLengthMm(dia, bond).toLocaleString('en-US');
-        })()} mm</span>
+          const bondEff = lapAnchor == null ? barBond(bar, bond) : lapBondFor(bars[lapAnchor], bar, bond);
+          return `${lapLengthMm(dia, bondEff).toLocaleString('en-US')} mm (${bondEff})`;
+        })()}</span>
         <button onClick={() => {
           if (lapAnchor == null || bars[lapAnchor] === undefined) { alert('Pick an anchor bar first (dropdown or 🔗 Lap clicks).'); return; }
           const r = applyLapSplice(lapAnchor, idx);
@@ -1213,6 +1244,7 @@ function BbsStrip() {
         <td>{r.Rebar_Type === 'c_link_with_hook' ? (String(r.double_hook || 'no').toLowerCase() === 'yes' ? 'c_link_with_hook (double)' : 'c_link_with_hook (single)') : r.Rebar_Type}</td>
         <td><span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: 4, fontWeight: 600, color: '#67e8f9' }}>{SHAPE_CODES[(r.Rebar_Type || '').toLowerCase()] || 20}</span></td>
         <td>{r.Dia}</td><td>{r._copies}</td><td>{r._cut}</td><td>{r.Weight_kg}</td>
+        <td title={r.bond_condition ? `bond_condition: ${r.bond_condition}` : 'auto (no lap bond — link)'}>{r.bond_condition || '—'}</td>
       </tr>
     );
   };
@@ -1334,7 +1366,7 @@ function BbsStrip() {
       </div>
       <div className="tblwrap">
         <table>
-          <thead><tr><th></th><th>#</th><th>Mark</th><th>Type</th><th>Shape</th><th>Ø</th><th>Bars</th><th>Cut (mm)</th><th>Wt (kg)</th></tr></thead>
+          <thead><tr><th></th><th>#</th><th>Mark</th><th>Type</th><th>Shape</th><th>Ø</th><th>Bars</th><th>Cut (mm)</th><th>Wt (kg)</th><th>Bond</th></tr></thead>
           <tbody>
             {(joinMode || (elemFilter === 'all' && groupByElem)) ? (
               groups.map((g) => {
@@ -1342,7 +1374,7 @@ function BbsStrip() {
                 return (
                   <Fragment key={`gwrap-${g.id}`}>
                     <tr className="bbs-group-row" onClick={() => toggleCollapse(g.id)}>
-                      <td colSpan={9}>
+                      <td colSpan={10}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                             <span>{isCollapsed ? '▶' : '▼'}</span>

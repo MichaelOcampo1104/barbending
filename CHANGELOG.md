@@ -2,6 +2,20 @@
 
 ## Unreleased (working tree → next push)
 
+- **Per-bar bond condition end-to-end (DXF → CSV → GUI)**:
+  - `dxf_to_bbs.py` persists `bond_condition` per row (`B*` good / `T*` poor per EC2 §8.2, links blank); `MASTER_HEADERS`/`parseCsv`/`toCsv` round-trip it, legacy CSVs without the column infer `B`→good / `T`→poor (links stay blank).
+  - GUI: `barBond`/`lapBondFor` in `calc.js` (poor wins a mixed pair, global bond is fallback only); `applyLapSplice` laps with the pair's effective bond; bar editor has a per-bar bond dropdown (auto shows inferred value); BBS table has a `Bond` column; new bars default to auto.
+  - Verified: `B2` laps 2240 (good) vs `T2` 3200 (poor) from `bar_plan_bbs_auto.csv`; legacy-inference + mixed-pair rule node-checked; `npm run lint/build`.
+- **Transverse distribution stacking + link auto-seat (DXF importer)**:
+  - Even marks ride one step inside their odd main (`B2` on `B1` → z=125, `T2` under `T1` → z=875, `B4` on `B3` → z=174) instead of clashing on the same level; explicit `Z=` still wins.
+  - Links with no `Z=` seat on the bottom cover (`auto-linkBot`, same cover+Ø/2 convention); a vertical-spine link whose explicit `Z=` pokes out of the host slab warns (`drop Z= to auto-seat it` — caught the stale `Z=696` putting B1155 616 mm above the slab).
+  - GUI matches: `slabLinkSpine(host, dia, cover)` (`lz − covB − covT`, member covers preferred) drives new-link defaults and Fit-to-host on slab-like hosts (rotation 90° so the spine stands vertical); beam/column behavior unchanged.
+- **Link layer + EXT fallback + free mark convention (DXF importer)**:
+  - Links live on `REBAR-LINK-H<dia>` (closed rect declares the link; old `REBAR-H` + `LINK` tag still works); omitted `EXT=/SP=` zones the grid from the drawn rect with a `NOTE` (keep `EXT=` when the field is intentionally smaller — B1155's rect would balloon 40 → 589 links).
+  - Marks can be any integer (`101`, …); location is explicit via `BOT|TOP`, `MAIN|DIST`, `LYR=n`, `ON=<parent>`, `GOOD|POOR` keywords, with classic `B/T`+number inference as fallback (old-vs-new output diff: geometry identical, only intended stacking deltas).
+  - Main-vs-distribution orientation check is role-based (mains share one direction per slab, distribution across; warns, never blocks).
+  - Sample DXF retagged to the new scheme (`101 BOT MAIN`, `102 BOT DIST ON=101`, … `202 TOP DIST ON=201`, `LYR=2` edge bars; B1155 on the link layer, stale `Z=` dropped); regenerated `bar_plan_bbs_auto.*` (11 rows).
+
 - **DXF plan → BBS importer (`scripts/dxf_to_bbs.py`, Python + ezdxf)**:
   - Drafting protocol: bar centerlines on `REBAR-H<dia>`, distribution width as cyan `REBAR-EXTENT` tick (length = zone width) or `EXT=` in the tag, per-bar TEXT tag `MARK H<dia>[-sp] Z=<z> EXT=<w> HOST=<group>` (plan has no Z — tag is the only source of `Pos_z`/spacing/host); concrete as closed `CONC-*` rect + `ID KIND NAME THK=<lz> Z=<z>` tag (footprint from bbox, name must equal bars' `HOST` so `resolveBarHost` auto-hosts).
   - Shape keywords: `BENT H=<leg> UP|DOWN`, `LINK A=<a> B=<b>` (closed stirrup rect), `LINK_HOOK L=<spine> A=<a> B=<b> [DOUBLE]` with `L/A/B` overriding measurement; 2-axis grids via `EXT=wxh SP=sxsy`; `VIEW=` sets `Plane`, `ROT=` overrides `Pos_Rotation`.

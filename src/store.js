@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { defaultBar, defaultBarForHost, resolveBarHost, genBarPoints, barMainLength, barSpliceEnds, distToBar, barOverlapsBoxes } from './bbs/shapes.js';
-import { lapLengthMm } from './bbs/calc.js';
+import { lapLengthMm, lapBondFor } from './bbs/calc.js';
 import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
 
 let tagSeq = 1;
@@ -387,7 +387,10 @@ export const useStore = create((set, get) => ({
 
     const diaA = Number(A.Dia) || 0, diaB = Number(B.Dia) || 0;
     const dia = (diaA > 0 && diaB > 0) ? Math.min(diaA, diaB) : (diaA || diaB);
-    const L = lapLengthMm(dia, s.bond);
+    // Per-bar bond wins (poor wins a mixed pair); the global bond is only
+    // the fallback for bars with no explicit/inferrable value.
+    const bondEff = lapBondFor(A, B, s.bond);
+    const L = lapLengthMm(dia, bondEff);
     if (!L) return { ok: false, msg: `No lap length for Ø${dia}.` };
 
     const LA = barMainLength(A);
@@ -433,8 +436,8 @@ export const useStore = create((set, get) => ({
       selectedBar: bIdx,
       selectedBars: [bIdx],
     }));
-    set({ lastLap: { a: A.Bar_mark, b: B.Bar_mark, len: L, bond: s.bond, dia, at: Date.now() } });
-    console.info(`[lap] ${B.Bar_mark} → ${A.Bar_mark}: ${L} mm (${s.bond} bond, Ø${dia})`);
+    set({ lastLap: { a: A.Bar_mark, b: B.Bar_mark, len: L, bond: bondEff, dia, at: Date.now() } });
+    console.info(`[lap] ${B.Bar_mark} → ${A.Bar_mark}: ${L} mm (${bondEff} bond, Ø${dia})`);
     return { ok: true, len: L };
   },
   // Query tool (ephemeral inspect aid — never saved, never in BBS/CSV).

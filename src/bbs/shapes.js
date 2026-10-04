@@ -29,6 +29,16 @@ export function getBentDefaults(dia) {
   return BENT_DEFAULTS[d] || { r: d * 2, H: Math.max(100, d * 8), U: d * 10 };
 }
 
+// Through-slab link spine (centerline): slab thickness minus bottom/top
+// covers — the same rule as scripts/dxf_to_bbs.py ('slab' L source).
+// Prefers per-member covB/covT (DXF slabs carry them), else global cover.
+export function slabLinkSpine(host, dia, cover = 30) {
+  const covB = Number(host?.covB ?? cover) || 0;
+  const covT = Number(host?.covT ?? cover) || 0;
+  const d = Math.round(Number(dia) || 16);
+  return Math.max(d * 2, Math.round((Number(host?.lz) || 0) - covB - covT));
+}
+
 export function genBarPoints(bar) {
   const d = Number(bar.Dia || 16);
   switch (bar.Rebar_Type) {
@@ -132,6 +142,7 @@ export function defaultBar(type, tag = 1) {
     Bar_mark: `B${tag}`,
     Rebar_Type: type,
     Dia: 16,
+    bond_condition: '',
     Pos_x: 0, Pos_y: 0, Pos_z: 0,
     Group: isStirrup ? 'C_Links_Hook' : 'HRB3DB_bt',
     Pos_Rotation: 0,
@@ -199,6 +210,31 @@ export function defaultBarForHost(type, tag = 1, host = null, cover = 30) {
         qty_x: 1,
         spacing_y: 150,
         qty_y: Math.max(1, Math.floor((host.lz - 2 * cv) / 150)),
+      };
+    } else if (isSlabXY) {
+      // Through-slab shear link: vertical spine = thickness - covers
+      // (slabLinkSpine, same rule as the DXF importer), plan legs from
+      // bend defaults. Pos_Rotation 90 stands local-X up to App Z.
+      const spine = slabLinkSpine(host, dia, cover);
+      const legA = Math.max(dia * 2, getBentDefaults(dia).H);
+      const legB = type === 'c_link_with_hook'
+        ? Math.max(dia * 2, getBentDefaults(dia).U || getBentDefaults(dia).H)
+        : legA;
+      const covB = Number(host.covB ?? cover) || 0;
+      return {
+        ...base,
+        host: host.id,
+        Plane: 'XZ',
+        Pos_Rotation: 90,
+        c_length_a: legA,
+        c_length_b: legB,
+        length: spine,
+        Pos_x: Math.round((host.x + inset + Math.max(legA, legB)) * 10) / 10,
+        Pos_y: Math.round((host.y + inset) * 10) / 10,
+        Pos_z: Math.round((host.z + covB + dia / 2) * 10) / 10,
+        spacing_x: 150,
+        qty_x: Math.max(1, Math.floor((host.lx - 2 * cv) / 150)),
+        qty_y: 1,
       };
     } else {
       const lenA = Math.max(dia * 2, Math.round(host.lx - 2 * cv - dia));

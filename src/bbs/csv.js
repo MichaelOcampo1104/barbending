@@ -4,7 +4,7 @@
 // file can be consumed directly, and accept any of the gen_* templates.
 
 import { genBarPoints, distCount, getBentDefaults, resolveBarHost, meshVolumeM3 } from './shapes.js';
-import { barWeightKg } from './calc.js';
+import { barWeightKg, normalizeBond, inferBondFromMark } from './calc.js';
 
 export const SHAPE_CODES = {
   straight: 20,
@@ -105,7 +105,7 @@ export const MASTER_HEADERS = [
   'Rebar_tag', 'Bar_mark', 'Rebar_Type', 'Shape_Code', 'Dia',
   'Pos_x', 'Pos_y', 'Pos_z', 'Group', 'Pos_Rotation', 'Plane',
   'Length of Bar', 'H', 'bent_up_down',
-  'Long_length', 'Crank_step', 'Length of Lap',
+  'Long_length', 'Crank_step', 'Length of Lap', 'bond_condition',
   'DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length',
   'c_length_a', 'c_length_b', 'length', 'double_hook',
   'qty_x', 'spacing_x', 'qty_y', 'spacing_y',
@@ -121,8 +121,14 @@ export function enrichBar(bar, concretes = []) {
   const copies = distCount(bar); // qty (sets) × qty_x × qty_y
   const { shapeCode } = getShapeParameters(bar);
   const resolvedHost = resolveBarHost(bar, concretes);
+  // Normalize stored bond so exports round-trip; '' = auto (B→good/T→poor at use).
+  // Links carry no lap bond and stay '' even when the mark starts with B.
+  const isLinkBar = /^(c_link|clink|c_link_with_hook)$/i.test(String(bar.Rebar_Type || ''));
+  const bondStored = normalizeBond(bar.bond_condition ?? bar.bond)
+    || (isLinkBar ? '' : inferBondFromMark(bar.Bar_mark));
   return {
     ...bar,
+    bond_condition: bondStored,
     host: resolvedHost || bar.host || null,
     Shape_Code: shapeCode,
     Visible: bar.hidden ? 0 : 1,
@@ -435,9 +441,19 @@ export function parseCsv(text, existingBars = [], concretes = []) {
       o.Plane = 'XY';
     }
 
-    if (o.bond_condition) {
-      o.bond_condition = String(o.bond_condition).toLowerCase();
+    // Bond: accept legacy aliases, normalize, drop junk; '' = auto
+    // (B-mark → good, T-mark → poor at use). Links carry no lap bond.
+    if (o.bond_condition === undefined || o.bond_condition === null) {
+      o.bond_condition = o.Bond ?? o.bond ?? '';
     }
+    o.bond_condition = normalizeBond(o.bond_condition);
+    // Links carry no lap bond and stay '' even when the mark starts with B.
+    const isLinkRow = /^(c_link|clink|c_link_with_hook)$/i.test(String(o.Rebar_Type || ''));
+    if (!o.bond_condition && !isLinkRow) {
+      o.bond_condition = inferBondFromMark(o.Bar_mark) || '';
+    }
+    delete o.Bond;
+    delete o.bond;
     if (o.bent_up_down) {
       o.bent_up_down = String(o.bent_up_down).toLowerCase();
     }

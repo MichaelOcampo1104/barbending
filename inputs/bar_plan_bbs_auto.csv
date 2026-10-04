@@ -1,0 +1,12 @@
+Rebar_tag,Bar_mark,Rebar_Type,Shape_Code,Dia,Pos_x,Pos_y,Pos_z,Group,Pos_Rotation,Plane,Length of Bar,H,bent_up_down,Long_length,Crank_step,Length of Lap,bond_condition,DC_Lap_Start,DC_Lap_Mid,DC_Tail_Length,c_length_a,c_length_b,length,double_hook,qty_x,spacing_x,qty_y,spacing_y,offset_x,offset_y,offset_z,plan_rotation,feature,qty,Total Length,Weight_kg,Visible
+1,203,straight,,32,3219.72,2731.94,887.0,GL23-Roof,-90.0,XY,2845.1,,,,,,poor,,,,,,,,23,150,1,0,-1650.0,0.0,,,EXT tick=3329.0 TXT=0.0 n=23x1 zsrc=auto-topL2,1,,,1
+2,201-P1,straight,,40,2624.81,703.78,940.0,GL23-Roof,-90.0,XY,12000,,,,,3200,poor,,,,,,,,36,150,1,0,-2625.0,0.0,,,stock-split 1/2 poor lap=3200,1,,,1
+3,201-P2,straight,,40,2624.81,-8096.22,940.0,GL23-Roof,-90.0,XY,5200.0,,,,,3200,poor,,,,,,,,36,150,1,0,-2625.0,0.0,,,stock-split 2/2 poor lap=3200,1,,,1
+4,B1155,c_link_with_hook,,13,1043.78,-2279.06,46.5,C_Links_Hook,90.0,XZ,,,,,,,,,,,160.0,110.0,920.0,no,4,300.0,10,450.0,903.7,211.0,,,EXT tick=0.0 TXT=900.0 n=4x10 zsrc=auto-linkBot,1,,,1
+5,203,straight,,32,1655.0,2731.91,887.0,GL23-Roof,-90.0,XY,2845.1,,,,,,poor,,,,,,,,13,150,1,0,-900.0,0.0,,,EXT tick=1800.0 TXT=0.0 n=13x1 zsrc=auto-topL2,1,,,1
+6,101-P1,straight,,40,1738.0,703.78,60.0,GL23-Roof,-90.0,XY,12000,,,,,2240,good,,,,,,,,21,150,1,0,-1500.0,0.0,,,stock-split 1/2 good lap=2240,1,,,1
+7,101-P2,straight,,40,1738.0,-9056.22,60.0,GL23-Roof,-90.0,XY,4240.0,,,,,2240,good,,,,,,,,21,150,1,0,-1500.0,0.0,,,stock-split 2/2 good lap=2240,1,,,1
+8,102,straight,,40,15.15,-9877.67,125.0,GL23-Roof,0.0,XY,4945.5,,,,,,good,,,,,,,,1,0,17,150,0.0,-1200.0,,,EXT tick=2423.0 TXT=0.0 n=1x17 zsrc=auto-botL1-on101,1,,,1
+9,202,straight,,40,15.1,-1104.1,875.0,GL23-Roof,0.0,XY,4945.6,,,,,,poor,,,,,,,,1,0,17,150,0.0,-1200.0,,,EXT tick=2422.0 TXT=0.0 n=1x17 zsrc=auto-topL1-on201,1,,,1
+10,104,straight,,40,15.15,-9699.37,174.0,GL23-Roof,0.0,XY,4945.5,,,,,,good,,,,,,,,1,0,17,150,0.0,-1200.0,,,EXT tick=2423.0 TXT=0.0 n=1x17 zsrc=auto-botL1-on103,1,,,1
+11,103,straight,,32,1336.42,-12847.79,113.0,GL23-Roof,90.0,XY,4375.3,,,,,,good,,,,,,,,14,150,1,0,-975.0,0.0,,,EXT tick=1885.0 TXT=0.0 n=14x1 zsrc=auto-botL2,1,,,1
