@@ -2,6 +2,18 @@
 
 ## Unreleased (working tree → next push)
 
+- **Column starters (bent dowels)**:
+  - DXF: `ST1 STARTER 8xH25 [AT=BOT|TOP] [HB=<bent leg>] HOST=<col>` generates bent bars (legs aimed outward from the column center via per-bar `plan_rotation`): vertical lap above the SFL plus straight-then-bent below, one good-bond tension lap each way (bent leg `HB=`, else lap minus straight; straight limited by the lower-slab depth; `AT=TOP` is a true mirror — bend fixed at the upper-slab cover, vertical hanging down exactly one lap past the top SFL; slab-free fallbacks assume the embed depth with WARNs when no slab is drawn).
+  - Also fixed en route: concrete tags now pair smallest-first (consumed), so a column stacked on a slab claims its own tag instead of both taking the nearest.
+  - Verified on a slab+column test file: base starters L=1685/H=895 at z=1290 (1290 + 395 + 895), mirrored top L=1737.5/H=842.5 at z=1710 (1290 below top SFL exact), outward aims spot-checked, cut 2530, good bond; sample `column_sample_800` (slab-free: 16 verticals + 16 + 16 starters + tie, 49 rows); lint clean, build passes.
+
+
+- **Columns phase 1: `qty_z` distribution + closed `tie` shape + DXF verticals**:
+  - Data model: `qty_z`/`spacing_z` in `MASTER_HEADERS` (CSV + importer), `distCount`/`distOffsets` stack copies in Z, editor has Count Z / Spacing Z fields. BBS weights/counts follow automatically.
+  - New `tie` shape (BS8666 code 51): closed rectangular loop reusing the link dim columns (`length` = X-side, `c_length_a` = Y-side); GUI type dropdown, per-host Fit (column hosts stack `qty_z` over full height), new-bar defaults.
+  - DXF: `V<n> VERT n x H<dia> [H=<height>] HOST=<col>` synthesizes one vertical straight bar per column-perimeter position (cover inset, height from `H=` else host internal depth, base-cover seat, good bond, stock-split upward in Z); `T1 TIE A=<x> B=<y> [SZ=] [NZ=] HOST=<col>` rows closed ties stacked from the base cover (count auto from host height). Dia-less `TIE` tags pair by proximity with no dia penalty; generator tags fenced (VERT tags only pair their own mark, TIE tags only closed LINK rects); closed rects pair by full perimeter distance.
+  - Verified on a from-scratch 500×500×3000 test column: 8×H25 verticals at z=52.5 (L=2920) + 420×420 tie with `qty_z`=20 @150 (cut 1600, 19.73 kg); `defaultBarForHost('tie')` on column gives 404 loop + 20 ties; lint clean, build passes. FreeCAD macro authors note: `tie`/51 is a new `Rebar_Type` (dims ride existing columns).
+
 - **3D view render cap raised (incomplete link fields)**:
   - Root cause: `Scene.jsx` drew at most `MAX_RENDER_COPIES = 200` distribution copies per bar (plus a red-dot marker for the remainder) while the BBS counted all — the 256-copy 1156 link field rendered 200/256, smaller fields were unaffected. Parsing/CSV were verified correct throughout.
   - `MAX_RENDER_COPIES` 200 → 5000 (a full 5.5×16.7 m slab at 150 spacing is ~4100 copies); all 12 sample bars render fully, BBS stays exact, red dot remains the over-cap signal. Lint clean, build passes.

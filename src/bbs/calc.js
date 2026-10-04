@@ -32,12 +32,14 @@ export function normalizeBond(v) {
 }
 
 export function inferBondFromMark(mark) {
-  const m = /^\s*([BT])\s*0*\d+\s*$/i.exec(String(mark ?? ''));
+  const m = /^\s*([BTV])\s*0*\d+\s*$/i.exec(String(mark ?? ''));
   if (!m) return '';
-  return m[1].toUpperCase() === 'T' ? 'poor' : 'good';
+  const side = m[1].toUpperCase();
+  // vertical column steel casts in good bond, like bottom steel
+  return side === 'T' ? 'poor' : 'good';
 }
 
-const STIRRUP_TYPES = new Set(['c_link', 'clink', 'c_link_with_hook']);
+const STIRRUP_TYPES = new Set(['c_link', 'clink', 'c_link_with_hook', 'tie']);
 
 // Effective bond for one bar: explicit value wins, else B/T mark inference
 // (longitudinal bars only — links carry no lap bond), else fallback.

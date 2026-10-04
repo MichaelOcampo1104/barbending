@@ -14,6 +14,7 @@ export const SHAPE_CODES = {
   c_link_with_hook: 85,
   crank: 41,
   double_crank: 43,
+  tie: 51,
 };
 
 // Concrete volume in m³. Precedence: exact retraced mesh geometry (auto-traced
@@ -57,8 +58,7 @@ export function getShapeParameters(bar) {
       B = Number(bar.H || 800);
       break;
     case 'c_link':
-    case 'clink': {
-      const defs = getBentDefaults(dia);
+    case 'clink': {      const defs = getBentDefaults(dia);
       A = Number(bar.c_length_a || defs.H);
       B = Number(bar.length || bar['Length of Bar'] || 1000);
       C = Number(bar.c_length_b || defs.H);
@@ -78,6 +78,14 @@ export function getShapeParameters(bar) {
       B = L;
       C = hookC;
       D = hookReturn;
+      break;
+    }
+    case 'tie': {
+      // Closed rectangular tie: A = X-side (length), B = Y-side (c_length_a)
+      const tL = Number(bar.length || 400);
+      const tW = Number(bar.c_length_a ?? 400);
+      A = tL;
+      B = tW;
       break;
     }
     case 'crank':
@@ -108,7 +116,7 @@ export const MASTER_HEADERS = [
   'Long_length', 'Crank_step', 'Length of Lap', 'bond_condition',
   'DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length',
   'c_length_a', 'c_length_b', 'length', 'double_hook',
-  'qty_x', 'spacing_x', 'qty_y', 'spacing_y',
+  'qty_x', 'spacing_x', 'qty_y', 'spacing_y', 'qty_z', 'spacing_z',
   'offset_x', 'offset_y', 'offset_z', 'plan_rotation', 'feature',
   'qty', 'Total Length', 'Weight_kg',
   // Browser-only view flag (extra column ignored by FreeCAD's DictReader).
@@ -409,7 +417,7 @@ export function parseCsv(text, existingBars = [], concretes = []) {
 
     // Numeric coercion for known fields
     for (const k of ['Rebar_tag', 'Shape_Code', 'Dia', 'Pos_x', 'Pos_y', 'Pos_z', 'Pos_Rotation', 'plan_rotation', 'qty',
-      'qty_x', 'spacing_x', 'qty_y', 'spacing_y', 'offset_x', 'offset_y', 'offset_z',
+      'qty_x', 'spacing_x', 'qty_y', 'spacing_y', 'qty_z', 'spacing_z', 'offset_x', 'offset_y', 'offset_z',
       'Length of Bar', 'H', 'Long_length', 'Crank_step', 'Length of Lap',
       'DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length', 'c_length_a', 'c_length_b', 'length',
       'Visible']) {

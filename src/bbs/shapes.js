@@ -11,6 +11,7 @@ export const REBAR_TYPES = [
   'double_crank',
   'c_link',
   'c_link_with_hook',
+  'tie',
 ];
 
 export const BENT_DEFAULTS = {
@@ -119,6 +120,15 @@ export function genBarPoints(bar) {
         return { points: pts, bends90: 3, lengthMm: totalLen, cutLengthMm: totalLen };
       }
     }
+    case 'tie': {
+      // Closed rectangular tie (column/wall links, BS8666 shape 51):
+      // loop L (local X) by W (local Y), plain corners, no hooks.
+      // Reuses the link dim columns: length = X-side, c_length_a = Y-side.
+      const L = Number(bar.length || 1000);
+      const W = Number(bar.c_length_a ?? 130);
+      const pts = [[0, 0, 0], [L, 0, 0], [L, W, 0], [0, W, 0], [0, 0, 0]];
+      return finish(pts, 4, d);
+    }
     case 'straight':
     default: {
       const L = Number(bar['Length of Bar'] || bar.length || 3000);
@@ -136,7 +146,7 @@ function finish(pts, bends90, dia) {
 
 // Default parameter sets per type (matches FreeCAD CSV columns loosely)
 export function defaultBar(type, tag = 1) {
-  const isStirrup = type === 'c_link' || type === 'c_link_with_hook';
+  const isStirrup = type === 'c_link' || type === 'c_link_with_hook' || type === 'tie';
   const base = {
     Rebar_tag: tag,
     Bar_mark: `B${tag}`,
@@ -155,6 +165,7 @@ export function defaultBar(type, tag = 1) {
     case 'double_crank': return { ...base, DC_Lap_Start: 1000, DC_Lap_Mid: 2000, DC_Tail_Length: 1000, Crank_step: 300 };
     case 'c_link': return { ...base, length: 1000, c_length_a: 130, c_length_b: 130, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150 };
     case 'c_link_with_hook': return { ...base, length: 1000, c_length_a: 130, c_length_b: 130, double_hook: 'no', qty_x: 1, spacing_x: 150, qty_y: 5, spacing_y: 200 };
+    case 'tie': return { ...base, length: 400, c_length_a: 400, Plane: 'XY', qty_z: 5, spacing_z: 150 };
     default: return { ...base, 'Length of Bar': 3000, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150 };
   }
 }
@@ -171,7 +182,42 @@ export function defaultBarForHost(type, tag = 1, host = null, cover = 30) {
   const isBeamX = host.lx >= host.ly && host.lx >= host.lz;
   const isColZ = host.lz > host.lx && host.lz > host.ly;
   const isSlabXY = host.lz < host.lx && host.lz < host.ly;
-  const isStirrup = type === 'c_link' || type === 'c_link_with_hook';
+  const isStirrup = type === 'c_link' || type === 'c_link_with_hook' || type === 'tie';
+
+  // Closed ties: horizontal loop sized to the host cross-section, stacked in
+  // Z over the host height (column ties). legW = X-side, legH = cross side.
+  if (type === 'tie') {
+    const covB = Number(host.covB ?? cover) || 0;
+    const covT = Number(host.covT ?? cover) || 0;
+    if (isBeamX) {
+      const legW = Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia));
+      const legH = Math.max(dia * 2, Math.round(host.lz - 2 * cv - dia));
+      return {
+        ...base, host: host.id, Plane: 'YZ', Pos_Rotation: 0,
+        length: legW, c_length_a: legH,
+        Pos_x: Math.round((host.x + cv + dia / 2) * 10) / 10,
+        Pos_y: Math.round((host.y + inset) * 10) / 10,
+        Pos_z: Math.round((host.z + inset) * 10) / 10,
+        spacing_x: 150,
+        qty_x: Math.max(1, Math.floor((host.lx - 2 * cv) / 150)),
+        qty_y: 1, qty_z: 1, spacing_z: 0,
+      };
+    }
+    // column (tall Z) or slab/wall/box: loop in plan, qty_z up the height
+    const legW = Math.max(dia * 2, Math.round(host.lx - 2 * cv - dia));
+    const legH = Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia));
+    const intH = host.lz - covB - covT;
+    return {
+      ...base, host: host.id, Plane: 'XY', Pos_Rotation: 0,
+      length: legW, c_length_a: legH,
+      Pos_x: Math.round((host.x + inset) * 10) / 10,
+      Pos_y: Math.round((host.y + inset) * 10) / 10,
+      Pos_z: Math.round((host.z + covB + dia / 2) * 10) / 10,
+      qty_x: 1, qty_y: 1,
+      spacing_z: 150,
+      qty_z: intH > 0 ? Math.max(1, Math.floor(intH / 150) + 1) : 1,
+    };
+  }
 
   if (isStirrup) {
     if (isBeamX) {
@@ -350,6 +396,7 @@ export const DIM_FIELDS_BY_TYPE = {
   double_crank: ['DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length', 'Crank_step'],
   c_link: ['length', 'c_length_a', 'c_length_b'],
   c_link_with_hook: ['length', 'c_length_a', 'c_length_b', 'double_hook'],
+  tie: ['length', 'c_length_a'],
 };
 
 const ALL_DIM_FIELDS = [...new Set(Object.values(DIM_FIELDS_BY_TYPE).flat())];
@@ -865,7 +912,8 @@ export function distCount(bar) {
   const sets = Math.max(1, Math.floor(num(bar.qty, 1)));
   const nx = Math.max(1, Math.floor(num(bar.qty_x, 1)));
   const ny = Math.max(1, Math.floor(num(bar.qty_y, 1)));
-  return sets * nx * ny;
+  const nz = Math.max(1, Math.floor(num(bar.qty_z, 1)));
+  return sets * nx * ny * nz;
 }
 
 // World-space offsets (mm) for each copy, before Pos_Rotation.
@@ -873,8 +921,10 @@ export function distOffsets(bar) {
   const sets = Math.max(1, Math.floor(num(bar.qty, 1)));
   const nx = Math.max(1, Math.floor(num(bar.qty_x, 1)));
   const ny = Math.max(1, Math.floor(num(bar.qty_y, 1)));
+  const nz = Math.max(1, Math.floor(num(bar.qty_z, 1)));
   const sx = num(bar.spacing_x, 0);
   const sy = num(bar.spacing_y, 0);
+  const sz = num(bar.spacing_z, 0);
   const ox = num(bar.offset_x, 0);
   const oy = num(bar.offset_y, 0);
   const oz = num(bar.offset_z, 0);
@@ -882,7 +932,8 @@ export function distOffsets(bar) {
   for (let s = 0; s < sets; s++)
     for (let ix = 0; ix < nx; ix++)
       for (let iy = 0; iy < ny; iy++)
-        out.push([ox + ix * sx, oy + iy * sy, oz]);
+        for (let iz = 0; iz < nz; iz++)
+          out.push([ox + ix * sx, oy + iy * sy, oz + iz * sz]);
   return out;
 }
 

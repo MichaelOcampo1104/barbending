@@ -213,6 +213,8 @@ function BarEditor() {
         <Field label="Count Y" value={bar.qty_y ?? 1} onChange={(v) => set('qty_y', v)} />
         <Field label="Spacing Y" value={bar.spacing_y ?? 0} onChange={(v) => set('spacing_y', v)} />
         <Field label="Offset Y" value={bar.offset_y ?? 0} onChange={(v) => set('offset_y', v)} />
+        <Field label="Count Z" value={bar.qty_z ?? 1} onChange={(v) => set('qty_z', v)} />
+        <Field label="Spacing Z" value={bar.spacing_z ?? 0} onChange={(v) => set('spacing_z', v)} />
         <Field label="Offset Z" value={bar.offset_z ?? 0} onChange={(v) => set('offset_z', v)} />
       </div>
       <div className="sect">Host & visibility (view only — BBS + CSV stay complete)</div>
@@ -314,6 +316,57 @@ function BarEditor() {
                   Pos_y: Math.round((host.y + inset) * 10) / 10,
                   Pos_z: Math.round((host.z + inset) * 10) / 10,
                   Pos_Rotation: 0,
+                });
+              }
+            }}>Fit to host</button>
+          </div>
+        </>
+      )}
+      {bar.Rebar_Type === 'tie' && concretes.length > 0 && (
+        <>
+          <div className="sect">Snap to cover — fit closed tie inside host</div>
+          <div className="distnote">Sizes the loop to host cross-section − 2·cover − Ø; on tall (column) hosts it stacks in Z over the full height (Count Z). Resets rotation to 0°.</div>
+          <div className="crow">
+            <select
+              className="cname"
+              value={hostId && concretes.some((c) => c.id === hostId) ? hostId : concretes[0].id}
+              onChange={(e) => setHostId(e.target.value)}
+            >
+              {concretes.map((c) => <option key={c.id} value={c.id}>{c.name} · {c.lx}×{c.ly}×{c.lz}</option>)}
+            </select>
+            <button onClick={() => {
+              const host = concretes.find((c) => c.id === hostId) || concretes[0];
+              const dia = Number(bar.Dia) || 16;
+              const cv = Number(cover) || 0;
+              const inset = cv + dia / 2;
+              const covB = Number(host.covB ?? cover) || 0;
+              const covT = Number(host.covT ?? cover) || 0;
+              const isBeamX = host.lx >= host.ly && host.lx >= host.lz;
+              if (isBeamX) {
+                updateBar(idx, {
+                  host: host.id, Plane: 'YZ', Pos_Rotation: 0,
+                  length: Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia)),
+                  c_length_a: Math.max(dia * 2, Math.round(host.lz - 2 * cv - dia)),
+                  Pos_x: Math.round((host.x + cv + dia / 2) * 10) / 10,
+                  Pos_y: Math.round((host.y + inset) * 10) / 10,
+                  Pos_z: Math.round((host.z + inset) * 10) / 10,
+                  spacing_x: bar.spacing_x || 150,
+                  qty_x: Math.max(1, Math.floor((host.lx - 2 * cv) / (bar.spacing_x || 150))),
+                  qty_z: 1, spacing_z: 0,
+                });
+              } else {
+                const intH = host.lz - covB - covT;
+                const sz = bar.spacing_z || 150;
+                updateBar(idx, {
+                  host: host.id, Plane: 'XY', Pos_Rotation: 0,
+                  length: Math.max(dia * 2, Math.round(host.lx - 2 * cv - dia)),
+                  c_length_a: Math.max(dia * 2, Math.round(host.ly - 2 * cv - dia)),
+                  Pos_x: Math.round((host.x + inset) * 10) / 10,
+                  Pos_y: Math.round((host.y + inset) * 10) / 10,
+                  Pos_z: Math.round((host.z + covB + dia / 2) * 10) / 10,
+                  qty_x: 1, qty_y: 1,
+                  spacing_z: sz,
+                  qty_z: intH > 0 ? Math.max(1, Math.floor(intH / sz) + 1) : 1,
                 });
               }
             }}>Fit to host</button>
