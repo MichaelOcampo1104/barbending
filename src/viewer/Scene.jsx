@@ -929,8 +929,12 @@ function AutotestDump() {
   }, [scene, camera]);
   useLayoutEffect(() => {
     const st = useStore.getState();
-    if (!st.section) st.toggleSection();
-    st.thirdSection();
+    // Section-driving belongs to the section harness only — other ?autotest
+    // runs (e.g. facebar) must keep the model whole.
+    if (new URLSearchParams(window.location.search).get('autotest') === 'section') {
+      if (!st.section) st.toggleSection();
+      st.thirdSection();
+    }
     // ?showmarks=1 : make stencil mark passes visible (red=back/inc, blue=front/dec)
     if (new URLSearchParams(window.location.search).get('showmarks') === '1') {
       import('./stencilMats.js').then(({ stencilMats }) => {

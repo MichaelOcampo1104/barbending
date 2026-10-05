@@ -318,6 +318,13 @@ tr.bbs-group-row td { padding: 5px 8px; }
   color: #67e8f9;
   pointer-events: none;
 }
+/* drei <Html> label wrappers sit exactly on click points (length badge
+ * follows the cursor) — the whole subtree must stay click-through or the
+ * canvas never sees pointerdown and the click silently dies. */
+.facebadge-wrap,
+.facebadge-wrap div {
+  pointer-events: none !important;
+}
 .refline-badge-actions {
   display: inline-flex;
   align-items: center;

@@ -758,11 +758,54 @@ export const useStore = create((set, get) => ({
   })),
   // camera focus on an explicit scene-unit box (zoom-to-element)
   setIfcFitBox: (center, radius) => set({ ifcFit: { center, radius, n: Date.now() } }),
-  // Concrete tracing and drawing tool ('beam' | 'column' | 'slab' | 'box' | 'trace_ifc' | null)
+  // Concrete tracing and drawing tool ('beam' | 'column' | 'slab' | 'box' | 'trace_ifc' | 'bar_face' | null)
   drawMode: null,
-  setDrawMode: (mode) => set({ drawMode: mode, drawStart: null }),
+  setDrawMode: (mode) => set({ drawMode: mode, drawStart: null, faceSketch: null, faceNote: null }),
   drawStart: null,
   setDrawStart: (pt) => set({ drawStart: pt }),
   snapNode: null,
   setSnapNode: (node) => set({ snapNode: node }),
+  // Face-sketch rebar (FreeCAD-workbench style): pick a concrete face, draw
+  // the bar line on its cover-offset working plane; distribution auto-fills
+  // the transverse in-face axis. Axis-aligned faces carry { memberId, axis,
+  // sign, plane, p1 }; sloped faces add the true { normal, origin } frame
+  // (app-mm) plus slopeDeg. | null.
+  faceSketch: null,
+  setFaceSketch: (fs) => set({ faceSketch: fs }),
+  sketchDia: 16,
+  setSketchDia: (v) => set({ sketchDia: v }),
+  sketchSpacing: 150,
+  setSketchSpacing: (v) => set({ sketchSpacing: v }),
+  // Last face-sketch rejection reason (shown in the HUD; null = no warning).
+  faceNote: null,
+  setFaceNote: (v) => set({ faceNote: v || null }),
+  // Commit face-sketched straight bars (specs from buildFaceBar /
+  // buildSlopedFaceRows): tags them sequentially, hosts them, selects them.
+  // One undo step; caller stays armed for the next bar.
+  addFaceBar: (spec) => get().addFaceBars(spec ? [spec] : []),
+  addFaceBars: (specs) => {
+    const list = (Array.isArray(specs) ? specs : [specs]).filter(Boolean);
+    if (!list.length) return [];
+    const s0 = get();
+    tagSeq = Math.max(tagSeq + 1, s0.bars.length + 1);
+    const bars = list.map((spec) => {
+      const bar = {
+        ...spec,
+        Rebar_tag: tagSeq,
+        Bar_mark: spec.Bar_mark || `B${tagSeq}`,
+        qty: 1,
+        Visible: 1,
+      };
+      tagSeq += 1;
+      return bar;
+    });
+    const first = s0.bars.length;
+    set((state) => withHist(state, {
+      bars: [...state.bars, ...bars],
+      selectedBar: state.bars.length + bars.length - 1,
+      selectedBars: bars.map((_, i) => first + i),
+      selectedConcrete: bars[0].host || state.selectedConcrete,
+    }));
+    return bars.map((_, i) => first + i);
+  },
 }));

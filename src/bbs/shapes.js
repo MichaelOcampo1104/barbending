@@ -914,6 +914,265 @@ export function snapPrimitives(bars, concretes, refLines = [], excludeIdx = -1, 
   return { ends, mids, centers, segments: allSnapSegments(bars, concretes, refLines, excludeIdx, includeConcrete) };
 }
 
+// App-mm bounding box of a concrete member: {x0,y0,z0,x1,y1,z1}.
+// Box members read Lx·Ly·Lz directly; exact retraced meshes (openings,
+// chamfers) measure from their triangle positions.
+export function concreteBox(c) {
+  if (!c) return null;
+  const pts = c.meshData?.positions;
+  if (pts?.length >= 9) {
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity;
+    let x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (let i = 0; i + 2 < pts.length; i += 3) {
+      const x = pts[i], y = pts[i + 1], z = pts[i + 2];
+      if (![x, y, z].every(Number.isFinite)) continue;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+      if (z < z0) z0 = z; if (z > z1) z1 = z;
+    }
+    if ([x0, y0, z0, x1, y1, z1].every(Number.isFinite)) return { x0, y0, z0, x1, y1, z1 };
+  }
+  const x = Number(c.x) || 0, y = Number(c.y) || 0, z = Number(c.z) || 0;
+  const lx = Math.max(0, Number(c.lx) || 0), ly = Math.max(0, Number(c.ly) || 0), lz = Math.max(0, Number(c.lz) || 0);
+  return { x0: x, y0: y, z0: z, x1: x + lx, y1: y + ly, z1: z + lz };
+}
+
+// Transverse distribution grid along one world axis of a member face:
+// extent inset by cover+dia/2 per side, count from spacing, centered.
+// Returns { qty, spacing, center, offset } in the importer's convention
+// (Pos = center, copies spread via offset, edge-to-edge when it divides).
+export function faceGrid(box, axis, spacing, dia, cover) {
+  const sp = Math.max(1, Number(spacing) || 150);
+  const d = Math.max(1, Number(dia) || 16);
+  const cv = Math.max(0, Number(cover) || 0);
+  const inset = cv + d / 2;
+  const lo = box[axis + '0'] + inset, hi = box[axis + '1'] - inset;
+  const ext = Math.max(0, hi - lo);
+  const qty = Math.max(1, Math.floor(ext / sp) + 1);
+  const center = (box[axis + '0'] + box[axis + '1']) / 2;
+  return { qty, spacing: sp, center: Math.round(center * 10) / 10, offset: Math.round(-(qty - 1) * sp / 2 * 10) / 10 };
+}
+
+// Straight bar sketched on a concrete face (FreeCAD-workbench style):
+// p1/p2 are app-mm points on the cover-offset working plane, axis is the
+// face normal ('x'|'y'|'z'). The bar runs p1->p2 (Plane + Pos_Rotation from
+// the face frame); distribution auto-fills the transverse in-face axis via
+// faceGrid. Returns a bar object (no tag/mark) or null when degenerate.
+export function buildFaceBar({ member, axis, planeCoord, p1, p2, dia = 16, spacing = 150, cover = 40 }) {
+  const box = concreteBox(member);
+  if (!box || !p1 || !p2) return null;
+  const d = Math.max(1, Number(dia) || 16);
+  const vx = p2[0] - p1[0], vy = p2[1] - p1[1], vz = p2[2] - p1[2];
+  const L = Math.hypot(vx, vy, vz);
+  if (!(L >= 50)) return null;
+  const idx = { x: 0, y: 1, z: 2 }[axis] ?? 0;
+  // normal-axis residue must be ~0 (both points were plane-constrained)
+  const vn = [vx, vy, vz][idx];
+  if (Math.abs(vn) > Math.max(25, L * 0.05)) return null;
+
+  let plane, rot;
+  if (axis === 'x') { plane = 'YZ'; rot = Math.atan2(vz, vy) * 180 / Math.PI; }
+  else if (axis === 'y') { plane = 'XZ'; rot = Math.atan2(vz, vx) * 180 / Math.PI; }
+  else { plane = 'XY'; rot = Math.atan2(vy, vx) * 180 / Math.PI; }
+
+  // Transverse = the other in-face axis, whichever the bar runs across.
+  const av = Math.abs(vx), bv = Math.abs(vy), cv2 = Math.abs(vz);
+  const transverse = axis === 'x' ? (bv >= cv2 ? 'z' : 'y')
+    : axis === 'y' ? (av >= cv2 ? 'z' : 'x')
+    : (av >= bv ? 'y' : 'x');
+  const grid = faceGrid(box, transverse, spacing, d, cover);
+
+  const pos = [p1[0], p1[1], p1[2]];
+  pos[idx] = planeCoord;
+  const tIdx = { x: 0, y: 1, z: 2 }[transverse];
+  pos[tIdx] = grid.center;
+  const qty = { qty_x: 1, spacing_x: 0, offset_x: 0, qty_y: 1, spacing_y: 0, offset_y: 0, qty_z: 1, spacing_z: 0, offset_z: 0 };
+  qty['qty_' + transverse] = grid.qty;
+  qty['spacing_' + transverse] = grid.spacing;
+  qty['offset_' + transverse] = grid.offset;
+
+  return {
+    Rebar_Type: 'straight',
+    Dia: d,
+    bond_condition: '',
+    'Length of Bar': Math.round(L * 10) / 10,
+    Plane: plane,
+    Pos_Rotation: Math.round(rot * 10) / 10,
+    Pos_x: Math.round(pos[0] * 10) / 10,
+    Pos_y: Math.round(pos[1] * 10) / 10,
+    Pos_z: Math.round(pos[2] * 10) / 10,
+    Group: member?.name || 'Face',
+    host: member?.id || null,
+    qty: 1,
+    ...qty,
+  };
+}
+
+// True 3D face frame from a face normal (app axes, need not be unit):
+// N = normalized normal, U = normalized cross(worldUp, N) (horizontal —
+// falls back to +X when N is near-vertical), V = cross(N, U). All unit,
+// right-handed-ish (U×V ≈ N when N has an upward component).
+export function faceFrame(n) {
+  const N = norm3(n);
+  if (!N) return null;
+  let U = cross3([0, 0, 1], N);
+  if (vecLen(U) < 1e-6) U = [1, 0, 0];
+  U = norm3(U);
+  const V = cross3(N, U);
+  return { N, U, V };
+}
+
+function norm3(v) {
+  if (!Array.isArray(v) || v.length < 3) return null;
+  const x = Number(v[0]), y = Number(v[1]), z = Number(v[2]);
+  const l = Math.hypot(x, y, z);
+  if (!(l > 0)) return null;
+  return [x / l, y / l, z / l];
+}
+
+function vecLen(v) {
+  return Math.hypot(v[0], v[1], v[2]);
+}
+
+function cross3(a, b) {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+function dot3(a, b) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+// Decompose an arbitrary direction D (app axes, need not be unit) into the
+// app bar orientation (Plane + Pos_Rotation + plan_rotation). Uses Plane XZ
+// when |Dx|>=|Dy| else YZ; in-plane pitch θ=asin(Dz), the rest rides the
+// plan rotation about global Z. Returns degrees (1dp) or null when degenerate.
+// Verified round-trip: transformBarLocalPoint({Plane,Pos_Rotation,plan_rotation},[1,0,0]) ≈ D/|D|.
+export function decomposeDir(D) {
+  const Dn = norm3(D);
+  if (!Dn) return null;
+  const [dx, dy, dz] = Dn;
+  const theta = Math.asin(Math.min(1, Math.max(-1, dz))) * 180 / Math.PI;
+  let Plane, phi;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    Plane = 'XZ';
+    phi = Math.abs(Math.cos(theta * Math.PI / 180)) < 1e-6 ? 0 : Math.atan2(dy, dx) * 180 / Math.PI;
+  } else {
+    Plane = 'YZ';
+    phi = Math.abs(Math.cos(theta * Math.PI / 180)) < 1e-6 ? 0 : Math.atan2(-dx, dy) * 180 / Math.PI;
+  }
+  const r1 = (v) => Math.round(v * 10) / 10;
+  return { Plane, Pos_Rotation: r1(theta), plan_rotation: r1(phi) };
+}
+
+// Straight bars sketched on a SLOPED concrete face (true 3D working plane):
+// normal = full face normal (app axes), p1/p2 = app-mm points on the
+// cover-offset plane. The bar runs p1->p2 (orientation from decomposeDir);
+// distribution fills the transverse in-face axis T = N×D:
+//   - T within 6° of a world axis → single row + faceGrid on that axis
+//     (copies stay exactly on-plane; stair width is the classic case);
+//   - else stepped rows along T over the cover-inset bbox extent
+//     (importer SD1 precedent): one straight-bar row per step position,
+//     each the drawn length L.
+// Returns an array of row specs (no tags/marks); [] when degenerate.
+export function buildSlopedFaceRows({ member, normal, p1, p2, dia = 16, spacing = 150, cover = 40 }) {
+  const box = concreteBox(member);
+  if (!box || !p1 || !p2) return [];
+  const N = norm3(normal);
+  if (!N) return [];
+  const d = Math.max(1, Number(dia) || 16);
+  const sp = Math.max(1, Number(spacing) || 150);
+  const cv = Math.max(0, Number(cover) || 0);
+  const inset = cv + d / 2;
+  const D = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+  const L = vecLen(D);
+  if (!(L >= 50)) return [];
+  // drawn direction must lie on the working plane (snap tolerance ~6°)
+  if (Math.abs(dot3(D, N)) / L > 0.1) return [];
+  const Dn = [D[0] / L, D[1] / L, D[2] / L];
+  const ori = decomposeDir(Dn);
+  if (!ori) return [];
+  let T = cross3(N, Dn);
+  const tl = vecLen(T);
+  if (!(tl > 1e-6)) return [];
+  T = [T[0] / tl, T[1] / tl, T[2] / tl];
+
+  const base = {
+    Rebar_Type: 'straight',
+    Dia: d,
+    bond_condition: '',
+    'Length of Bar': Math.round(L * 10) / 10,
+    Plane: ori.Plane,
+    Pos_Rotation: ori.Pos_Rotation,
+    plan_rotation: ori.plan_rotation,
+    Group: member?.name || 'Face',
+    host: member?.id || null,
+    qty: 1,
+  };
+  const onPlane = (p) => {
+    const k = dot3([p[0] - p1[0], p[1] - p1[1], p[2] - p1[2]], N);
+    return [p[0] - N[0] * k, p[1] - N[1] * k, p[2] - N[2] * k];
+  };
+  const r1 = (v) => Math.round(v * 10) / 10;
+
+  // Transverse ≈ world axis → single row + grid (copies stay on-plane).
+  const axes = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+  let tAxis = null;
+  for (const a of ['x', 'y', 'z']) {
+    if (Math.abs(dot3(T, axes[a])) > 0.9945) { tAxis = a; break; }
+  }
+  if (tAxis) {
+    const grid = faceGrid(box, tAxis, sp, d, cv);
+    const ti = { x: 0, y: 1, z: 2 }[tAxis];
+    const pos = onPlane([p1[0], p1[1], p1[2]]);
+    pos[ti] = grid.center;
+    const fixed = onPlane(pos);
+    const qty = { qty_x: 1, spacing_x: 0, offset_x: 0, qty_y: 1, spacing_y: 0, offset_y: 0, qty_z: 1, spacing_z: 0, offset_z: 0 };
+    qty['qty_' + tAxis] = grid.qty;
+    qty['spacing_' + tAxis] = grid.spacing;
+    qty['offset_' + tAxis] = grid.offset;
+    return [{
+      ...base,
+      Pos_x: r1(fixed[0]), Pos_y: r1(fixed[1]), Pos_z: r1(fixed[2]),
+      ...qty,
+    }];
+  }
+
+  // Stepped rows along T over the cover-inset bbox extent.
+  const corners = [];
+  for (const cx of [box.x0, box.x1]) for (const cy of [box.y0, box.y1]) for (const cz of [box.z0, box.z1]) corners.push([cx, cy, cz]);
+  let tmin = Infinity, tmax = -Infinity;
+  for (const c of corners) {
+    const t = dot3(c, T);
+    if (t < tmin) tmin = t; if (t > tmax) tmax = t;
+  }
+  const lo = tmin + inset, hi = tmax - inset;
+  if (!(hi > lo)) {
+    // degenerate sliver → single row at the drawn line
+    const pos = onPlane([p1[0], p1[1], p1[2]]);
+    return [{
+      ...base,
+      Pos_x: r1(pos[0]), Pos_y: r1(pos[1]), Pos_z: r1(pos[2]),
+      qty_x: 1, spacing_x: 0, offset_x: 0, qty_y: 1, spacing_y: 0, offset_y: 0, qty_z: 1, spacing_z: 0, offset_z: 0,
+    }];
+  }
+  const n = Math.max(1, Math.floor((hi - lo) / sp) + 1);
+  const t0 = dot3(p1, T);
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    const s = onPlane([p1[0] + T[0] * (lo + i * sp - t0), p1[1] + T[1] * (lo + i * sp - t0), p1[2] + T[2] * (lo + i * sp - t0)]);
+    rows.push({
+      ...base,
+      Pos_x: r1(s[0]), Pos_y: r1(s[1]), Pos_z: r1(s[2]),
+      qty_x: 1, spacing_x: 0, offset_x: 0, qty_y: 1, spacing_y: 0, offset_y: 0, qty_z: 1, spacing_z: 0, offset_z: 0,
+    });
+  }
+  return rows;
+}
+
 // Inferred structural kind of a box concrete member for grouping/filtering
 // in pickers and schedules: name prefix wins (Beam B1, Column C3…), else
 // dimension heuristics (mirrors the TraceTool auto-trace rules).

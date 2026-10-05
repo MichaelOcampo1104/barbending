@@ -924,6 +924,49 @@ function QueryHud() {
   );
 }
 
+function FaceSketchHud() {
+  const drawMode = useStore((s) => s.drawMode);
+  const setDrawMode = useStore((s) => s.setDrawMode);
+  const faceSketch = useStore((s) => s.faceSketch);
+  const setFaceSketch = useStore((s) => s.setFaceSketch);
+  const concretes = useStore((s) => s.concretes);
+  const sketchDia = useStore((s) => s.sketchDia);
+  const setSketchDia = useStore((s) => s.setSketchDia);
+  const sketchSpacing = useStore((s) => s.sketchSpacing);
+  const setSketchSpacing = useStore((s) => s.setSketchSpacing);
+  const cover = useStore((s) => s.cover);
+  const faceNote = useStore((s) => s.faceNote);
+  if (drawMode !== 'bar_face') return null;
+  const member = (concretes || []).find((c) => c.id === faceSketch?.memberId);
+  const slopeTag = faceSketch?.tilted ? ` · slope ${faceSketch.slopeDeg ?? '?'}°` : '';
+  const step = !faceSketch
+    ? 'Click a concrete face — the working plane sets at cover depth.'
+    : !faceSketch.p1
+      ? `Face: ${member?.name || faceSketch.memberId} (${faceSketch.sign > 0 ? '+' : '−'}${faceSketch.axis.toUpperCase()} @ ${Math.round(faceSketch.plane)}${slopeTag}) — click the bar start.`
+      : `Bar start set — click the bar end. Stays armed for the next bar.${faceSketch.tilted ? ` Stepped rows fill the slope (${slopeTag.trim()}).` : ''}`;
+  return (
+    <div className="measure-hud">
+      <div className="measure-hud-header">
+        <span>🔩 Face bar — straight, transverse grid auto</span>
+        <span style={{ display: 'flex', gap: 4 }}>
+          {faceSketch && <button className="ghost sm" onClick={() => setFaceSketch(faceSketch.p1 ? { ...faceSketch, p1: null } : null)} title="Back one step (or right-click)">Back</button>}
+          <button className="ghost sm" onClick={() => setDrawMode(null)} title="Exit face sketch (Esc)">✕</button>
+        </span>
+      </div>
+      <div className="distnote">{step}</div>
+      {faceNote && <div className="distnote" style={{ color: '#fbbf24' }}>⚠ {faceNote}</div>}
+      <div className="measure-ctrl-row">
+        <span style={{ width: 55, fontSize: 11, color: '#f87171' }}>Dia:</span>
+        <input type="number" value={sketchDia} min={6} max={50} onChange={(e) => setSketchDia(Number(e.target.value) || 16)} title="Bar diameter (mm)" />
+        <span style={{ width: 55, fontSize: 11, color: '#4ade80' }}>Spacing:</span>
+        <input type="number" value={sketchSpacing} min={25} max={1000} onChange={(e) => setSketchSpacing(Number(e.target.value) || 150)} title="Transverse distribution spacing (mm)" />
+        <span className="hint">cover {cover}</span>
+      </div>
+      <div className="hint">Distribution fills the transverse in-face axis at cover inset · Esc/right-click steps back · bars host to the picked member.</div>
+    </div>
+  );
+}
+
 function ViewportBar() {
   const showConcrete = useStore((s) => s.showConcrete);
   const toggleConcrete = useStore((s) => s.toggleConcrete);
@@ -992,6 +1035,7 @@ function ViewportBar() {
           <button className={drawMode === 'column' ? 'on' : ''} onClick={() => setDrawMode(drawMode === 'column' ? null : 'column')} title="Draw Column: snap two corner/joint nodes">✏️ Column</button>
           <button className={drawMode === 'slab' ? 'on' : ''} onClick={() => setDrawMode(drawMode === 'slab' ? null : 'slab')} title="Draw Slab: snap two corner/joint nodes">✏️ Slab</button>
           <button className={drawMode === 'trace_ifc' ? 'on' : ''} onClick={() => setDrawMode(drawMode === 'trace_ifc' ? null : 'trace_ifc')} title="1-Click Auto-Trace: click any IFC beam/column/slab to convert it">⚡ Auto-Trace</button>
+          <button className={drawMode === 'bar_face' ? 'on' : ''} onClick={() => setDrawMode(drawMode === 'bar_face' ? null : 'bar_face')} title="Draw straight bar on a concrete face: click face, draw bar line, distribution fills transverse at cover">🔩 Face bar</button>
         </span>
         <span className="seg" title="Left-mouse behavior (middle-drag always orbits)">
           <button className={navMode === 'select' ? 'on' : ''} onClick={() => setNavMode('select')} title="LMB selects bars/IFC (orbit with MMB)">Select</button>
@@ -1705,6 +1749,41 @@ export default function App() {
       return () => clearTimeout(t);
     }
   }, []);
+  // Headless hook: ?autotest=facebar stages two sloped exact-mesh members
+  // (stair flight + pitched slab) for the face-sketch sloped-path test.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('autotest') !== 'facebar') return undefined;
+    const t = setTimeout(() => {
+      const st = useStore.getState();
+      // 8-corner panel (possibly sheared in Z) with outward box topology.
+      // Corners: bit2=x1, bit1=y1, bit0=top. Faces CCW-outward in app axes
+      // (the scene swizzle X/Y/Zapp -> X/Zapp/-Yapp preserves orientation).
+      const panelMesh = (xs, ys, zOf) => {
+        const cs = [];
+        for (const x of xs) for (const y of ys) for (const k of [0, 1]) cs.push([x, y, zOf(x, y, k)]);
+        const positions = [];
+        for (const c of cs) positions.push(c[0], c[1], c[2]);
+        const indices = [0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3, 0, 4, 5, 0, 5, 1,
+          2, 3, 7, 2, 7, 6, 0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5];
+        return { positions, indices };
+      };
+      const t30 = Math.tan(30 * Math.PI / 180);
+      st.addConcrete({
+        id: 'c-flight', name: 'Flight F1', x: 1500, y: 0, z: 1000,
+        lx: 1200, ly: 3000, lz: 2033,
+        meshData: panelMesh([1500, 2700], [0, 3000], (x, y, k) => 1000 + y * t30 + k * 300),
+      });
+      const t10 = Math.tan(10 * Math.PI / 180);
+      st.addConcrete({
+        id: 'c-slab', name: 'Slab S1', x: 3200, y: 0, z: 500,
+        lx: 4000, ly: 3000, lz: 729,
+        meshData: panelMesh([3200, 7200], [0, 3000], (x, y, k) => 500 + y * t10 + k * 200),
+      });
+      st.requestFit('all');
+    }, 1500);
+    return () => clearTimeout(t);
+  }, []);
   return (
     <div className="app">
       <header><strong>barbending</strong><span>browser BBS · Three.js · FreeCAD-CSV compatible · {import.meta.env.DEV ? `dev-live (server ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'})` : `build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}`}</span><FileBar /></header>
@@ -1734,7 +1813,7 @@ export default function App() {
         ) : (
           <div className="rail"><button onClick={() => setLeftOpen(true)} title="Expand panel">»</button></div>
         )}
-        <section className="view"><Scene /><ViewportBar /><MeasureHud /><QueryHud /></section>
+        <section className="view"><Scene /><ViewportBar /><MeasureHud /><QueryHud /><FaceSketchHud /></section>
         {ifcActive && (
           <aside className="rside">
             <div className="rsidehead">IFC control</div>
