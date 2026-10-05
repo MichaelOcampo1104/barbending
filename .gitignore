@@ -12,6 +12,13 @@ dist
 dist-ssr
 *.local
 
+# Local Python venv for scripts/dxf_to_bbs.py (never commit)
+.venv/
+
+# CAD lock files (never commit)
+*.dwl
+*.dwl2
+
 # Local reference inputs (large project files, never commit)
 inputs/P103-TCSJV-CP03-ZZ-S-STR-M3-PIM-0001.ifc
 

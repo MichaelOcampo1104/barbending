@@ -49,9 +49,10 @@
 #     anchored by its lowest (BOT) / highest (TOP) vertex at the landing edge,
 #     flight legs running up/down the flight, copied across the stair width at
 #     SP= (H-sp, else 150; explicit nx in STARTER nxH<dia> wins). Plane XZ (run
-#     along X) or YZ (run along Y), rot 0. Z= wins; BOT without Z seats v=0 on
-#     the bottom cover, TOP hangs it from the top cover at the high end
-#     (WARNed). Bond BOT good / TOP poor unless GOOD/POOR overrides.
+#     along X) or YZ (run along Y), rot 0. Z= wins; omitting Z= auto-seats
+#     from the stair (BOT: v=0 on the bottom cover; TOP: v=0 hung from the top
+#     cover at the high end — needs SLOPE=, else bottom-cover fallback WARNed).
+#     Bond BOT good / TOP poor unless GOOD/POOR overrides.
 #     Seating: (0,0) lands on the landing-edge steel (BOT bottom steel, TOP
 #     top steel). Profiles whose flight-leg root sits at landing level
 #     (hairpins) are S-seated — root translated to the edge steel and rotated
@@ -533,7 +534,7 @@ def main():
             sz = round(st['z'] + srun * math.tan(math.radians(sSlope)) + st['lz']
                        - st.get('covT', a.cover) - sdia / 2, 1)
             zsrc = 'auto-topLand'
-            print(f'WARN {smark}: no Z= — hanging v=0 at top landing steel {sz}')
+            print(f'NOTE {smark}: no Z= — hanging v=0 at top landing steel {sz}')
         else:
             sz = round(st['z'] + st.get('covB', a.cover) + sdia / 2, 1)
             zsrc = 'auto-stairBot'
