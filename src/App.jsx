@@ -201,10 +201,17 @@ function BarEditor() {
             <option value="yes">yes (double hook)</option>
           </select>
         </label>
+      ) : f === 'polyline' ? (
+        <label key={f} className="fld"><span>polyline [[run,up]…] local mm (stair-starter profile)</span>
+          <input
+            type="text"
+            value={typeof bar[f] === 'string' ? bar[f] : JSON.stringify(bar[f] ?? '')}
+            onChange={(e) => set(f, e.target.value)}
+          />
+        </label>
       ) : (
         <Field key={f} label={f} value={bar[f]} onChange={(v) => set(f, v)} />
-      ))}
-      <div className="sect">Distribution — like Reinforcement workbench (→ {distCount(bar)} bars)</div>
+      ))}      <div className="sect">Distribution — like Reinforcement workbench (→ {distCount(bar)} bars)</div>
       <div className="distnote">Copies at Pos + (ix·spacing_x, iy·spacing_y, 0) + offset — same as FreeCAD <code>place_c_link_*</code>. Applies to every shape.</div>
       <div className="grid3">
         <Field label="Count X" value={bar.qty_x ?? 1} onChange={(v) => set('qty_x', v)} />

@@ -15,6 +15,9 @@ export const SHAPE_CODES = {
   crank: 41,
   double_crank: 43,
   tie: 51,
+  // Custom drawn profile (stair landing starters): no BS8666 equivalent —
+  // 99 = special/bar-bent-to-sketch, cut length in A.
+  stair_starter: 99,
 };
 
 // Concrete volume in m³. Precedence: exact retraced mesh geometry (auto-traced
@@ -101,6 +104,12 @@ export function getShapeParameters(bar) {
       D = Number(bar.Crank_step || 300);
       E = Number(bar.DC_Tail_Length || 1000);
       break;
+    case 'stair_starter': {
+      // Explicit profile: A carries the net cut length (profile minus bend
+      // deductions); the full vertex list rides the `polyline` column.
+      A = genBarPoints(bar).cutLengthMm;
+      break;
+    }
     default:
       A = Number(bar['Length of Bar'] || bar.length || 3000);
       break;
@@ -118,6 +127,9 @@ export const MASTER_HEADERS = [
   'c_length_a', 'c_length_b', 'length', 'double_hook',
   'qty_x', 'spacing_x', 'qty_y', 'spacing_y', 'qty_z', 'spacing_z',
   'offset_x', 'offset_y', 'offset_z', 'plan_rotation', 'feature',
+  // Explicit section-profile vertices for `stair_starter` ([[run,up]...]
+  // local mm JSON). Extra column, ignored by FreeCAD's DictReader.
+  'polyline',
   'qty', 'Total Length', 'Weight_kg',
   // Browser-only view flag (extra column ignored by FreeCAD's DictReader).
   // Host membership is a live-session concern and is NOT exported.

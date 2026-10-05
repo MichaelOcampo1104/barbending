@@ -42,6 +42,22 @@
 #     tension lap each way (bent leg HB=, else lap minus straight; straight
 #     limited by the lower-slab depth; AT=TOP mirrors into the slab above with
 #     the vertical leg hanging down).
+#     Stair starters pair DRAWN profiles instead: "SSB1 STARTER H13-150 AT=BOT
+#     Z=<level> HOST=<stair>" takes the nearest OPEN polyline on REBAR-H<dia>
+#     (the 1:1 section profile: local X = along-run, local Y = up, drawn in a
+#     detail zone) verbatim as a stair_starter bar (polyline column, shape 99):
+#     anchored by its lowest (BOT) / highest (TOP) vertex at the landing edge,
+#     flight legs running up/down the flight, copied across the stair width at
+#     SP= (H-sp, else 150; explicit nx in STARTER nxH<dia> wins). Plane XZ (run
+#     along X) or YZ (run along Y), rot 0. Z= wins; BOT without Z seats v=0 on
+#     the bottom cover, TOP hangs it from the top cover at the high end
+#     (WARNed). Bond BOT good / TOP poor unless GOOD/POOR overrides.
+#     Seating: (0,0) lands on the landing-edge steel (BOT bottom steel, TOP
+#     top steel). Profiles whose flight-leg root sits at landing level
+#     (hairpins) are S-seated — root translated to the edge steel and rotated
+#     so the flight leg matches SLOPE= (lengths verbatim, ~1-2 deg kink
+#     correction, else the leg would dive through the flight soffit);
+#     section-spanners (flight root ~waist depth up) are A-seated verbatim.
 #   walls: closed rect on CONC-* + "W1 WALL W1 THK=<height> Z=<base> ...".
 #     Mains are verticals: "WV1 VERT 34xH12 HOST=<wall>" rings the rect like a
 #     column (perimeter positions, full internal height, good bond).
@@ -107,8 +123,9 @@ MASTER = ['Rebar_tag','Bar_mark','Rebar_Type','Shape_Code','Dia',
 'DC_Lap_Start','DC_Lap_Mid','DC_Tail_Length',
 'c_length_a','c_length_b','length','double_hook',
 'qty_x','spacing_x','qty_y','spacing_y','qty_z','spacing_z',
-'offset_x','offset_y','offset_z','plan_rotation','feature',
-'qty','Total Length','Weight_kg','Visible']
+ 'offset_x','offset_y','offset_z','plan_rotation','feature',
+ 'polyline',
+ 'qty','Total Length','Weight_kg','Visible']
 
 LAP = {'good': {13:580,16:760,20:990,25:1290,32:1650,40:2240,50:3170},
        'poor': {13:830,16:1080,20:1420,25:1840,32:2350,40:3200,50:4520}}
@@ -337,6 +354,8 @@ def main():
         col = host_for(ttxt, tpos, smark)
         if col is None:
             continue
+        if str(col.get('kind') or '').upper() == 'STAIR':
+            continue  # stair starters pair drawn profiles below, not column dowels
         mat = STAT.search(ttxt); atop = bool(mat and mat.group(1).upper() == 'TOP')
         sfl = col['z'] + col['lz'] if atop else col['z']
         lap = lap_len(sdia, 'good')
@@ -397,6 +416,142 @@ def main():
         shape = 'mirror' if (atop and upper is not None) else 'dowel-up'
         print(f'{smark}: {sn} starter H{sdia} at {"TOP" if atop else "BOT"} SFL={round(sfl,1)} [{shape}] '
               f'(vert {lap} + straight {round(sbelow,1)} + bent {round(hleg,1)})')
+
+    # ---- stair starters: drawn section profiles used verbatim ----
+    # "SSB<n> STARTER H<dia>-<sp> AT=BOT|TOP Z=<level> HOST=<stair>" tags pair
+    # the nearest OPEN polyline on REBAR-H<dia> (1:1 section profile, X =
+    # along-run, Y = up, drawn in a detail zone). Anchored by the lowest
+    # (BOT) / highest (TOP) vertex at the landing edge, flight legs running
+    # up/down the flight, copied across the stair width. Emits stair_starter
+    # rows (polyline column) with Plane XZ (run along X) / YZ (run along Y).
+    stair_used = set()
+    for ttxt, tpos in texts:
+        sm = STARTERCOUNT.search(ttxt)
+        if not sm:
+            continue
+        tm = TAG.search(ttxt); smark = tm.group(1) if tm and tm.group(1) else None
+        if not smark or smark.upper() in ('VERT', 'TIE', 'LINK', 'STARTER', 'RISER', 'BENT', 'HOOK'):
+            continue  # column loop already warned these
+        st = host_for(ttxt, tpos, smark)
+        if st is None:
+            continue
+        if str(st.get('kind') or '').upper() != 'STAIR':
+            continue  # column dowels handled above
+        sdia = int(sm.group(2))
+        ssp = int(sm.group(3)) if sm.group(3) else 0
+        if not ssp:
+            ms0 = LEGSP2.search(ttxt)
+            ssp = int(float(ms0.group(1))) if ms0 and ms0.group(1) else 0
+        ssp = ssp or 150
+        sn = int(sm.group(1)) if sm.group(1) else 0
+        smat = STAT.search(ttxt); satop = bool(smat and smat.group(1).upper() == 'TOP')
+        cand, bd = None, None
+        for b in bars:
+            if id(b) in stair_used or b.is_closed or getattr(b, '_vert_idx', None) is not None:
+                continue
+            if not b.dxf.layer.startswith('REBAR-H'):
+                continue
+            lay = re.search(r'H(\d+)', b.dxf.layer, re.I)
+            if not lay or int(lay.group(1)) != sdia:
+                continue
+            q = [(p[0], p[1]) for p in b.vertices()]
+            if not q:
+                continue
+            dd = min(math.hypot(tpos[0] - px, tpos[1] - py) for px, py in q)
+            if bd is None or dd < bd:
+                cand, bd = b, dd
+        if cand is None:
+            print(f'WARN {smark}: no open H{sdia} profile near the tag — starter skipped')
+            continue
+        stair_used.add(id(cand))
+        prof = [(float(p[0]), float(p[1])) for p in cand.vertices()]
+        if satop:
+            ai = max(range(len(prof)), key=lambda i: (prof[i][1], -prof[i][0]))
+        else:
+            ai = min(range(len(prof)), key=lambda i: (prof[i][1], prof[i][0]))
+        au, av = prof[ai]
+        if satop:
+            rel = [(-(u - au), v - av) for u, v in prof]
+        else:
+            rel = [(u - au, v - av) for u, v in prof]
+        sL = 0.0
+        for i in range(1, len(rel)):
+            sL += math.hypot(rel[i][0] - rel[i - 1][0], rel[i][1] - rel[i - 1][1])
+        sL = round(sL, 1)
+        sSlope = st.get('slope', 0) or 0.0
+        # Seating: the flight lap must bear on the flight steel, but
+        # schematics draw the landing/hook zone loose (hook legs flat while
+        # true steel climbs ~run.tan(slope)). Longest segment = flight leg;
+        # S = its hook-side end (endpoint nearer the anchor A=(0,0)).
+        #   S-seat (|sv| <= 150: hairpins whose flight legs start at landing
+        #     level): root S at the landing-edge steel and rotate the profile
+        #     about S so the flight leg matches the stair slope (lengths and
+        #     hook angles verbatim, ~1-2 deg kink correction).
+        #   A-seat (section-spanners whose flight root already rides ~waist
+        #     depth above the landing legs): anchor A at the landing-edge
+        #     steel, verbatim, no rotation.
+        li = max(range(1, len(rel)),
+                 key=lambda i: math.hypot(rel[i][0] - rel[i - 1][0], rel[i][1] - rel[i - 1][1]))
+        dA0 = math.hypot(rel[li][0], rel[li][1])
+        dA1 = math.hypot(rel[li - 1][0], rel[li - 1][1])
+        si = li - 1 if dA1 <= dA0 else li
+        sx, sy = rel[si]
+        drot = 0.0
+        seat = 'A-seat'
+        if abs(sy) <= 150:
+            leg_ang = math.degrees(math.atan2(rel[li][1] - rel[li - 1][1],
+                                              rel[li][0] - rel[li - 1][0]))
+            steel_ang = (180.0 + sSlope) if satop else sSlope
+            drot = (steel_ang - leg_ang + 90.0) % 180.0 - 90.0
+            th = math.radians(drot)
+            c, s_ = math.cos(th), math.sin(th)
+            rel = [((u - sx) * c - (v - sy) * s_, (u - sx) * s_ + (v - sy) * c)
+                   for u, v in rel]
+            seat = 'S-seat'
+        if st['ly'] >= st['lx']:
+            srun, swidth = st['ly'], st['lx']
+            srunMin, swidthMin, salongX = st['y'], st['x'], False
+        else:
+            srun, swidth = st['lx'], st['ly']
+            srunMin, swidthMin, salongX = st['x'], st['y'], True
+        nqy = sn or max(1, int(round(swidth / ssp)) + 1)
+        acrossPos = round(swidthMin + swidth / 2, 2)
+        acrossOff = round(-(nqy - 1) * ssp / 2, 1)
+        runPos = round((srunMin + srun) if satop else srunMin, 2)
+        if salongX:
+            qx0, qy0 = runPos, acrossPos
+            gox, goy = 0.0, acrossOff
+            gqx, gqy, gsx, gsy = 1, nqy, 0, ssp
+        else:
+            qx0, qy0 = acrossPos, runPos
+            gox, goy = acrossOff, 0.0
+            gqx, gqy, gsx, gsy = nqy, 1, ssp, 0
+        smz = LEGZ.search(ttxt)
+        if smz:
+            sz, zsrc = float(smz.group(1)), 'tag'
+        elif satop and sSlope > 0:
+            sz = round(st['z'] + srun * math.tan(math.radians(sSlope)) + st['lz']
+                       - st.get('covT', a.cover) - sdia / 2, 1)
+            zsrc = 'auto-topLand'
+            print(f'WARN {smark}: no Z= — hanging v=0 at top landing steel {sz}')
+        else:
+            sz = round(st['z'] + st.get('covB', a.cover) + sdia / 2, 1)
+            zsrc = 'auto-stairBot'
+            if satop:
+                print(f'WARN {smark}: no Z= and no SLOPE= — seating at bottom cover {sz}')
+            else:
+                print(f'NOTE {smark}: no Z= — seating v=0 at bottom landing steel {sz}')
+        sbond = 'poor' if satop else 'good'
+        sov = {'stair': True, 'rtype': 'stair_starter', 'nosuffix': True,
+               'plane': 'XZ' if salongX else 'YZ', 'rot': 0.0,
+               'L': sL, 'z': sz, 'zsrc': zsrc,
+               'poly': [[round(u, 1), round(v, 1)] for u, v in rel],
+               'qty_x': gqx, 'spacing_x': gsx, 'qty_y': gqy, 'spacing_y': gsy,
+               'offset_x': gox, 'offset_y': goy, 'stairbond': sbond}
+        bars.append(_VBar(f'REBAR-VERT-H{sdia}', qx0, qy0, 0, smark, dict(sov)))
+        print(f'{smark}: stair starter H{sdia} at {"TOP" if satop else "BOT"} of {st["name"]} '
+              f'(profile {len(rel)}pt L={sL} x{nqy} @ {ssp}, z={sz} {zsrc}, {sbond}, '
+              f'{seat} drot={drot:.1f})')
 
     # ---- stair risers: one bent L-bar (facing down) per step from
     # "SR<n> RISER n x H<dia> [SP=<sp>] HOST=<stair>" tags. Steps divide the
@@ -565,6 +720,8 @@ def main():
     rows = []; tag = 0
     odir = []  # (mark, rtype, ang, len, slabId) for the parity-orientation check
     for b in bars:
+        if id(b) in stair_used:
+            continue  # drawn stair-starter profile: consumed by its SSB/SST tag
         pts = list(b.vertices()); (x1,y1),(x2,y2) = pts[0][:2], pts[1][:2]
         L = math.hypot(x2-x1, y2-y1)
         ang = round(math.degrees(math.atan2(y2-y1, x2-x1)), 1)
@@ -880,8 +1037,8 @@ def main():
             else:
                 z, zsrc = 0.0, 'none-WARN-no-Z'
         if ov and 'z' in ov:
-            z, zsrc = ov['z'], ('starter' if ov.get('starter')
-                                else ('sdist' if ov.get('sdist') else 'riser'))
+            z, zsrc = ov['z'], (ov.get('zsrc') or ('starter' if ov.get('starter')
+                                else ('sdist' if ov.get('sdist') else 'riser')))
         # vertical-spine links (XZ plane, ROT 90) with an explicit Z that
         # pokes out of the host slab are almost certainly a stale tag value
         if (rtype in ('c_link', 'c_link_with_hook') and zman is not None
@@ -901,6 +1058,8 @@ def main():
             bond_bar = 'good'
         elif ov and ov.get('starter'):
             bond_bar = 'good'
+        elif ov and ov.get('stairbond'):
+            bond_bar = ov['stairbond']  # stair starters: BOT good / TOP poor
         elif side == 'B':
             bond_bar = 'good'
         elif side == 'T':
@@ -1046,7 +1205,10 @@ def main():
 
         vmark = getattr(b, '_vert_idx', None)
         msfx = (ov.get('msuffix', '') if ov else '')
-        bmark = (f'{mark}-{vmark+1}' if vmark is not None else mark) + msfx
+        if ov and ov.get('nosuffix'):
+            bmark = mark + msfx  # single-row generated bars keep the plain mark
+        else:
+            bmark = (f'{mark}-{vmark+1}' if vmark is not None else mark) + msfx
         def zstack_count(sz, legTop=0.0):
             # stacked levels capped so the top copy (plus leg height) stays
             # under the top cover; explicit NZ= always wins
@@ -1080,6 +1242,9 @@ def main():
                            'qty_z', 'spacing_z', 'offset_x', 'offset_y', 'offset_z'):
                     if gk in ov:
                         row[gk] = ov[gk]
+            if ov and 'poly' in ov:
+                # stair starters: explicit section profile ([[run,up]...] mm)
+                row['polyline'] = json.dumps(ov['poly'])
             if rtype in ('c_link', 'c_link_with_hook'):
                 row['length'] = round(seglen,1); row['c_length_a'] = link_a; row['c_length_b'] = link_b
                 row.pop('Length of Bar', None)

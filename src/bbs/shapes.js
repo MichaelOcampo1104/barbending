@@ -12,6 +12,7 @@ export const REBAR_TYPES = [
   'c_link',
   'c_link_with_hook',
   'tie',
+  'stair_starter',
 ];
 
 export const BENT_DEFAULTS = {
@@ -129,6 +130,16 @@ export function genBarPoints(bar) {
       const pts = [[0, 0, 0], [L, 0, 0], [L, W, 0], [0, W, 0], [0, 0, 0]];
       return finish(pts, 4, d);
     }
+    case 'stair_starter': {
+      // Stair landing starter: explicit section profile (local X = along the
+      // run, local Y = up) stored in bar.polyline ([[run,up]...] local mm,
+      // JSON string or array). Drawn 1:1 in the DXF detail zone and imported
+      // verbatim by scripts/dxf_to_bbs.py; spaced across the stair width via
+      // the normal distribution grid. Plane XZ (run along X) or YZ (run
+      // along Y) stands local Y up to App Z.
+      const pts = parseStairProfile(bar) || [[0, 0, 0], [1000, 0, 0]];
+      return finish(pts, countProfileTurns(pts), d);
+    }
     case 'straight':
     default: {
       const L = Number(bar['Length of Bar'] || bar.length || 3000);
@@ -142,6 +153,46 @@ function finish(pts, bends90, dia) {
   const gross = polylineLength(pts);
   const cut = Math.max(0, gross - bendDeduction(bends90, dia));
   return { points: pts, bends90, lengthMm: gross, cutLengthMm: Math.round(cut) };
+}
+
+// Explicit stair-starter profile: bar.polyline is [[run,up]...] (or
+// [[run,up,z]...]) local mm, stored as a JSON string (CSV/project) or a live
+// array. Returns 3D local points or null when missing/malformed.
+function parseStairProfile(bar) {
+  let p = bar?.polyline;
+  if (typeof p === 'string') {
+    const t = p.trim();
+    if (!t) return null;
+    try {
+      p = JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(p) || p.length < 2) return null;
+  const pts = [];
+  for (const q of p) {
+    if (!Array.isArray(q) || q.length < 2) return null;
+    const x = Number(q[0]), y = Number(q[1]), z = q.length > 2 ? Number(q[2]) : 0;
+    if (![x, y, z].every(Number.isFinite)) return null;
+    pts.push([x, y, z]);
+  }
+  return pts.length >= 2 ? pts : null;
+}
+
+// Bend count for a stair-starter profile: interior joints turning more than
+// ~20° each count one 90° bend (CAD chamfers draw a 90° bend as 2×45°).
+function countProfileTurns(pts) {
+  let n = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const ax = pts[i][0] - pts[i - 1][0], ay = pts[i][1] - pts[i - 1][1], az = pts[i][2] - pts[i - 1][2];
+    const bx = pts[i + 1][0] - pts[i][0], by = pts[i + 1][1] - pts[i][1], bz = pts[i + 1][2] - pts[i][2];
+    const la = Math.hypot(ax, ay, az), lb = Math.hypot(bx, by, bz);
+    if (!(la > 0) || !(lb > 0)) continue;
+    const cos = Math.min(1, Math.max(-1, (ax * bx + ay * by + az * bz) / (la * lb)));
+    if ((Math.acos(cos) * 180) / Math.PI > 20) n++;
+  }
+  return n;
 }
 
 // Default parameter sets per type (matches FreeCAD CSV columns loosely)
@@ -166,6 +217,11 @@ export function defaultBar(type, tag = 1) {
     case 'c_link': return { ...base, length: 1000, c_length_a: 130, c_length_b: 130, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150 };
     case 'c_link_with_hook': return { ...base, length: 1000, c_length_a: 130, c_length_b: 130, double_hook: 'no', qty_x: 1, spacing_x: 150, qty_y: 5, spacing_y: 200 };
     case 'tie': return { ...base, length: 400, c_length_a: 400, Plane: 'XY', qty_z: 5, spacing_z: 150 };
+    case 'stair_starter': return {
+      ...base, Dia: 13,
+      polyline: JSON.stringify([[0, 0], [600, 0], [600, 200], [1200, 550]]),
+      Plane: 'XZ', qty_x: 1, spacing_x: 0, qty_y: 5, spacing_y: 150,
+    };
     default: return { ...base, 'Length of Bar': 3000, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150 };
   }
 }
@@ -397,6 +453,7 @@ export const DIM_FIELDS_BY_TYPE = {
   c_link: ['length', 'c_length_a', 'c_length_b'],
   c_link_with_hook: ['length', 'c_length_a', 'c_length_b', 'double_hook'],
   tie: ['length', 'c_length_a'],
+  stair_starter: ['polyline'],
 };
 
 const ALL_DIM_FIELDS = [...new Set(Object.values(DIM_FIELDS_BY_TYPE).flat())];
@@ -592,6 +649,10 @@ export function resolveBarHost(bar, concretes = []) {
 
 // Main straight run length (mm) of a longitudinal bar (straight, bent, crank, double_crank)
 export function barMainLength(bar) {
+  if (bar?.Rebar_Type === 'stair_starter') {
+    const p = parseStairProfile(bar);
+    return p ? Math.round(polylineLength(p)) : 3000;
+  }
   switch (bar?.Rebar_Type) {
     case 'bent':
     case 'straight':

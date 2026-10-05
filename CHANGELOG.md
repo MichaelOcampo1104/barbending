@@ -2,6 +2,12 @@
 
 ## Unreleased (working tree → next push)
 
+- **Stairs phase 3: landing starter bars from drawn profiles (H13)**:
+  - DXF: `SSB1 STARTER H13-150 AT=BOT Z=<level> HOST=<stair>` (bottom pair `SSB1/SSB2`, top pair `SST1/SST2`) pairs the nearest OPEN polyline on `REBAR-H<dia>` — the 1:1 section profile (X = along-run, Y = up) drawn in a detail zone — verbatim into a new `stair_starter` shape (BS8666-style code 99, `polyline` CSV column, cut length in A; lengths/weights/counts exact). Anchored at the landing edge, copied across the width (9 @ 150 on the sample), Plane XZ/YZ by run direction, bond BOT good / TOP poor (`GOOD`/`POOR`/`Z=` win).
+  - Seating: (0,0) lands on the landing-edge steel. Hairpins (flight-leg root at landing level) are S-seated — root translated to the edge steel and rotated so the flight leg matches `SLOPE=` (~1.4°, lengths verbatim, else the leg dives through the soffit); section-spanners are A-seated verbatim. Known schematic slack: spanner stubs/legs outside the 300 waist belong to the unmodelled landing zone; per-type `Z=` overrides exist.
+  - App: `stair_starter` renders/measures/snaps like other bars (explicit `[[run,up]…]` profile, bend deduction per >20° turn), BBS + FreeCAD CSV round-trip the `polyline` column, type-switch drops/adds it cleanly. `inputs/stair_sample.dxf` now carries all four profiles + tags (78 rows).
+  - Verified: hairpin flight legs track their mats within 60 mm, slab/column/wall files convert byte-identical on shared columns, lint clean, build passes.
+
 - **Stairs phase 1: riser L-bars (mains need pitch support (done below) — next)**:
   - Member: closed rect on `CONC-*` + `ST1 STAIR ST1 THK=<waist> Z=<soffit-low> SLOPE=<deg> ...` (rect = plan footprint, run along the longer side, low end at bbox min; flat box at base for hosting only). `STAIR` concrete kind + GUI `Stairs` join group.
   - Risers: `SR1 RISER 12xH12 [SP=<sp>] HOST=<stair>` makes per step one section L (main=going along run + riser down, copies across the width at SP=) plus one transverse straight bar across the full width at the nosing line (SR1-i-S) whose line the L corner sits on (rot 180, flat leg back uphill) — steps divide the run evenly up the slope (main = going, H = riser), copies across the width at `SP=` (H-sp, else 150); no centerlines drawn. Bond poor-safe (`GOOD`/`POOR` overrides).
