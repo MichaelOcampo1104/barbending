@@ -326,7 +326,7 @@ function PickHandler() {
             Pos_y: Math.round(snap.p[1] * 10) / 10,
             Pos_z: Math.round(snap.p[2] * 10) / 10,
           };
-          st.updateBar(st.selectedBar, pos);
+          st.placeSelectionAt(pos);
           st.setLastPick({ ...pos, snapped: `rebar-${snap.kind}`, at: Date.now() });
           console.info('[pick] placed ' + JSON.stringify(pos) + ` (snapped rebar-${snap.kind})`);
           return;
@@ -351,7 +351,7 @@ function PickHandler() {
           // app frame (mm): x right, y plan, z up; scene is metres, Y-up
           pos = { Pos_x: Math.round(wp.x * 1000), Pos_y: Math.round(-wp.z * 1000), Pos_z: Math.round(wp.y * 1000) };
         }
-        st.updateBar(st.selectedBar, pos);
+        st.placeSelectionAt(pos);
         st.setLastPick({ ...pos, at: Date.now() });
         console.info('[pick] placed ' + JSON.stringify(pos));
       } else {

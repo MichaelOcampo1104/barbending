@@ -1,7 +1,7 @@
 {
   "v": 1,
   "app": "barbending",
-  "savedAt": 1791129730002,
+  "savedAt": 1791193949639,
   "bars": [
     {
       "Rebar_tag": 1,
@@ -182,12 +182,12 @@
     },
     {
       "Rebar_tag": 8,
-      "Bar_mark": "202",
+      "Bar_mark": "201",
       "Rebar_Type": "straight",
       "Dia": 40,
       "Pos_x": 15.1,
       "Pos_y": -1104.1,
-      "Pos_z": 2676.0,
+      "Pos_z": 2741.0,
       "Group": "GL23-Roof",
       "Pos_Rotation": 0.0,
       "Plane": "XY",
@@ -202,7 +202,7 @@
       "offset_y": -1200.0,
       "qty": 1,
       "Visible": 1,
-      "feature": "EXT tick=2422.0 TXT=0.0 n=1x17 zsrc=auto-topL1-on201",
+      "feature": "EXT tick=2422.0 TXT=0.0 n=1x17 zsrc=auto-topL1",
       "host": "c1"
     },
     {

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { defaultBar, defaultBarForHost, resolveBarHost, genBarPoints, barMainLength, barSpliceEnds, distToBar, barOverlapsBoxes } from './bbs/shapes.js';
+import { defaultBar, defaultBarForHost, resolveBarHost, genBarPoints, barMainLength, barSpliceEnds, distToBar, barOverlapsBoxes, buildFaceBar, buildSlopedFaceRows, applyTypeDefaults } from './bbs/shapes.js';
 import { lapLengthMm, lapBondFor } from './bbs/calc.js';
 import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
 
@@ -52,6 +52,58 @@ const fitOf = (m) => (m ? {
   radius: m.bbox.radius * m.unitToMeters,
   n: Date.now(),
 } : null);
+
+// Pure: reposition set members along new app-mm positions. Survivors keep
+// everything but Pos (tag/mark/type/dims stay); extras clone the set
+// template with fresh tags; surplus rows retire. Returns { out, sel, nextTag }.
+const repositionSetRows = (bars, idx, positions) => {
+  let nextTag = bars.reduce((m, b) => Math.max(m, Number(b.Rebar_tag) || 0), 0);
+  const template = bars[idx[0]];
+  const keep = new Set(idx);
+  const rebuilt = positions.map((p, i) => {
+    if (i < idx.length) {
+      const old = bars[idx[i]];
+      return { ...old, Pos_x: p[0], Pos_y: p[1], Pos_z: p[2] };
+    }
+    nextTag += 1;
+    const { Rebar_tag, Bar_mark, ...rest } = template;
+    return { ...rest, Pos_x: p[0], Pos_y: p[1], Pos_z: p[2], Rebar_tag: nextTag, Bar_mark: `B${nextTag}` };
+  });
+  const out = [];
+  bars.forEach((b, i) => {
+    if (keep.has(i)) {
+      const k = idx.indexOf(i);
+      if (k < rebuilt.length) out.push(rebuilt[k]);
+      // surplus rows retire (dropped)
+    } else out.push(b);
+  });
+  // extras append in bar order after the set block
+  for (let i = idx.length; i < rebuilt.length; i++) out.push(rebuilt[i]);
+  const keptIdx = idx.slice(0, Math.min(idx.length, rebuilt.length));
+  const extraBase = out.length - (rebuilt.length - idx.length);
+  const extraIdx = rebuilt.slice(idx.length).map((_, k) => extraBase + k);
+  return { out, sel: [...keptIdx, ...extraIdx], nextTag };
+};
+
+// Scale one bar's length dims to a target total (mm): single-key types set
+// the key, double_crank scales its three parts proportionally.
+const SET_LENGTH_KEYS = {
+  straight: ['Length of Bar'], bent: ['Length of Bar'], crank: ['Long_length'],
+  double_crank: ['DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length'],
+  c_link: ['length'], c_link_with_hook: ['length'], tie: ['length'],
+};
+const scaleBarLength = (bar, target) => {
+  if (!(target > 0)) return null;
+  const keys = SET_LENGTH_KEYS[bar?.Rebar_Type] || ['Length of Bar'];
+  if (keys.length > 1) {
+    const cur = keys.reduce((s, k) => s + (Number(bar[k]) || 0), 0);
+    if (!(cur > 0)) return null;
+    const next = { ...bar };
+    for (const k of keys) next[k] = Math.round(((Number(bar[k]) || 0) * target) / cur * 10) / 10;
+    return next;
+  }
+  return { ...bar, [keys[0]]: Math.round(target * 10) / 10 };
+};
 
 export const useStore = create((set, get) => ({
   concretes: [
@@ -334,6 +386,23 @@ export const useStore = create((set, get) => ({
       } : b)),
     });
   }),
+  // Pick-to-place relocation: the active bar lands exactly on pos, every
+  // other selected bar rides along by the same delta (formation move, e.g.
+  // whole bar sets relocate together). Single selection = plain update.
+  placeSelectionAt: (pos) => {
+    const s = get();
+    const active = s.bars[s.selectedBar];
+    if (!active || !pos) return;
+    const dx = (Number(pos.Pos_x) || 0) - (Number(active.Pos_x) || 0);
+    const dy = (Number(pos.Pos_y) || 0) - (Number(active.Pos_y) || 0);
+    const dz = (Number(pos.Pos_z) || 0) - (Number(active.Pos_z) || 0);
+    const idx = (s.selectedBars || []).filter((i) => i >= 0 && i < s.bars.length);
+    if (idx.length > 1 && idx.includes(s.selectedBar)) {
+      get().moveBars(idx, dx, dy, dz);
+    } else {
+      s.updateBar(s.selectedBar, pos);
+    }
+  },
   toggleConcrete: () => set((s) => ({ showConcrete: !s.showConcrete })),
 
   // Undo/redo over the model (bars, concretes, refLines, selection, cover).
@@ -781,13 +850,24 @@ export const useStore = create((set, get) => ({
   setFaceNote: (v) => set({ faceNote: v || null }),
   // Commit face-sketched straight bars (specs from buildFaceBar /
   // buildSlopedFaceRows): tags them sequentially, hosts them, selects them.
-  // One undo step; caller stays armed for the next bar.
+  // One undo step; caller stays armed for the next bar. With meta.spec
+  // (JSON sketch inputs) and >1 row, rows share a minted setId so spacing
+  // re-spreads and Dia/type edit all members later.
   addFaceBar: (spec) => get().addFaceBars(spec ? [spec] : []),
-  addFaceBars: (specs) => {
+  addFaceBars: (specs, meta) => {
     const list = (Array.isArray(specs) ? specs : [specs]).filter(Boolean);
     if (!list.length) return [];
     const s0 = get();
     tagSeq = Math.max(tagSeq + 1, s0.bars.length + 1);
+    let setId = null;
+    if (meta?.spec && list.length > 1) {
+      let mx = 0;
+      for (const b of s0.bars || []) {
+        const m = /^S(\d+)$/.exec(String(b.setId || ''));
+        if (m) mx = Math.max(mx, Number(m[1]));
+      }
+      setId = `S${mx + 1}`;
+    }
     const bars = list.map((spec) => {
       const bar = {
         ...spec,
@@ -796,6 +876,7 @@ export const useStore = create((set, get) => ({
         qty: 1,
         Visible: 1,
       };
+      if (setId) { bar.setId = setId; bar.setSpec = meta.spec; }
       tagSeq += 1;
       return bar;
     });
@@ -807,5 +888,215 @@ export const useStore = create((set, get) => ({
       selectedConcrete: bars[0].host || state.selectedConcrete,
     }));
     return bars.map((_, i) => first + i);
+  },
+  // All live indices carrying a setId, in bar order.
+  setIndices: (setId) => {
+    if (!setId) return [];
+    const out = [];
+    (get().bars || []).forEach((b, i) => { if (b.setId === setId) out.push(i); });
+    return out;
+  },
+  // Parse a row's sketch spec (stored JSON string) or null.
+  setSpecOf: (bar) => {
+    const s = bar?.setSpec;
+    if (!s) return null;
+    if (typeof s === 'object') return s;
+    try {
+      const o = JSON.parse(String(s));
+      return o && typeof o === 'object' ? o : null;
+    } catch { return null; }
+  },
+  // Dia across the whole set (lengths/weights derive; no rebuild).
+  updateSetDia: (setId, dia) => {
+    const d = Number(dia);
+    if (!setId || !(d > 0)) return;
+    const idx = get().setIndices(setId);
+    if (!idx.length) return;
+    const inSet = new Set(idx);
+    set((state) => withHist(state, {
+      bars: state.bars.map((b, i) => (inSet.has(i) ? { ...b, Dia: d } : b)),
+    }));
+  },
+  // Dimension fields across the whole set (legs, hooks, H, crank steps… —
+  // same fields the single-bar editor shows for the set's type). One undo.
+  updateSetDims: (setId, patch) => {
+    if (!setId || !patch || typeof patch !== 'object') return;
+    const keys = Object.keys(patch);
+    if (!keys.length) return;
+    const idx = get().setIndices(setId);
+    if (!idx.length) return;
+    const inSet = new Set(idx);
+    set((state) => withHist(state, {
+      bars: state.bars.map((b, i) => (inSet.has(i) ? { ...b, ...patch } : b)),
+    }));
+  },
+  // Orientation across the whole set (links need this — bent bars also
+  // have up/down): absolute Plane / in-plane rotation / plan rotation.
+  // One undo step; invalid values ignored.
+  updateSetOrientation: (setId, patch) => {
+    if (!setId || !patch || typeof patch !== 'object') return;
+    const clean = {};
+    if (patch.Plane !== undefined) {
+      const p = String(patch.Plane || '').toUpperCase();
+      if (!['XY', 'XZ', 'YZ'].includes(p)) return;
+      clean.Plane = p;
+    }
+    for (const k of ['Pos_Rotation', 'plan_rotation']) {
+      if (patch[k] !== undefined && patch[k] !== '' && Number.isFinite(Number(patch[k]))) {
+        clean[k] = Number(patch[k]);
+      }
+    }
+    if (!Object.keys(clean).length) return;
+    const idx = get().setIndices(setId);
+    if (!idx.length) return;
+    const inSet = new Set(idx);
+    set((state) => withHist(state, {
+      bars: state.bars.map((b, i) => (inSet.has(i) ? { ...b, ...clean } : b)),
+    }));
+  },
+  // Rotate every member in place by deg (added to its own Pos_Rotation,
+  // so mixed orientations keep their differences). One undo step.
+  rotateSet: (setId, deg) => {
+    const d = Number(deg);
+    if (!setId || !Number.isFinite(d) || d === 0) return;
+    const idx = get().setIndices(setId);
+    if (!idx.length) return;
+    const inSet = new Set(idx);
+    const r1 = (v) => Math.round(v * 10) / 10;
+    set((state) => withHist(state, {
+      bars: state.bars.map((b, i) => (inSet.has(i)
+        ? { ...b, Pos_Rotation: r1((Number(b.Pos_Rotation) || 0) + d) }
+        : b)),
+    }));
+  },
+  // Re-spread a set at a new spacing: rebuild from the sketch spec, keep
+  // each surviving row's tag/mark/type/dims (only positions move); extra
+  // rows mint fresh tags, surplus rows retire. One undo step.
+  respreadSet: (setId, spacing) => {
+    const sp = Number(spacing);
+    if (!setId || !(sp > 0)) return { ok: false, msg: 'Spacing must be > 0.' };
+    const s = get();
+    const idx = s.setIndices(setId);
+    if (!idx.length) return { ok: false, msg: 'Set is empty.' };
+    const first = s.bars[idx[0]];
+    const spec = s.setSpecOf(first);
+    if (!spec) return { ok: false, msg: 'No sketch spec on this set.' };
+    const member = (s.concretes || []).find((c) => c.id === first.host);
+    if (!member) return { ok: false, msg: 'Set host member is gone.' };
+    const dia = Number(first.Dia) || 16;
+    const dims = {
+      member, p1: spec.p1, p2: spec.p2, dia,
+      spacing: sp, cover: spec.cover ?? s.cover,
+    };
+    const fresh = spec.tilted
+      ? buildSlopedFaceRows({ ...dims, normal: spec.normal })
+      : [buildFaceBar({ ...dims, axis: spec.axis, planeCoord: spec.planeCoord })].filter(Boolean);
+    if (!fresh.length) return { ok: false, msg: 'Rebuild came back empty.' };
+    const built = repositionSetRows(s.bars, idx, fresh.map((r) => [r.Pos_x, r.Pos_y, r.Pos_z]));
+    tagSeq = Math.max(tagSeq, built.nextTag);
+    set((state) => withHist(state, {
+      bars: built.out,
+      selectedBar: built.sel.length ? built.sel[built.sel.length - 1] : state.selectedBar,
+      selectedBars: built.sel.length ? built.sel : state.selectedBars,
+    }));
+    return { ok: true, count: built.sel.length };
+  },
+  // Re-spread a set to an exact bar count, with optional spacing:
+  //   count + spacing → N bars at S anchored at the first bar (explicit
+  //     extent = (N-1)*S along the current first-to-last direction);
+  //   count only → even split over the current first-to-last extent.
+  // Tags/marks kept, extras minted. One undo step.
+  respreadSetCount: (setId, count, spacing) => {
+    const n = Math.floor(Number(count));
+    if (!setId || !(n >= 1)) return { ok: false, msg: 'Count must be ≥ 1.' };
+    if (n > 5000) return { ok: false, msg: 'Count capped at 5000.' };
+    const s = get();
+    const idx = s.setIndices(setId);
+    if (!idx.length) return { ok: false, msg: 'Set is empty.' };
+    const sp = spacing === undefined ? NaN : Number(spacing);
+    const a = s.bars[idx[0]], b = s.bars[idx[idx.length - 1]];
+    const P0 = [Number(a.Pos_x) || 0, Number(a.Pos_y) || 0, Number(a.Pos_z) || 0];
+    const P1 = [Number(b.Pos_x) || 0, Number(b.Pos_y) || 0, Number(b.Pos_z) || 0];
+    const positions = [];
+    if (sp > 0) {
+      // anchored: step along the current set direction from the first bar
+      const vx = P1[0] - P0[0], vy = P1[1] - P0[1], vz = P1[2] - P0[2];
+      const L = Math.hypot(vx, vy, vz);
+      const ux = L > 0 ? vx / L : 1, uy = L > 0 ? vy / L : 0, uz = L > 0 ? vz / L : 0;
+      for (let i = 0; i < n; i++) {
+        positions.push([
+          Math.round((P0[0] + ux * sp * i) * 10) / 10,
+          Math.round((P0[1] + uy * sp * i) * 10) / 10,
+          Math.round((P0[2] + uz * sp * i) * 10) / 10,
+        ]);
+      }
+    } else {
+      for (let i = 0; i < n; i++) {
+        const t = n === 1 ? 0 : i / (n - 1);
+        positions.push([
+          Math.round((P0[0] + (P1[0] - P0[0]) * t) * 10) / 10,
+          Math.round((P0[1] + (P1[1] - P0[1]) * t) * 10) / 10,
+          Math.round((P0[2] + (P1[2] - P0[2]) * t) * 10) / 10,
+        ]);
+      }
+    }
+    const built = repositionSetRows(s.bars, idx, positions);
+    tagSeq = Math.max(tagSeq, built.nextTag);
+    set((state) => withHist(state, {
+      bars: built.out,
+      selectedBar: built.sel.length ? built.sel[built.sel.length - 1] : state.selectedBar,
+      selectedBars: built.sel.length ? built.sel : state.selectedBars,
+    }));
+    return { ok: true, count: n };
+  },
+  // Set lengths across the set: uniform (every member one length) or taper
+  // (linear first-to-last interpolation, fan slabs). One undo step.
+  setSetLengths: (setId, spec) => {
+    const idx = get().setIndices(setId);
+    if (!setId || !idx.length) return { ok: false };
+    const n = idx.length;
+    const targets = [];
+    if (spec?.mode === 'taper') {
+      const l0 = Number(spec.a), l1 = Number(spec.b);
+      if (!Number.isFinite(l0) || !Number.isFinite(l1) || l0 <= 0 || l1 <= 0) return { ok: false };
+      for (let i = 0; i < n; i++) targets.push(n === 1 ? l0 : l0 + ((l1 - l0) * i) / (n - 1));
+    } else {
+      const L = Number(spec?.a);
+      if (!(L > 0)) return { ok: false };
+      for (let i = 0; i < n; i++) targets.push(L);
+    }
+    const inSet = new Set(idx);
+    set((state) => withHist(state, {
+      bars: state.bars.map((bar, i) => {
+        if (!inSet.has(i)) return bar;
+        return scaleBarLength(bar, targets[idx.indexOf(i)]) || bar;
+      }),
+    }));
+    return { ok: true };
+  },
+  // Switch every set member to a new shape type. Identity, position and
+  // distribution are kept per member (no host refit — refitting would
+  // collapse all stepped rows onto one identical stirrup); only the type's
+  // dimension fields reset to defaults for per-bar editing after.
+  convertSetType: (setId, type) => {
+    if (!setId || !type) return;
+    const s = get();
+    const idx = s.setIndices(setId);
+    if (!idx.length) return;
+    const inSet = new Set(idx);
+    set((state) => withHist(state, {
+      bars: state.bars.map((b, i) => {
+        if (!inSet.has(i)) return b;
+        const next = applyTypeDefaults(b, type, null, state.cover);
+        next.setId = b.setId;
+        if (b.setSpec) next.setSpec = b.setSpec;
+        return next;
+      }),
+    }));
+  },
+  selectSet: (setId) => {
+    const idx = get().setIndices(setId);
+    if (!idx.length) return;
+    set({ selectedBars: idx, selectedBar: idx[idx.length - 1] });
   },
 }));

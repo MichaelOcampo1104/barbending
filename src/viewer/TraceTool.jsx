@@ -13,6 +13,8 @@ const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
 
+const appToWorld = ([x, y, z]) => [x * S, z * S, -y * S];
+
 // App-frame unit normal -> world direction (app X=world X, app Y=-world Z,
 // app Z=+world Y — the same mapping PickHandler uses for cover offsets).
 const appDirToWorld = ([x, y, z]) => {
@@ -537,7 +539,14 @@ export default function TraceTool() {
             console.info(`[TraceTool] Face p2 rejected: no rows (len ${triedLen}).`);
             return;
           }
-          s3.addFaceBars(rows);
+          s3.addFaceBars(rows, {
+            spec: JSON.stringify({
+              p1: fs2.p1, p2: p, cover: s3.cover,
+              ...(fs2.tilted
+                ? { tilted: true, normal: fs2.normal }
+                : { axis: fs2.axis, planeCoord: fs2.plane }),
+            }),
+          });
           s3.setFaceNote(null);
           const first = rows[0];
           console.info(`[TraceTool] Face bar ${first['Length of Bar']}mm × ${rows.length} on ${member?.name || fs2.memberId} (${first.Plane} rot ${first.Pos_Rotation})`);

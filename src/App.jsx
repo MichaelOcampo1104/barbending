@@ -69,6 +69,100 @@ function measureTotal(points) {
 
 const FIELDS_BY_TYPE = DIM_FIELDS_BY_TYPE;
 
+// Bar-set card: a face-sketch stepped set edits as one parametric group.
+// Grid: count+spacing anchors N bars at S from the first member; count
+// alone evens out over the current extent; spacing alone rebuilds the full
+// sketch extent. Dims mirror the single-bar editor for the set's type
+// (values shown = active bar, applied to every member).
+function SetCard({ setId, count, dia, type, dimFields, dimBar, onDim, gridSp, setGridSp, gridCount, setGridCount, stepHint, onGridApply, setLenA, setSetLenA, setLenB, setSetLenB, lenMode, setLenMode, onDia, onLengths, onType, onOrient, onRotate, onSelect, onDelete }) {
+  return (
+    <div className="cbox sel" style={{ borderColor: '#4ade80', marginBottom: 8 }}>
+      <div className="crow">
+        <strong>▦ Set {setId} · {count} bars</strong>
+        <span style={{ display: 'inline-flex', gap: 4 }}>
+          <button className="ghost sm" onClick={onSelect} title="Select every bar in this set">Select</button>
+          <button className="danger sm" onClick={onDelete} title="Delete the whole set (undoable)">🗑</button>
+        </span>
+      </div>
+      <div className="distnote" style={{ margin: '4px 0' }}>Parametric group — edits below apply to all {count} members in one undo step.</div>
+      <div className="grid3">
+        <label className="fld"><span>Dia (all)</span>
+          <input type="number" value={dia} min={6} max={50} onChange={(e) => onDia(Number(e.target.value) || dia)} />
+        </label>
+        <label className="fld"><span>Grid — count × spacing{stepHint ? ` (now ~${stepHint})` : ''}</span>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <input type="number" placeholder={`${count}`} value={gridCount} onChange={(e) => setGridCount(e.target.value)} style={{ width: 56 }} title="Bar count" />
+            <input type="number" placeholder="sp" value={gridSp} onChange={(e) => setGridSp(e.target.value)} style={{ width: 56 }} title="Spacing (mm)" />
+            <button className="sm" onClick={onGridApply} title="Count+spacing: N bars at S from the first member · count only: even split over current extent · spacing only: rebuild full sketch extent">Apply</button>
+          </div>
+        </label>
+        <label className="fld"><span>Type (all)</span>
+          <select value={type} onChange={(e) => onType(e.target.value)}>
+            {REBAR_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </label>
+      </div>
+      <div className="grid3">
+        <label className="fld"><span>Plane (all)</span>
+          <select value={dimBar.Plane ?? 'XZ'} onChange={(e) => onOrient({ Plane: e.target.value })} title="Section plane for every member">
+            <option value="XZ">XZ (front)</option>
+            <option value="YZ">YZ (side)</option>
+            <option value="XY">XY (plan)</option>
+          </select>
+        </label>
+        <label className="fld"><span>Rotation ° (all)</span>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <input type="number" value={dimBar.Pos_Rotation ?? 0} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onOrient({ Pos_Rotation: n }); }} style={{ width: 64 }} title="In-plane rotation for every member" />
+            <button className="sm" onClick={() => onRotate(-90)} title="Rotate every member −90° in place">⟲</button>
+            <button className="sm" onClick={() => onRotate(90)} title="Rotate every member +90° in place">⟳</button>
+          </div>
+        </label>
+        <label className="fld"><span>Plan rot ° (all)</span>
+          <input type="number" value={dimBar.plan_rotation ?? 0} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onOrient({ plan_rotation: n }); }} title="Twist about global Z for every member" />
+        </label>
+      </div>
+      {dimFields.length > 0 && (
+        <div className="grid3">
+          {dimFields.map((f) => f === 'bent_up_down' ? (
+            <label key={f} className="fld"><span>bent_up_down (all)</span>
+              <select value={dimBar[f] ?? 'up'} onChange={(e) => onDim(f, e.target.value)}>
+                <option value="up">up</option>
+                <option value="down">down</option>
+              </select>
+            </label>
+          ) : f === 'double_hook' ? (
+            <label key={f} className="fld"><span>double_hook (all)</span>
+              <select value={dimBar[f] ?? 'no'} onChange={(e) => onDim(f, e.target.value)}>
+                <option value="no">no (single hook)</option>
+                <option value="yes">yes (double hook)</option>
+              </select>
+            </label>
+          ) : (
+            <label key={f} className="fld"><span>{f} (all)</span>
+              <input type="number" value={dimBar[f] ?? ''} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onDim(f, n); }} />
+            </label>
+          ))}
+        </div>
+      )}
+      <div className="grid3">
+        <label className="fld"><span>Lengths</span>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <select value={lenMode} onChange={(e) => setLenMode(e.target.value)} title="uniform: one length for all · taper: linear first-to-last">
+              <option value="uniform">uniform</option>
+              <option value="taper">taper</option>
+            </select>
+            <input type="number" placeholder={lenMode === 'taper' ? 'first' : 'mm'} value={setLenA} onChange={(e) => setSetLenA(e.target.value)} style={{ width: 64 }} />
+            {lenMode === 'taper' && (
+              <input type="number" placeholder="last" value={setLenB} onChange={(e) => setSetLenB(e.target.value)} style={{ width: 64 }} />
+            )}
+            <button className="sm" onClick={onLengths} title="Set member lengths (taper interpolates first-to-last)">Apply</button>
+          </div>
+        </label>
+      </div>
+    </div>
+  );
+}
+
 function BarEditor() {
   const bars = useStore((s) => s.bars);
   const idx = useStore((s) => s.selectedBar);
@@ -96,7 +190,22 @@ function BarEditor() {
   const moveBars = useStore((s) => s.moveBars);
   const setBoxSelect = useStore((s) => s.setBoxSelect);
   const clearBarSelection = useStore((s) => s.clearBarSelection);
+  const updateSetDia = useStore((s) => s.updateSetDia);
+  const respreadSet = useStore((s) => s.respreadSet);
+  const respreadSetCount = useStore((s) => s.respreadSetCount);
+  const updateSetDims = useStore((s) => s.updateSetDims);
+  const updateSetOrientation = useStore((s) => s.updateSetOrientation);
+  const rotateSet = useStore((s) => s.rotateSet);
+  const setSetLengths = useStore((s) => s.setSetLengths);
+  const convertSetType = useStore((s) => s.convertSetType);
+  const selectSet = useStore((s) => s.selectSet);
+  const setIndices = useStore((s) => s.setIndices);
   const [hostId, setHostId] = useState(null);
+  const [gridSp, setGridSp] = useState('');
+  const [gridCount, setGridCount] = useState('');
+  const [lenMode, setLenMode] = useState('uniform');
+  const [setLenA, setSetLenA] = useState('');
+  const [setLenB, setSetLenB] = useState('');
   const [mvX, setMvX] = useState('');
   const [mvY, setMvY] = useState('');
   const [mvZ, setMvZ] = useState('');
@@ -146,6 +255,45 @@ function BarEditor() {
           <span className="hint">Tip: Shift+B then drag a window — or Ctrl-click bars / BBS rows — to multi-select for bulk delete, copy or move.</span>
           <button className="ghost sm" onClick={() => setBoxSelect(true)} title="Arm window select (Shift+B)">⊞ Box select</button>
         </div>
+      )}
+      {bar.setId && setIndices(bar.setId).length > 1 && (
+        <SetCard
+          setId={bar.setId} count={setIndices(bar.setId).length}
+          dia={bar.Dia} type={bar.Rebar_Type}
+          dimFields={DIM_FIELDS_BY_TYPE[bar.Rebar_Type] || []}
+          dimBar={bar}
+          onDim={(f, v) => updateSetDims(bar.setId, { [f]: v })}
+          gridSp={gridSp} setGridSp={setGridSp}
+          gridCount={gridCount} setGridCount={setGridCount}
+          stepHint={(() => {
+            const idx = setIndices(bar.setId);
+            if (idx.length < 2) return '';
+            const a = bars[idx[0]], b = bars[idx[1]];
+            return String(Math.round(Math.hypot((b.Pos_x - a.Pos_x), (b.Pos_y - a.Pos_y), (b.Pos_z - a.Pos_z))));
+          })()}
+          onGridApply={() => {
+            let r;
+            if (gridCount && gridSp) r = respreadSetCount(bar.setId, gridCount, gridSp);
+            else if (gridCount) r = respreadSetCount(bar.setId, gridCount);
+            else if (gridSp) r = respreadSet(bar.setId, gridSp);
+            if (r?.ok) { setGridSp(''); setGridCount(''); }
+          }}
+          setLenA={setLenA} setSetLenA={setSetLenA}
+          setLenB={setLenB} setSetLenB={setSetLenB}
+          lenMode={lenMode} setLenMode={setLenMode}
+          onDia={(v) => updateSetDia(bar.setId, v)}
+          onLengths={() => {
+            const r = lenMode === 'taper'
+              ? setSetLengths(bar.setId, { mode: 'taper', a: setLenA, b: setLenB })
+              : setSetLengths(bar.setId, { mode: 'uniform', a: setLenA });
+            if (r?.ok) { setSetLenA(''); setSetLenB(''); }
+          }}
+          onType={(t) => convertSetType(bar.setId, t)}
+          onOrient={(p) => updateSetOrientation(bar.setId, p)}
+          onRotate={(d) => rotateSet(bar.setId, d)}
+          onSelect={() => selectSet(bar.setId)}
+          onDelete={() => { if (window.confirm(`Delete set ${bar.setId} (${setIndices(bar.setId).length} bars)? (Ctrl+Z undoes)`)) removeBars(setIndices(bar.setId)); }}
+        />
       )}
       <div className="row2" style={{ alignItems: 'center', marginBottom: 4 }}>
         <label className="fld" style={{ flex: 1 }}><span>Selected bar ({bars.length} total)</span>

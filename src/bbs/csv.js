@@ -130,6 +130,10 @@ export const MASTER_HEADERS = [
   // Explicit section-profile vertices for `stair_starter` ([[run,up]...]
   // local mm JSON). Extra column, ignored by FreeCAD's DictReader.
   'polyline',
+  // Face-sketch bar-set membership (setId shared by stepped rows) + the
+  // sketch spec JSON that re-spreads them. Browser-side grouping data.
+  'setId',
+  'setSpec',
   'qty', 'Total Length', 'Weight_kg',
   // Browser-only view flag (extra column ignored by FreeCAD's DictReader).
   // Host membership is a live-session concern and is NOT exported.
