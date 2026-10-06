@@ -86,6 +86,7 @@
 #     --starter-h/--starter-dia (--starter-dia 0 = dia from circle diameter;
 #     --starter-h 0 = max(150, 10*dia)); --starter-plane auto|XZ|YZ and
 #     --starter-z override every circle; marks ST<n> (--starter-mark).
+#     Host concrete: tag HOST= wins, else --starter-host (Group carries it).
 #     Hook-first: run/corner AT the circle elevation (upstand drops below
 #     Pos, like a dowel lapping from underneath);
 #     STRAIGHT bars start AT the circle (protrusion origin) and run Length
@@ -233,6 +234,7 @@ def main():
     ap.add_argument('--starter-y', type=float, default=None)
     ap.add_argument('--starter-hook', default='start', choices=['start', 'end'])
     ap.add_argument('--starter-type', default='bent', choices=['bent', 'straight'])
+    ap.add_argument('--starter-host', default='')
     a = ap.parse_args()
 
     doc = ezdxf.readfile(a.dxf); msp = doc.modelspace()
@@ -929,6 +931,10 @@ def main():
         # else 0 with a NOTE
         _mX = (re.search(r'\bX\s*=\s*([-\d.]+)', _spec, re.I)
                or re.search(r'\bPOS(?:ITION)?\s+X\s*=?\s*([-\d.]+)', _spec, re.I))
+        # host concrete: tag HOST= wins, else --starter-host (Group carries
+        # it; links to a same-named concrete on import into the app)
+        _mHST = LEGHOST.search(_spec)
+        _host = _mHST.group(1) if _mHST else (a.starter_host or '')
         _mY = (re.search(r'\bY\s*=\s*([-\d.]+)', _spec, re.I)
                or re.search(r'\bPOS(?:ITION)?\s+Y\s*=?\s*([-\d.]+)', _spec, re.I))
         if _pl == 'YZ':
@@ -955,7 +961,8 @@ def main():
                'rtype': 'straight' if _want_straight else 'bent',
                'plane': _pl, 'rot': 0.0, 'L': round(_L, 1), 'H': round(_H, 1),
                'z': _z, 'zsrc': _zsrc, 'plan_rotation': _prot,
-               'tag': _spec, 'aim': _aim, 'Lsrc': _Lsrc, 'hook_start': _hook}
+               'tag': _spec, 'aim': _aim, 'Lsrc': _Lsrc, 'hook_start': _hook,
+               'host': _host}
         bars.append(_CBar(f'REBAR-H{_dia}', _px, _py, _mark, dict(_ov)))
         print(f'{_mark}: circle H{_dia} dxf=({_cx:.1f},{_cy:.1f}) -> '
               f'({_px:.1f},{_py:.1f},{_z})[{_oopsrc}] L={_L:.0f}({_Lsrc}) '
@@ -1060,6 +1067,8 @@ def main():
         mhst = LEGHOST.search(raw); host = mhst.group(1) if mhst else ''
         bt = BTMARK.match(mark or '')
         ov = getattr(b, '_ov', None)
+        if not host and ov and ov.get('host'):
+            host = ov['host']  # circle starters: tag HOST= else --starter-host
         mv = LEGVW.search(raw); plane = mv.group(1).upper() if mv else 'XY'
         mr = LEGROT.search(raw); rot = float(mr.group(1)) if mr else ang
         if ov:

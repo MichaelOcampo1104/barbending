@@ -618,15 +618,25 @@ function QueryHandler() {
       down = null;
       if (dx * dx + dy * dy > 25) return; // drag (orbit/pan), not a click
       const st = useStore.getState();
-      if (!st.query?.active || st.measure?.active || st.drawMode || st.boxSelect) return;
+      if (!st.query?.active) return;
+      if (st.measure?.active || st.drawMode || st.boxSelect) {
+        // Another tool owns canvas clicks — say so in the panel instead of
+        // silently swallowing the click. Never clobbers a real result.
+        const owner = st.measure?.active ? 'Measure' : st.drawMode ? `draw (${st.drawMode})` : 'Box-select';
+        console.info(`[query] click ignored — ${owner} owns canvas clicks`);
+        if (!st.query?.result) st.setQueryResult({ kind: 'paused', title: 'Query paused', sub: `${owner} owns canvas clicks — finish it (or Esc) first.`, rows: [], at: Date.now() });
+        return;
+      }
       if (ev.button !== 0) return;
       const rect = el.getBoundingClientRect();
       raycaster.current.setFromCamera(new THREE.Vector2(
         ((ev.clientX - rect.left) / rect.width) * 2 - 1,
         -((ev.clientY - rect.top) / rect.height) * 2 + 1,
       ), camera);
-      const hits = raycaster.current.intersectObjects(collectPickTargets(scene), false);
-      if (!hits.length) return; // miss keeps the last result
+      const targets = collectPickTargets(scene);
+      const hits = raycaster.current.intersectObjects(targets, false);
+      console.info(`[query] targets=${targets.length} hits=${hits.length}`);
+      if (!hits.length) return; // miss keeps the last result (hint shows when empty)
       const h = hits[0];
       let root = h.object;
       while (root && root !== scene && !root.userData?.pickRoot) root = root.parent;
@@ -635,10 +645,11 @@ function QueryHandler() {
       // App frame (mm), exact surface point — same mapping as MeasureHandler.
       const appPt = [wp.x * 1000, -wp.z * 1000, wp.y * 1000].map((v) => Math.round(v * 10) / 10);
       let result = null;
+      try {
       if (kind === 'rebar') {
         const i = root.userData?.barIndex;
         const b = Number.isInteger(i) ? st.bars[i] : null;
-        if (!b) return;
+        if (!b) { console.info('[query] rebar hit has no bar record — skipped'); return; }
         const bb = barAppBox(b);
         const en = enrichBar(b);
         result = {
@@ -659,7 +670,7 @@ function QueryHandler() {
         };
       } else if (kind === 'concrete') {
         const c = (st.concretes || []).find((k) => k.id === root.userData?.concreteId);
-        if (!c) return;
+        if (!c) { console.info('[query] concrete hit has no member record — skipped'); return; }
         result = {
           kind,
           title: `Concrete ${c.name || c.id}`,
@@ -721,8 +732,14 @@ function QueryHandler() {
           kind, title: `IFC ${elName}`, sub: elType, point: appPt, rows,
         };
       } else {
+        console.info('[query] hit is not rebar/concrete/IFC — skipped');
         return;
       }
+      } catch (err) {
+        console.warn('[query] result build failed:', err);
+        result = { kind: 'error', title: 'Query failed', sub: 'See console (F12) for details', point: appPt, rows: [['Error', String((err && err.message) || err)]] };
+      }
+      if (!result) return;
       st.setQueryResult({ ...result, at: Date.now() });
     };
     const onKey = (e) => {
