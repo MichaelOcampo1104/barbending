@@ -18,6 +18,8 @@ export const SHAPE_CODES = {
   // Custom drawn profile (stair landing starters): no BS8666 equivalent —
   // 99 = special/bar-bent-to-sketch, cut length in A.
   stair_starter: 99,
+  // General per-leg section profile (DXF PROFILE tags): same special class.
+  profile: 99,
 };
 
 // Concrete volume in m³. Precedence: exact retraced mesh geometry (auto-traced
@@ -110,6 +112,12 @@ export function getShapeParameters(bar) {
       A = genBarPoints(bar).cutLengthMm;
       break;
     }
+    case 'profile': {
+      // Per-leg profile: A carries the net cut length; the leg table rides
+      // the `legs` column ([[len, compassDeg]...] JSON).
+      A = genBarPoints(bar).cutLengthMm;
+      break;
+    }
     default:
       A = Number(bar['Length of Bar'] || bar.length || 3000);
       break;
@@ -130,6 +138,9 @@ export const MASTER_HEADERS = [
   // Explicit section-profile vertices for `stair_starter` ([[run,up]...]
   // local mm JSON). Extra column, ignored by FreeCAD's DictReader.
   'polyline',
+  // Per-leg section profile for `profile` ([[len,compassDeg]...] JSON).
+  // Extra column, ignored by FreeCAD's DictReader.
+  'legs',
   // Face-sketch bar-set membership (setId shared by stepped rows) + the
   // sketch spec JSON that re-spreads them. Browser-side grouping data.
   'setId',
@@ -354,6 +365,7 @@ export function getBarShapeKey(bar, matchHost = false) {
   const extra = [];
   if (type === 'bent') extra.push(String(bar.bent_up_down || 'up').toLowerCase());
   if (type === 'bent') extra.push('hook:' + String(bar.hook_start || 'no').toLowerCase());
+  if (type === 'profile') extra.push('legs:' + JSON.stringify(bar.legs ?? ''));
   if (type === 'c_link_with_hook') extra.push(String(bar.double_hook || 'no').toLowerCase());
 
   const hostPart = matchHost && bar.host ? `host:${bar.host}|` : '';

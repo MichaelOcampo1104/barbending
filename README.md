@@ -26,8 +26,10 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
 
 - **Scratch concrete** — Beam/Slab/Column boxes with size + position.
 - **Parametric rebar** — `straight, bent, crank, double_crank, c_link,
-  c_link_with_hook`; switch shape anytime (dimensions reset, position kept).
-  `bent_up_down`, diameters, rotation, planes.
+  c_link_with_hook, profile`; switch shape anytime (dimensions reset,
+  position kept). `bent_up_down` / `hook_start`, diameters, rotation, planes.
+  `profile` bars keep per-leg length + compass-heading parameters editable
+  in a leg table (imported 1:1 from DXF section traces).
 - **FreeCAD-style distribution** — Count/Spacing X·Y grid + offsets per bar;
   every copy drawn, weight uses total placed bars.
 - **IFC4 reference** — load `.ifc` as ghost/solid geometry; per-level and
@@ -82,9 +84,20 @@ py scripts/dxf_to_bbs.py inputs/bar_plan_bbs.dxf
 # 800 mm column sample (verticals + ties + base/top starters)
 py scripts/dxf_to_bbs.py inputs/column_sample_800.dxf
 
+# starter-section sample (drawn CIRCLEs, one starter bar each)
+py scripts/dxf_to_bbs.py inputs/starter_bars.dxf --starter-host "P103 Stair Roof Slab"
+
+# dia-ruled lengths / forced type+plane apply wherever tags are silent
+# (tag L=/PLANE=/STRAIGHT always wins — see precedence below)
+py scripts/dxf_to_bbs.py inputs/starter_bars.dxf --starter-type straight ^
+  --starter-lengths "25:2000,40:3000,32:2500" --starter-plane YZ --starter-x 1500
+
 # options: bond | stock length | fallback cover/gap | explicit output
 py scripts/dxf_to_bbs.py inputs/bar_plan_bbs.dxf --bond auto --stock 12000 --cover 40 --gap 25 --out out.csv
 ```
+
+(Windows venv without Python on PATH: use `.venv\Scripts\python.exe`
+in place of `py`.)
 
 - `--bond auto` (default: `B` marks good, `T` marks poor) or force `good`/`poor`.
 - Bars over `--stock` split into lapped pieces (EC2 table); links/ties never split.
@@ -94,6 +107,74 @@ py scripts/dxf_to_bbs.py inputs/bar_plan_bbs.dxf --bond auto --stock 12000 --cov
 - Open the `*_bbs.json` via ⤒ Project; the run log flags pairing guesses
   (`WARN … wins by N`), auto-zoned link fields (`NOTE`), and level sources
   (`zsrc=`) per bar.
+
+### Drawn-circle starters (section detail)
+
+Each `CIRCLE` is one starter bar: centre X = in-plane horizontal, centre Y =
+elevation (App `Pos_z`), diameter = drawn diameter. Nearest open direction
+line gives Length + aim fallback; nearest plain spec tag overrides everything:
+
+```powershell
+# tag syntax (all keywords optional, "=" optional):
+#   L <len> ROT <deg: 0=+X, 90=+Y> [STRAIGHT | BENT] [H=<leg>]
+#   [HOOK=START | END] [VIEW= | PLANE= XZ | YZ] [X= | Y= | Z= | POS Y <n>]
+#   [H<dia> | DIA=] [HOST=] [GOOD | POOR]
+# e.g. L 4700 ROT 270 STRAIGHT PLANE XZ POS Y 6600
+```
+
+- Output is transverse: main Length runs out of the section (XZ → ±Y,
+  YZ → ±X, `Rot 0`), `ROT=` steers it as a plan compass; auto-plane keeps
+  the length out-of-plane (aim ±X → YZ, ±Y → XZ).
+- Bent (default) is hook-first with the run/corner seated **at** the circle
+  elevation (upstand laps from underneath); `STRAIGHT` starts at the circle
+  with no leg. Both protrude from the circle.
+- Position: DXF X → App X (XZ) or App Y (YZ); the out-of-plane coordinate
+  comes from tag `X=`/`Y=` (or `POS …`) else `--starter-x`/`--starter-y`.
+- Host: tag `HOST=` wins per group, else `--starter-host` (lands in `Group`,
+  links to a same-named concrete member on import; quoted names with spaces
+  need the CLI flag).
+- Precedence per bar: tag `L=` > `--starter-lengths` dia table >
+  direction-line length > `--starter-length` (default 2000). `--starter-h`
+  defaults the bent leg to max(150, 10·dia); `--starter-dia` pins the
+  diameter; `--starter-mark` prefixes marks (`ST1…`); `--starter-z`
+  overrides every elevation.
+- Pairing is strictly nearest-tag-wins — one tag deep inside each
+  length-zone; the log `WARN`s every close contest (`wins by N`) so
+  re-run until zero WARNs for deterministic lengths.
+
+### Drawn section profiles (`profile` bars)
+
+Open section traces import verbatim — every leg length and heading stays an
+editable parameter (leg table in the bar editor, add/remove legs):
+
+```powershell
+# tag next to each trace (needs H<dia>; nearest open 3+-pt polyline pairs):
+#   PB1 PROFILE H25 [HOST=] [PLANE= XZ|YZ] [ROT=] [Z=] [X=|Y=] [GOOD|POOR]
+py scripts/dxf_to_bbs.py inputs/additional_bar_shapes.dxf
+```
+
+- Legs are taken 1:1 as `[length, compass°]` (no crank/bend fitting);
+  `DIMENSION` entities are ignored. Single piece (never stock-split),
+  qty 1×1 — set copies/distribution in the app. Paired traces are
+  consumed (no double chord rows); dia falls back to the `REBAR-H<dia>`
+  layer; `PLANE XY` positions verbatim from the first vertex.
+- `Pos` = first trace vertex (section X → App X on XZ / App Y on YZ),
+  `Z=` wins else host bottom cover else 0; out-of-plane from tag or
+  `--starter-x`/`--starter-y`.
+- Plan cranks with no tags: `--profiles auto` converts every untagged
+  open 3+-pt `REBAR-H/LINK` trace (dia from layer, XY unless
+  `--starter-plane`, Z from `--starter-z` else 0); tagged bars keep
+  their legacy straight-chord rows, 2-pt lines always stay straight:
+  `py scripts/dxf_to_bbs.py inputs/Drawn_rebar.dxf --profiles auto`.
+- Plane + position + distribution: `PLANE XZ` lays the section along X at
+  fixed `Y=` (signed — either side), `PLANE YZ` along Y at fixed `X=`;
+  copies distribute one-sided from `Pos` via tag `N=` + signed `SP=` +
+  `AXIS=X|Y|Z` (axis defaults out-of-plane: XZ→Y, YZ→X, XY→X) or the
+  `--profile-n` / `--profile-spacing` / `--profile-axis` flags, e.g.
+  `--profile-n 4 --profile-spacing -150 --profile-axis Y` steps four
+  planes at 0/−150/−300/−450.
+- Schedule: shape 99 (special), cut length in A with per-turn bend
+  deductions; `legs` round-trips through CSV/project JSON.
 
 ## Troubleshooting
 

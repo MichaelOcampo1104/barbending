@@ -13,7 +13,47 @@ export const REBAR_TYPES = [
   'c_link_with_hook',
   'tie',
   'stair_starter',
+  'profile',
 ];
+
+// Explicit per-leg profile: bar.legs is [[len, compassDeg]...] (JSON string
+// or live array), leg 1 leaving Pos at its compass heading. Returns 3D local
+// points starting at the origin, or null when missing/malformed.
+export function parseLegs(bar) {
+  let p = bar?.legs;
+  if (typeof p === 'string') {
+    const t = p.trim();
+    if (!t) return null;
+    try {
+      p = JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(p) || !p.length) return null;
+  const legs = [];
+  for (const q of p) {
+    if (!Array.isArray(q) || q.length < 2) return null;
+    const len = Number(q[0]), ang = Number(q[1]);
+    if (!Number.isFinite(len) || !Number.isFinite(ang) || len < 0) return null;
+    legs.push([len, ang]);
+  }
+  return legs.length ? legs : null;
+}
+
+// Local points of a per-leg profile (like the DXF section it was traced
+// from: leg 1 along its compass heading, bends verbatim, no fitting).
+export function legsToPoints(legs) {
+  const pts = [[0, 0, 0]];
+  let x = 0, y = 0;
+  for (const [len, ang] of legs) {
+    const a = (Number(ang) * Math.PI) / 180;
+    x += len * Math.cos(a);
+    y += len * Math.sin(a);
+    pts.push([Math.round(x * 10) / 10, Math.round(y * 10) / 10, 0]);
+  }
+  return pts;
+}
 
 export const BENT_DEFAULTS = {
   10: { r: 20, H: 120, U: 85 },
@@ -143,6 +183,14 @@ export function genBarPoints(bar) {
       const pts = parseStairProfile(bar) || [[0, 0, 0], [1000, 0, 0]];
       return finish(pts, countProfileTurns(pts), d);
     }
+    case 'profile': {
+      // General drawn section profile: per-leg [[len, compassDeg]...] in
+      // bar.legs (JSON string or array, 1:1 from the DXF trace). Every leg
+      // length and heading stays an editable parameter — no shape fitting.
+      const legs = parseLegs(bar) || [[1000, 0]];
+      const pts = legsToPoints(legs);
+      return finish(pts, countProfileTurns(pts), d);
+    }
     case 'straight':
     default: {
       const L = Number(bar['Length of Bar'] || bar.length || 3000);
@@ -224,6 +272,11 @@ export function defaultBar(type, tag = 1) {
       ...base, Dia: 13,
       polyline: JSON.stringify([[0, 0], [600, 0], [600, 200], [1200, 550]]),
       Plane: 'XZ', qty_x: 1, spacing_x: 0, qty_y: 5, spacing_y: 150,
+    };
+    case 'profile': return {
+      ...base,
+      legs: JSON.stringify([[1000, 0], [500, 45]]),
+      Plane: 'XZ', qty_x: 1, spacing_x: 0, qty_y: 1, spacing_y: 0,
     };
     default: return { ...base, 'Length of Bar': 3000, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150 };
   }
@@ -457,6 +510,7 @@ export const DIM_FIELDS_BY_TYPE = {
   c_link_with_hook: ['length', 'c_length_a', 'c_length_b', 'double_hook'],
   tie: ['length', 'c_length_a'],
   stair_starter: ['polyline'],
+  profile: ['legs'],
 };
 
 const ALL_DIM_FIELDS = [...new Set(Object.values(DIM_FIELDS_BY_TYPE).flat())];
@@ -655,6 +709,10 @@ export function barMainLength(bar) {
   if (bar?.Rebar_Type === 'stair_starter') {
     const p = parseStairProfile(bar);
     return p ? Math.round(polylineLength(p)) : 3000;
+  }
+  if (bar?.Rebar_Type === 'profile') {
+    const legs = parseLegs(bar);
+    return legs ? Math.round(legs.reduce((s, [len]) => s + len, 0)) : 3000;
   }
   switch (bar?.Rebar_Type) {
     case 'bent':

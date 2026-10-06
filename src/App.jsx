@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo, Fragment } from 'react';
 import Scene from './viewer/Scene.jsx';
 import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
-import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost, memberKind, slabLinkSpine, getBentDefaults } from './bbs/shapes.js';
+import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost, memberKind, slabLinkSpine, getBentDefaults, parseLegs } from './bbs/shapes.js';
 import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES, autoAssignBarMarks, concreteVolumeM3, rebarRatioKgM3, concreteVolumeSource } from './bbs/csv.js';
 import { lapLengthMm, barBond, lapBondFor } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
@@ -74,17 +74,18 @@ const FIELDS_BY_TYPE = DIM_FIELDS_BY_TYPE;
 // alone evens out over the current extent; spacing alone rebuilds the full
 // sketch extent. Dims mirror the single-bar editor for the set's type
 // (values shown = active bar, applied to every member).
-function SetCard({ setId, count, dia, type, dimFields, dimBar, onDim, gridSp, setGridSp, gridCount, setGridCount, stepHint, onGridApply, setLenA, setSetLenA, setLenB, setSetLenB, lenMode, setLenMode, onDia, onLengths, onType, onOrient, onRotate, onSelect, onDelete }) {
+function SetCard({ setId, count, dia, type, dimFields, dimBar, onDim, gridSp, setGridSp, gridCount, setGridCount, stepHint, onGridApply, setLenA, setSetLenA, setLenB, setSetLenB, lenMode, setLenMode, onDia, onLengths, onType, onOrient, onRotate, onSelect, onDelete, onUngroup, hasSketch }) {
   return (
     <div className="cbox sel" style={{ borderColor: '#4ade80', marginBottom: 8 }}>
       <div className="crow">
         <strong>▦ Set {setId} · {count} bars</strong>
         <span style={{ display: 'inline-flex', gap: 4 }}>
           <button className="ghost sm" onClick={onSelect} title="Select every bar in this set">Select</button>
+          <button className="ghost sm" onClick={onUngroup} title="Ungroup — bars keep their dims, they just edit solo again (undoable)">Ungroup</button>
           <button className="danger sm" onClick={onDelete} title="Delete the whole set (undoable)">🗑</button>
         </span>
       </div>
-      <div className="distnote" style={{ margin: '4px 0' }}>Parametric group — edits below apply to all {count} members in one undo step.</div>
+      <div className="distnote" style={{ margin: '4px 0' }}>Parametric group — edits below apply to all {count} members in one undo step.{hasSketch ? '' : ' (ad-hoc group: grid re-spread needs a face-sketch — use uniform/taper lengths + Move).'}</div>
       <div className="grid3">
         <label className="fld"><span>Dia (all)</span>
           <input type="number" value={dia} min={6} max={50} onChange={(e) => onDia(Number(e.target.value) || dia)} />
@@ -143,6 +144,10 @@ function SetCard({ setId, count, dia, type, dimFields, dimBar, onDim, gridSp, se
                 <option value="no">no (leg trails length)</option>
                 <option value="yes">yes (leg first at start)</option>
               </select>
+            </label>
+          ) : f === 'legs' ? (
+            <label key={f} className="fld"><span>legs (all)</span>
+              <span className="hint">per-bar leg table — select one bar to edit</span>
             </label>
           ) : (
             <label key={f} className="fld"><span>{f} (all)</span>
@@ -207,6 +212,9 @@ function BarEditor() {
   const convertSetType = useStore((s) => s.convertSetType);
   const selectSet = useStore((s) => s.selectSet);
   const setIndices = useStore((s) => s.setIndices);
+  const setSpecOf = useStore((s) => s.setSpecOf);
+  const groupBars = useStore((s) => s.groupBars);
+  const ungroupSet = useStore((s) => s.ungroupSet);
   const [hostId, setHostId] = useState(null);
   const [gridSp, setGridSp] = useState('');
   const [gridCount, setGridCount] = useState('');
@@ -242,6 +250,7 @@ function BarEditor() {
             <button className="sm" onClick={() => duplicateBars(multi)} title="Duplicate every selected bar">📋 Duplicate {multi.length}</button>
             <button className="sm" onClick={() => hideBars(multi, true)} title="Hide selected bars (stay in BBS + CSV)">👁 Hide</button>
             <button className="sm" onClick={() => hideBars(multi, false)} title="Unhide selected bars">☀ Show</button>
+            <button className="sm" style={{ background: '#166534', fontWeight: 700 }} onClick={() => { const r = groupBars(multi); if (!r?.ok) alert(r?.msg || 'Group failed.'); }} title="Make these a parametric group — then edit Dia, dims, type and lengths together in the green Set card">▦ Group {multi.length}</button>
             <button className="danger sm" onClick={() => { if (window.confirm(`Delete ${multi.length} selected bars? (Ctrl+Z undoes)`)) removeBars(multi); }} title="Delete every selected bar (undoable)">🗑 Delete {multi.length}</button>
           </div>
           <div className="crow">
@@ -269,6 +278,7 @@ function BarEditor() {
           dia={bar.Dia} type={bar.Rebar_Type}
           dimFields={DIM_FIELDS_BY_TYPE[bar.Rebar_Type] || []}
           dimBar={bar}
+          hasSketch={!!setSpecOf(bar)}
           onDim={(f, v) => updateSetDims(bar.setId, { [f]: v })}
           gridSp={gridSp} setGridSp={setGridSp}
           gridCount={gridCount} setGridCount={setGridCount}
@@ -283,7 +293,9 @@ function BarEditor() {
             if (gridCount && gridSp) r = respreadSetCount(bar.setId, gridCount, gridSp);
             else if (gridCount) r = respreadSetCount(bar.setId, gridCount);
             else if (gridSp) r = respreadSet(bar.setId, gridSp);
+            else return;
             if (r?.ok) { setGridSp(''); setGridCount(''); }
+            else if (r?.msg) alert(r.msg);
           }}
           setLenA={setLenA} setSetLenA={setSetLenA}
           setLenB={setLenB} setSetLenB={setSetLenB}
@@ -299,6 +311,7 @@ function BarEditor() {
           onOrient={(p) => updateSetOrientation(bar.setId, p)}
           onRotate={(d) => rotateSet(bar.setId, d)}
           onSelect={() => selectSet(bar.setId)}
+          onUngroup={() => ungroupSet(bar.setId)}
           onDelete={() => { if (window.confirm(`Delete set ${bar.setId} (${setIndices(bar.setId).length} bars)? (Ctrl+Z undoes)`)) removeBars(setIndices(bar.setId)); }}
         />
       )}
@@ -363,6 +376,8 @@ function BarEditor() {
             <option value="yes">yes (leg first at start)</option>
           </select>
         </label>
+      ) : f === 'legs' ? (
+        <LegsEditor key={f} bar={bar} set={set} />
       ) : f === 'polyline' ? (
         <label key={f} className="fld"><span>polyline [[run,up]…] local mm (stair-starter profile)</span>
           <input
@@ -1036,8 +1051,39 @@ function MeasureHud() {
   );
 }
 
-function QueryHud() {
-  const query = useStore((s) => s.query);
+// Per-leg parameter table for `profile` bars: every leg length + compass
+// heading editable, legs addable/removable. Stored as bar.legs
+// ([[len, compassDeg]...] JSON); geometry rebuilds live from it.
+function LegsEditor({ bar, set }) {
+  const legs = parseLegs(bar) || [];
+  const put = (next) => set('legs', JSON.stringify(next.map(([l, a]) => [Math.round(l * 10) / 10, Math.round(a * 10) / 10])));
+  const setLeg = (i, k, v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return;
+    const next = legs.map((q) => [...q]);
+    if (k === 0 && n < 0) return;
+    next[i][k] = n;
+    put(next);
+  };
+  return (
+    <div key="legs" className="fld" style={{ gridColumn: '1 / -1' }}>
+      <span>legs — length (mm) + heading (° compass) per leg</span>
+      {legs.map(([l, a], i) => (
+        <div key={i} style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 2 }}>
+          <span style={{ width: 44 }}>leg {i + 1}</span>
+          <input type="number" value={l} onChange={(e) => setLeg(i, 0, e.target.value)} style={{ width: 80 }} title="Leg length (mm)" />
+          <input type="number" value={a} onChange={(e) => setLeg(i, 1, e.target.value)} style={{ width: 80 }} title="Leg compass heading (degrees)" />
+          <button className="ghost sm" onClick={() => put(legs.filter((_, j) => j !== i))} title="Remove leg" disabled={legs.length <= 1}>−</button>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+        <button className="ghost sm" onClick={() => put([...legs, [500, 0]])} title="Append a 500 mm leg at 0°">+ Add leg</button>
+      </div>
+    </div>
+  );
+}
+
+function QueryHud() {  const query = useStore((s) => s.query);
   const setQueryActive = useStore((s) => s.setQueryActive);
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -1204,10 +1250,17 @@ function ViewportBar() {
           <button className={navMode === 'orbit' ? 'on' : ''} onClick={() => setNavMode('orbit')} title="LMB orbits the view">Orbit</button>
         </span>
         <span style={{ position: 'relative', display: 'inline-flex', gap: 0 }}>
-          <button onClick={() => setNavMenu((v) => !v)} title="Navigation tuning: orbit / pan / zoom speeds, smoothing, zoom-to-cursor, keyboard map" style={{ borderRadius: 6 }}>⚙ Nav{(nav.rotateSpeed !== 1 || nav.panSpeed !== 1 || nav.zoomSpeed !== 1 || nav.damping === false || nav.zoomToCursor === false) ? ' ●' : ''}</button>
+          <button onClick={() => setNavMenu((v) => !v)} title="Navigation tuning: orbit / pan / zoom speeds, smoothing, zoom-to-cursor, keyboard map" style={{ borderRadius: 6 }}>⚙ Nav{(nav.rotateSpeed !== 1 || nav.panSpeed !== 1 || nav.zoomSpeed !== 1 || nav.damping === false || nav.zoomToCursor === false || (nav.style ?? 'fluid') !== 'fluid') ? ' ●' : ''}</button>
           {navMenu && (
             <div className="snap-pop" onClick={(e) => e.stopPropagation()} style={{ left: 0, right: 'auto', minWidth: 210 }}>
-              {[['rotateSpeed', 'Orbit speed', 'Left/Middle-drag rotation + Shift+arrows'], ['panSpeed', 'Pan speed', 'Right-drag pan + arrow keys'], ['zoomSpeed', 'Zoom speed', 'Wheel / pinch glide + +/− keys']].map(([k, label, tip]) => (
+              <label title="Fluid = smooth gliding camera · CAD = direct 1:1 FreeCAD/Blender feel, no glide" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 74 }}>Style</span>
+                <select value={nav.style ?? 'fluid'} onChange={(e) => setNav({ style: e.target.value })} style={{ flex: 1 }}>
+                  <option value="fluid">Fluid glide</option>
+                  <option value="cad">CAD direct</option>
+                </select>
+              </label>
+              {[['rotateSpeed', 'Orbit speed', 'Left/Middle-drag rotation + Shift+arrows'], ['panSpeed', 'Pan speed', 'Right-drag pan + arrow keys'], ['zoomSpeed', 'Zoom speed', 'Wheel / pinch zoom + +/− keys']].map(([k, label, tip]) => (
                 <label key={k} title={tip} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span style={{ width: 74 }}>{label}</span>
                   <input type="range" min="0.2" max="2.5" step="0.1" value={nav[k]} onChange={(e) => setNav({ [k]: Number(e.target.value) })} style={{ flex: 1 }} />
@@ -1320,6 +1373,11 @@ function BbsStrip() {
   const selectBar = useStore((s) => s.selectBar);
   const selectedBars = useStore((s) => s.selectedBars);
   const toggleBarSelected = useStore((s) => s.toggleBarSelected);
+  const setSelectedBars = useStore((s) => s.setSelectedBars);
+  const selectSet = useStore((s) => s.selectSet);
+  const groupBars = useStore((s) => s.groupBars);
+  const ungroupBars = useStore((s) => s.ungroupBars);
+  const ungroupSet = useStore((s) => s.ungroupSet);
   const duplicateBar = useStore((s) => s.duplicateBar);
   const removeBar = useStore((s) => s.removeBar);
   const requestFit = useStore((s) => s.requestFit);
@@ -1333,6 +1391,47 @@ function BbsStrip() {
   const [joinMode, setJoinMode] = useState(false);
   const [joinedIds, setJoinedIds] = useState([]);
   const [memberSearch, setMemberSearch] = useState('');
+  // Bottom-panel sort: 'none' keeps model order; Mark uses natural sort
+  // (B2 < B10); clicking a sortable column header toggles asc/desc.
+  const [sortKey, setSortKey] = useState('none');
+  const [sortDir, setSortDir] = useState(1);
+  const toggleSort = (key) => {
+    if (sortKey !== key) { setSortKey(key); setSortDir(1); }
+    else if (sortDir === 1) setSortDir(-1);
+    else { setSortKey('none'); setSortDir(1); }
+  };
+  const sortArrow = (key) => (sortKey === key ? (sortDir === 1 ? ' ▲' : ' ▼') : '');
+
+  // Resizable bottom-panel height (px), persisted like the side width.
+  // Drag the top-edge handle up/down; double-click resets to 240.
+  const [bbsHeight, setBbsHeight] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem('barbending.bbsHeight'));
+      return Number.isFinite(saved) ? Math.max(120, Math.min(800, saved)) : 240;
+    } catch {
+      return 240;
+    }
+  });
+  const [bbsResizing, setBbsResizing] = useState(false);
+  const startBbsResize = (e) => {
+    e.preventDefault();
+    setBbsResizing(true);
+    const startY = e.clientY;
+    const startH = bbsHeight;
+    const onMouseMove = (ev) => {
+      const maxH = Math.max(200, Math.floor(window.innerHeight * 0.75));
+      const newH = Math.max(120, Math.min(maxH, startH + (startY - ev.clientY)));
+      setBbsHeight(Math.round(newH));
+      try { localStorage.setItem('barbending.bbsHeight', String(Math.round(newH))); } catch {}
+    };
+    const onMouseUp = () => {
+      setBbsResizing(false);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
 
   const concMap = useMemo(() => new Map((concretes || []).map((c) => [c.id, c])), [concretes]);
   const allRows = useMemo(() => bars.map((b, idx) => ({ ...enrichBar(b, concretes), _origIdx: idx })), [bars, concretes]);
@@ -1379,8 +1478,42 @@ function BbsStrip() {
     return allRows.filter((r) => r.host === elemFilter);
   }, [allRows, elemFilter, concMap, joinMode, joinedSet]);
 
+  // Sorted view (model order when 'none'). Mark sorts naturally (B2 < B10).
+  const sortedRows = useMemo(() => {
+    if (sortKey === 'none') return filteredRows;
+    const dir = sortDir === -1 ? -1 : 1;
+    const val = (r) => {
+      switch (sortKey) {
+        case 'Bar_mark': return String(r.Bar_mark ?? '');
+        case 'Dia': return Number(r.Dia) || 0;
+        case 'Rebar_Type': return String(r.Rebar_Type ?? '');
+        case '_copies': return Number(r._copies) || 0;
+        case '_cut': return Number(r._cut) || 0;
+        case 'Weight_kg': return Number(r.Weight_kg) || 0;
+        case 'setId': return String(r.setId ?? `~${r._origIdx}`);
+        default: return r._origIdx;
+      }
+    };
+    return [...filteredRows].sort((a, b) => {
+      const va = val(a), vb = val(b);
+      let c;
+      if (typeof va === 'number' && typeof vb === 'number') c = va - vb;
+      else c = String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: 'base' });
+      if (c === 0) c = a._origIdx - b._origIdx;
+      return c * dir;
+    });
+  }, [filteredRows, sortKey, sortDir]);
+
   const totalW = filteredRows.reduce((a, r) => a + (r.Weight_kg || 0), 0);
   const totalBars = filteredRows.reduce((a, r) => a + (r._copies || 1), 0);
+  // Ad-hoc group helpers: active bar's set + clean multi-selection.
+  const selectedBarIdx = useStore((s) => s.selectedBar);
+  const multiSel = useMemo(
+    () => [...new Set(selectedBars || [])].filter((i) => Number.isInteger(i) && i >= 0 && i < bars.length).sort((a, b) => a - b),
+    [selectedBars, bars.length],
+  );
+  const activeSetId = bars[selectedBarIdx]?.setId || null;
+  const multiSetIds = useMemo(() => [...new Set(multiSel.map((i) => bars[i]?.setId).filter(Boolean))], [multiSel, bars]);
 
   // Concrete members in scope (joined set / single / all) → volume + ratio.
   const includedConcretes = useMemo(() => {
@@ -1407,7 +1540,7 @@ function BbsStrip() {
       map.set('unhosted', { id: 'unhosted', concrete: null, name: 'Free / Unassigned', rows: [] });
     }
 
-    for (const r of filteredRows) {
+    for (const r of sortedRows) {
       const hostKey = r.host && concMap.has(r.host) ? r.host : 'unhosted';
       if (!map.has(hostKey)) {
         map.set(hostKey, { id: hostKey, concrete: null, name: 'Free / Unassigned', rows: [] });
@@ -1428,7 +1561,7 @@ function BbsStrip() {
         };
       })
       .filter((g) => g.rows.length > 0 || (!joinMode && elemFilter !== 'all' && g.id === elemFilter));
-  }, [concretes, filteredRows, elemFilter, concMap, joinMode, joinedSet]);
+  }, [concretes, sortedRows, elemFilter, concMap, joinMode, joinedSet]);
 
   const toggleCollapse = (gid) => setCollapsed((c) => ({ ...c, [gid]: !c[gid] }));
 
@@ -1485,13 +1618,22 @@ function BbsStrip() {
 
   const renderRow = (r) => {
     const i = r._origIdx;
+    const isSel = (selectedBars || []).includes(i);
     return (
       <tr
         key={i}
-        className={((selectedBars || []).includes(i) ? 'sel' : '') + (r.hidden ? ' hidden' : '') + (deleteArmed ? ' del' : '')}
+        className={(isSel ? 'sel' : '') + (r.hidden ? ' hidden' : '') + (deleteArmed ? ' del' : '')}
         onClick={(e) => {
           if (deleteArmed) { removeBar(i); return; }
-          if (e.ctrlKey || e.metaKey || e.shiftKey) toggleBarSelected(i);
+          if (e.shiftKey && multiSel.length) {
+            // Range select from the active bar to the clicked row.
+            const anchor = selectedBarIdx ?? multiSel[multiSel.length - 1];
+            const [lo, hi] = anchor < i ? [anchor, i] : [i, anchor];
+            const range = [];
+            for (let k = lo; k <= hi; k += 1) range.push(k);
+            setSelectedBars([...new Set([...multiSel, ...range])]);
+          }
+          else if (e.ctrlKey || e.metaKey || e.shiftKey) toggleBarSelected(i);
           else selectBar(i);
         }}
         onDoubleClick={() => {
@@ -1499,10 +1641,17 @@ function BbsStrip() {
           selectBar(i);
           requestFit('bar', i);
         }}
-        title={deleteArmed ? 'Delete mode: click to delete this bar (Ctrl+Z undoes)' : 'Click to select · Ctrl-click to multi-select · Double-click to zoom directly to this bar'}
+        title={deleteArmed ? 'Delete mode: click to delete this bar (Ctrl+Z undoes)' : 'Click to select · Ctrl-click to multi-select · Shift-click for a range · Double-click to zoom directly to this bar'}
         style={{ cursor: 'pointer' }}
       >
         <td onClick={(e) => e.stopPropagation()} style={{ whiteSpace: 'nowrap' }}>
+          <input
+            type="checkbox"
+            checked={isSel}
+            onChange={() => toggleBarSelected(i)}
+            title="Toggle multi-select (same as Ctrl-click)"
+            style={{ verticalAlign: 'middle' }}
+          />
           <button className="ghost sm" title={r.hidden ? 'Show bar' : 'Hide bar (stays in BBS + CSV)'} onClick={() => updateBar(i, { hidden: r.hidden ? undefined : true })}>{r.hidden ? '🚫' : '👁'}</button>
           <button className="ghost sm" title="Duplicate / Copy this bar (Ctrl+D)" onClick={() => duplicateBar(i)}>📋</button>
         </td>
@@ -1511,12 +1660,36 @@ function BbsStrip() {
         <td><span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: 4, fontWeight: 600, color: '#67e8f9' }}>{SHAPE_CODES[(r.Rebar_Type || '').toLowerCase()] || 20}</span></td>
         <td>{r.Dia}</td><td>{r._copies}</td><td>{r._cut}</td><td>{r.Weight_kg}</td>
         <td title={r.bond_condition ? `bond_condition: ${r.bond_condition}` : 'auto (no lap bond — link)'}>{r.bond_condition || '—'}</td>
+        <td onClick={(e) => e.stopPropagation()} title={r.setId ? `Parametric group ${r.setId} — click to select the whole group` : 'Not in a group — multi-select rows then ▦ Group'}>
+          {r.setId ? (
+            <button
+              className="ghost sm"
+              style={{ borderColor: '#4ade80', color: '#4ade80', fontWeight: 700 }}
+              onClick={() => selectSet(r.setId)}
+            >
+              ▦ {r.setId}
+            </button>
+          ) : (
+            <span className="hint">—</span>
+          )}
+        </td>
       </tr>
     );
   };
 
   return (
-    <footer className="bbs">
+    <footer className="bbs" style={{ flex: `0 0 ${bbsHeight}px` }}>
+      <div
+        className={`bbs-resizer ${bbsResizing ? 'active' : ''}`}
+        onMouseDown={startBbsResize}
+        onDoubleClick={() => {
+          setBbsHeight(240);
+          try { localStorage.setItem('barbending.bbsHeight', '240'); } catch {}
+        }}
+        title="Drag up/down to resize the BBS panel · Double-click to reset"
+      >
+        <div className="bbs-resizer-handle" />
+      </div>
       <div className="bbstool">
         <strong>
           {joinMode || elemFilter !== 'all'
@@ -1599,6 +1772,54 @@ function BbsStrip() {
           </label>
         )}
 
+        <label className="bbs-filter" title="Sort rows: Mark uses natural order (B2 < B10). Applies within each element group too.">
+          <span>Sort:</span>
+          <select value={sortKey} onChange={(e) => { setSortKey(e.target.value); setSortDir(1); }}>
+            <option value="none">Model order</option>
+            <option value="Bar_mark">Bar mark</option>
+            <option value="Dia">Diameter Ø</option>
+            <option value="Rebar_Type">Type</option>
+            <option value="_cut">Cut length</option>
+            <option value="Weight_kg">Weight</option>
+            <option value="setId">Group</option>
+          </select>
+        </label>
+        {sortKey !== 'none' && (
+          <button className="ghost sm" onClick={() => setSortDir((d) => (d === 1 ? -1 : 1))} title="Toggle ascending / descending">
+            {sortDir === 1 ? '↑ Asc' : '↓ Desc'}
+          </button>
+        )}
+
+        {multiSel.length > 1 && (
+          <button
+            className="sm"
+            style={{ background: '#166534', fontWeight: 700 }}
+            onClick={() => {
+              const r = groupBars(multiSel);
+              if (!r?.ok) alert(r?.msg || 'Group failed.');
+            }}
+            title="Make the selected bars a parametric group — then edit Dia, dims, type and lengths together in the green Set card (left Rebar tab). Undoable."
+          >
+            ▦ Group {multiSel.length}
+          </button>
+        )}
+        {(activeSetId || multiSetIds.length > 0) && (
+          <button
+            className="ghost sm"
+            onClick={() => {
+              if (multiSetIds.length === 1) ungroupSet(multiSetIds[0]);
+              else if (activeSetId) ungroupSet(activeSetId);
+              else ungroupBars(multiSel);
+            }}
+            title="Remove the selected bars from their group (dims stay, they just edit solo again). Undoable."
+          >
+            ▦ Ungroup{multiSetIds.length === 1 ? ` ${multiSetIds[0]}` : activeSetId ? ` ${activeSetId}` : ''}
+          </button>
+        )}
+        {multiSel.length > 1 && (
+          <span className="hint">{multiSel.length} selected — sort by Ø/Mark, then ▦ Group to edit them as one</span>
+        )}
+
         {activeConcrete && (
           <button className="ghost sm" onClick={() => requestFit('concrete', activeConcrete.id)} title={`Zoom camera to ${activeConcrete.name}`}>
             🎯 Zoom {activeConcrete.name}
@@ -1628,11 +1849,11 @@ function BbsStrip() {
           <button onClick={() => fileRef.current?.click()} title="Import and replace all bars in model (Defaults to XY plane)">⤒ Replace CSV</button>
           <input ref={fileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, false)} />
         </span>
-        <span className="hint">{deleteArmed ? '🗑 Delete mode: click a row to delete · Esc to exit · Ctrl+Z undoes' : 'Tip: Double-click any row to zoom · Ctrl-click rows to multi-select · Press F to center'}</span>
+        <span className="hint">{deleteArmed ? '🗑 Delete mode: click a row to delete · Esc to exit · Ctrl+Z undoes' : 'Tip: Click headers to sort by Mark / Ø · Checkbox or Ctrl-click to multi-select · Shift-click for a range · ▦ Group edits them as one'}</span>
       </div>
       <div className="tblwrap">
         <table>
-          <thead><tr><th></th><th>#</th><th>Mark</th><th>Type</th><th>Shape</th><th>Ø</th><th>Bars</th><th>Cut (mm)</th><th>Wt (kg)</th><th>Bond</th></tr></thead>
+          <thead><tr><th></th><th>#</th><th onClick={() => toggleSort('Bar_mark')} title="Sort by bar mark (natural order)" style={{ cursor: 'pointer' }}>Mark{sortArrow('Bar_mark')}</th><th onClick={() => toggleSort('Rebar_Type')} title="Sort by type" style={{ cursor: 'pointer' }}>Type{sortArrow('Rebar_Type')}</th><th>Shape</th><th onClick={() => toggleSort('Dia')} title="Sort by diameter" style={{ cursor: 'pointer' }}>Ø{sortArrow('Dia')}</th><th onClick={() => toggleSort('_copies')} title="Sort by bar count" style={{ cursor: 'pointer' }}>Bars{sortArrow('_copies')}</th><th onClick={() => toggleSort('_cut')} title="Sort by cut length" style={{ cursor: 'pointer' }}>Cut (mm){sortArrow('_cut')}</th><th onClick={() => toggleSort('Weight_kg')} title="Sort by weight" style={{ cursor: 'pointer' }}>Wt (kg){sortArrow('Weight_kg')}</th><th>Bond</th><th onClick={() => toggleSort('setId')} title="Sort by group" style={{ cursor: 'pointer' }}>Set{sortArrow('setId')}</th></tr></thead>
           <tbody>
             {(joinMode || (elemFilter === 'all' && groupByElem)) ? (
               groups.map((g) => {
@@ -1640,7 +1861,7 @@ function BbsStrip() {
                 return (
                   <Fragment key={`gwrap-${g.id}`}>
                     <tr className="bbs-group-row" onClick={() => toggleCollapse(g.id)}>
-                      <td colSpan={10}>
+                      <td colSpan={11}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                             <span>{isCollapsed ? '▶' : '▼'}</span>
@@ -1662,7 +1883,7 @@ function BbsStrip() {
                 );
               })
             ) : (
-              filteredRows.map(renderRow)
+              sortedRows.map(renderRow)
             )}
           </tbody>
         </table>

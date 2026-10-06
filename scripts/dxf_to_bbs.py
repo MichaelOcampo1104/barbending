@@ -86,12 +86,30 @@
 #     --starter-h/--starter-dia (--starter-dia 0 = dia from circle diameter;
 #     --starter-h 0 = max(150, 10*dia)); --starter-plane auto|XZ|YZ and
 #     --starter-z override every circle; marks ST<n> (--starter-mark).
+#     --starter-lengths "25:2000,40:3000" assigns Length by drawn diameter
+#     (tag L= still wins; beats line geometry and --starter-length).
 #     Host concrete: tag HOST= wins, else --starter-host (Group carries it).
 #     Hook-first: run/corner AT the circle elevation (upstand drops below
 #     Pos, like a dowel lapping from underneath);
 #     STRAIGHT bars start AT the circle (protrusion origin) and run Length
 #     along the aim with no leg. HOOK=END in the tag (or --starter-hook end)
 #     trails the leg instead.
+#   drawn section profiles: "PB1 PROFILE H25 [HOST=] [PLANE=/VIEW=] [ROT=]
+#     [Z=] [X=/Y=] [GOOD|POOR]" pairs the nearest OPEN 3+-pt polyline (any
+#     layer except REBAR-EXTENT ticks; paired traces are consumed, never
+#     also run as straight chords) into a `profile` bar (shape 99): legs
+#     verbatim as [length, compassDeg] parameters (no shape fitting), Pos =
+#     first vertex (plan XY verbatim, or section X → App X on XZ / App Y on
+#     YZ with out-of-plane from X=/Y= else --starter-x/--starter-y else 0),
+#     Z= wins else host bottom cover else 0. Single piece, qty 1x1.
+#     DIMENSION entities are annotations only. Tag L= is ignored (legs rule).
+#     --profiles auto skips tags entirely: every untagged open 3+-pt
+#     REBAR-H/LINK trace (dia from its layer, Plane XY unless --starter-plane,
+#     Z from --starter-z else 0) becomes a profile; tagged bars keep legacy
+#     straight-chord rows. 2-pt lines always stay straight bars.
+#     Distribution (copies start AT Pos, step signed one-sided): tag N= /
+#     SP= (signed) / AXIS= X|Y|Z, else --profile-n / --profile-spacing /
+#     --profile-axis; axis defaults out-of-plane (XZ->Y, YZ->X, XY->X).
 #   walls: closed rect on CONC-* + "W1 WALL W1 THK=<height> Z=<base> ...".
 #     Mains are verticals: "WV1 VERT 34xH12 HOST=<wall>" rings the rect like a
 #     column (perimeter positions, full internal height, good bond).
@@ -158,7 +176,7 @@ MASTER = ['Rebar_tag','Bar_mark','Rebar_Type','Shape_Code','Dia',
 'c_length_a','c_length_b','length','double_hook',
 'qty_x','spacing_x','qty_y','spacing_y','qty_z','spacing_z',
  'offset_x','offset_y','offset_z','plan_rotation','feature',
- 'polyline',
+ 'polyline','legs',
  'qty','Total Length','Weight_kg','Visible']
 
 LAP = {'good': {13:580,16:760,20:990,25:1290,32:1650,40:2240,50:3170},
@@ -235,6 +253,11 @@ def main():
     ap.add_argument('--starter-hook', default='start', choices=['start', 'end'])
     ap.add_argument('--starter-type', default='bent', choices=['bent', 'straight'])
     ap.add_argument('--starter-host', default='')
+    ap.add_argument('--starter-lengths', default='')
+    ap.add_argument('--profiles', default='tags', choices=['tags', 'auto'])
+    ap.add_argument('--profile-n', type=int, default=0)
+    ap.add_argument('--profile-spacing', type=float, default=0.0)
+    ap.add_argument('--profile-axis', default='')
     a = ap.parse_args()
 
     doc = ezdxf.readfile(a.dxf); msp = doc.modelspace()
@@ -809,6 +832,19 @@ def main():
             return [self._xy, self._xy]
     if circles:
         print(f'{len(circles)} starter circles, {len(dir_lines)} direction lines')
+    # dia-driven lengths: --starter-lengths "25:2000,40:3000" (H prefix and
+    # = allowed) assigns Length by drawn diameter; tag L= still wins, the
+    # table beats line geometry and the flat --starter-length default
+    _len_by_dia = {}
+    if a.starter_lengths:
+        for _dd, _ll in re.findall(r'H?(\d+)\s*[:=]\s*([\d.]+)', a.starter_lengths, re.I):
+            _len_by_dia[int(_dd)] = float(_ll)
+    if _len_by_dia:
+        print('dia lengths: ' + ', '.join(f'H{d}={L:.0f}' for d, L in sorted(_len_by_dia.items())))
+    # counts of explicitly-given --starter-x/--starter-y flags that a row's
+    # plane cannot use (YZ needs X, XZ needs Y, XY needs neither) — warned
+    # once at the end instead of silently dropping the flag
+    _flagign = [0, 0]
     _sidx = 0
     _oopdef = 0
     for _ce in sorted(circles,
@@ -818,12 +854,21 @@ def main():
         # (true DXF Z is ignored)
         _cx, _cy = float(_ce.dxf.center[0]), float(_ce.dxf.center[1])
         _cr = float(_ce.dxf.radius)
-        _spec, _sd = '', None
-        for _tx, _ps in sorted(alltexts,
-                               key=lambda t: math.hypot(t[1][0]-_cx, t[1][1]-_cy)):
+        _spec, _sd, _sd2, _spec2 = '', None, None, ''
+        _cand = []
+        for _tx, _ps in alltexts:
             if _SL.search(_tx) or _SROT.search(_tx):
-                _spec, _sd = _tx, math.hypot(_ps[0]-_cx, _ps[1]-_cy)
-                break
+                _cand.append((math.hypot(_ps[0]-_cx, _ps[1]-_cy), _tx))
+        _cand.sort(key=lambda r: r[0])
+        if _cand:
+            (_sd, _spec) = _cand[0]
+            if len(_cand) > 1:
+                _sd2, _spec2 = _cand[1][0], _cand[1][1]
+        if _sd2 is not None and _sd2 - _sd < 400:
+            # same guess-guard as bar tags: a close runner-up means the zone
+            # boundary runs between the tags — move the tag deeper into its zone
+            print(f'WARN circle @ ({_cx:.0f},{_cy:.0f}): tag {_spec[:40]!r} wins by '
+                  f'{_sd2-_sd:.0f} over {_spec2[:40]!r} — move the tag closer to its zone')
         if _spec and _SKIPW.search(re.sub(r'\bHOOK\s*=?\s*(START|END)\b|\bHOOKSTART\b|\bBENT\b|\bSTRAIGHT\b', '', _spec, flags=re.I)):
             print(f'WARN circle @ ({_cx:.0f},{_cy:.0f}): tag {_spec[:44]!r} belongs to another system — skipped')
             continue
@@ -876,6 +921,8 @@ def main():
                 print(f'NOTE circle @ ({_cx:.0f},{_cy:.0f}): r={_cr:.0f} -> nearest H{_dia}')
         if _mL:
             _L, _Lsrc = float(_mL.group(1)), 'tag'
+        elif _dia in _len_by_dia:
+            _L, _Lsrc = _len_by_dia[_dia], 'dia'
         elif _bl:
             _L, _Lsrc = round(_bl, 1), 'line'
         else:
@@ -939,6 +986,8 @@ def main():
                or re.search(r'\bPOS(?:ITION)?\s+Y\s*=?\s*([-\d.]+)', _spec, re.I))
         if _pl == 'YZ':
             _py = round(_cx, 2)  # section X runs along App Y
+            if a.starter_y is not None:
+                _flagign[1] += 1  # --starter-y unused on a YZ plane
             if _mX:
                 _px, _oopsrc = round(float(_mX.group(1)), 2), 'tag-X'
             elif a.starter_x is not None:
@@ -948,6 +997,8 @@ def main():
                 _oopdef += 1
         else:
             _px = round(_cx, 2)  # section X runs along App X
+            if a.starter_x is not None:
+                _flagign[0] += 1  # --starter-x unused on an XZ plane
             if _mY:
                 _py, _oopsrc = round(float(_mY.group(1)), 2), 'tag-Y'
             elif a.starter_y is not None:
@@ -971,6 +1022,259 @@ def main():
 
     if _oopdef:
         print(f'NOTE {_oopdef} circles: no tag X=/Y= or --starter-x/--starter-y — out-of-plane defaults to 0')
+
+    # profile distribution: copies start AT Pos and step toward the signed
+    # direction (one-sided, never centered). Tag N=/SP=(signed)/AXIS= win
+    # per key over --profile-n/--profile-spacing/--profile-axis; axis
+    # defaults out-of-plane (XZ->Y, YZ->X, XY->X); spacing defaults 150
+    # when N>1, else single.
+    def _prof_dist(ptxt, pl):
+        mN = re.search(r'\bN\s*=?\s*(\d+)', ptxt, re.I) if ptxt else None
+        mSP = re.search(r'\bSP\s*=?\s*(-?[\d.]+)', ptxt, re.I) if ptxt else None
+        mAX = re.search(r'\bAXIS\s*=?\s*([XYZ])\b', ptxt, re.I) if ptxt else None
+        n = int(mN.group(1)) if mN else (int(a.profile_n) or 0)
+        if mSP:
+            sp = float(mSP.group(1))
+        elif a.profile_spacing:
+            sp = float(a.profile_spacing)
+        else:
+            sp = 150.0 if n > 1 else 0.0
+        if mAX:
+            ax = mAX.group(1).upper()
+        elif str(a.profile_axis).upper() in ('X', 'Y', 'Z'):
+            ax = str(a.profile_axis).upper()
+        elif pl == 'XZ':
+            ax = 'Y'
+        elif pl == 'YZ':
+            ax = 'X'
+        else:
+            ax = 'X'
+        g = {'qty_x': 1, 'spacing_x': 0, 'qty_y': 1, 'spacing_y': 0,
+             'qty_z': 1, 'spacing_z': 0,
+             'offset_x': 0.0, 'offset_y': 0.0, 'offset_z': 0.0}
+        if n <= 1:
+            g['dist_note'] = 'single'
+            return g
+        k = ax.lower()
+        g[f'qty_{k}'] = n
+        g[f'spacing_{k}'] = sp
+        g['dist_note'] = f'x{n} toward {"-" if sp < 0 else "+"}{ax} @ {abs(sp):.0f}'
+        return g
+
+    # ---- drawn section profiles: one `profile` bar per PROFILE tag ----
+    # "PB1 PROFILE H25 [HOST=] [PLANE=/VIEW=] [ROT=] [Z=] [X=/Y=] [GOOD|POOR]"
+    # pairs the nearest OPEN polyline with 3+ vertices (2-pt lines are
+    # straight bars or direction ticks, never profiles) on any layer except
+    # REBAR-EXTENT (ticks); paired traces are consumed (never also run as
+    # straight chords). Legs are taken verbatim as [length, compassDeg]
+    # compassDeg] parameters (no shape fitting); DIMENSION entities are CAD
+    # annotations only and never drive lengths. Single piece (never split),
+    # qty 1x1 — set copies in the app.
+    _PROFW = re.compile(r'\bPROFILE\b', re.I)
+    _prof_tags = [(t, p) for t, p in alltexts if _PROFW.search(t)]
+    _prof_used, _pidx, _poopdef = set(), 0, 0
+    for _ptxt, _ppos in _prof_tags:
+        _cand, _bd = None, None
+        for _e in msp.query('LWPOLYLINE'):
+            # paired traces are consumed from straight-chord processing below
+            if _e.is_closed or id(_e) in stair_used or id(_e) in _prof_used:
+                continue
+            if _e.dxf.layer == 'REBAR-EXTENT':
+                continue
+            _q = [(p[0], p[1]) for p in _e.vertices()]
+            if len(_q) < 3:
+                continue
+            _dd = min(math.hypot(_ppos[0]-x, _ppos[1]-y) for x, y in _q)
+            if _bd is None or _dd < _bd:
+                _cand, _bd = _e, _dd
+        if _cand is None:
+            print(f'WARN tag {_ptxt[:44]!r}: no open 3+-pt polyline nearby — skipped')
+            continue
+        _prof_used.add(id(_cand))
+        _q = [(float(p[0]), float(p[1])) for p in _cand.vertices()]
+        _legs = []
+        for _k in range(1, len(_q)):
+            _dx, _dy = _q[_k][0]-_q[_k-1][0], _q[_k][1]-_q[_k-1][1]
+            _ln = math.hypot(_dx, _dy)
+            if _ln < 1e-6:
+                continue
+            _legs.append([round(_ln, 1), round(math.degrees(math.atan2(_dy, _dx)), 1)])
+        if not _legs:
+            print(f'WARN tag {_ptxt[:44]!r}: degenerate polyline — skipped')
+            continue
+        _tot = round(sum(l for l, _ in _legs), 1)
+        _tm = TAG.search(_ptxt)
+        _pmark = _tm.group(1) if _tm and _tm.group(1) else None
+        if not _pmark or _pmark.upper() in ('VERT', 'TIE', 'LINK', 'STARTER', 'RISER', 'BENT', 'HOOK', 'PROFILE'):
+            _pidx += 1
+            _pmark = f'PB{_pidx}'
+        _pmD = _SDIA.search(_ptxt); _pmHd = _SHDIA.search(_ptxt)
+        _pmLay = re.search(r'H(\d+)', _cand.dxf.layer, re.I)
+        if _pmD:
+            _pdia = int(_pmD.group(1))
+        elif _pmHd:
+            _pdia = int(_pmHd.group(1))
+        elif _pmLay:
+            _pdia = int(_pmLay.group(1))  # plan traces carry dia in the layer
+        else:
+            _pdia = 16
+            print(f'WARN {_pmark}: no H<dia>/DIA= in tag or layer — assuming H16')
+        if _SL.search(_ptxt):
+            print(f'NOTE {_pmark}: tag L= ignored — leg lengths rule the profile')
+        _mv = LEGVW.search(_ptxt)
+        _mp = re.search(r'\bPLANE\s*=?\s*(XY|XZ|YZ)\b', _ptxt, re.I)
+        if _mv:
+            _ppl = _mv.group(1).upper()
+        elif _mp:
+            _ppl = _mp.group(1).upper()
+        elif str(a.starter_plane).upper() in ('XY', 'XZ', 'YZ'):
+            _ppl = str(a.starter_plane).upper()
+        elif abs(math.cos(math.radians(_legs[0][1]))) >= abs(math.sin(math.radians(_legs[0][1]))):
+            _ppl = 'XZ'
+        else:
+            _ppl = 'YZ'
+        _mrot = LEGROT.search(_ptxt)
+        _prot0 = float(_mrot.group(1)) if _mrot else 0.0
+        _mhst = LEGHOST.search(_ptxt)
+        _phost = _mhst.group(1) if _mhst else (a.starter_host or '')
+        _mslab = cobj.get(cmap[_phost.lower()]) if _phost and _phost.lower() in cmap else None
+        _mz = LEGZ.search(_ptxt)
+        if _mz:
+            _pz, _pzsrc = float(_mz.group(1)), 'tag'
+        elif _mslab is not None:
+            _pz = round(_mslab['z'] + _mslab.get('covB', a.cover) + _pdia/2, 1)
+            _pzsrc = f'auto-{str(_mslab.get("kind") or "member").lower()}Bot'
+        else:
+            _pz, _pzsrc = 0.0, 'default-0'
+            print(f'NOTE {_pmark}: no Z= or host — level 0 (set Z= or move in app)')
+        _mX = (re.search(r'\bX\s*=\s*([-\d.]+)', _ptxt, re.I)
+               or re.search(r'\bPOS(?:ITION)?\s+X\s*=?\s*([-\d.]+)', _ptxt, re.I))
+        _mY = (re.search(r'\bY\s*=\s*([-\d.]+)', _ptxt, re.I)
+               or re.search(r'\bPOS(?:ITION)?\s+Y\s*=?\s*([-\d.]+)', _ptxt, re.I))
+        if _ppl == 'XY':
+            # plan-drawn bars: position verbatim from the first vertex
+            _ppx, _ppy, _poop = round(_q[0][0], 2), round(_q[0][1], 2), 'plan-XY'
+            if a.starter_x is not None:
+                _flagign[0] += 1
+            if a.starter_y is not None:
+                _flagign[1] += 1
+        elif _ppl == 'YZ':
+            _ppy = round(_q[0][0], 2)
+            if a.starter_y is not None:
+                _flagign[1] += 1  # --starter-y unused on a YZ plane
+            if _mX:
+                _ppx, _poop = round(float(_mX.group(1)), 2), 'tag-X'
+            elif a.starter_x is not None:
+                _ppx, _poop = round(float(a.starter_x), 2), 'input-X'
+            else:
+                _ppx, _poop = 0.0, 'default-0'
+                _poopdef += 1
+        else:
+            _ppx = round(_q[0][0], 2)
+            if a.starter_x is not None:
+                _flagign[0] += 1  # --starter-x unused on an XZ plane
+            if _mY:
+                _ppy, _poop = round(float(_mY.group(1)), 2), 'tag-Y'
+            elif a.starter_y is not None:
+                _ppy, _poop = round(float(a.starter_y), 2), 'input-Y'
+            else:
+                _ppy, _poop = 0.0, 'default-0'
+                _poopdef += 1
+        _pov = {'rtype': 'profile', 'plane': _ppl, 'rot': _prot0,
+                'L': _tot, 'z': _pz, 'zsrc': _pzsrc,
+                'tag': _ptxt, 'legs': _legs, 'nosplit': True,
+                'host': _phost}
+        _pdist = _prof_dist(_ptxt, _ppl)
+        for _gk, _gv in _pdist.items():
+            if _gk != 'dist_note':
+                _pov[_gk] = _gv
+        if _tot > a.stock:
+            print(f'NOTE {_pmark}: profile {round(_tot)} over stock {round(a.stock)} — single piece, split manually in app')
+        bars.append(_CBar(f'PROFILE-H{_pdia}', _ppx, _ppy, _pmark, dict(_pov)))
+        print(f'{_pmark}: profile H{_pdia} {len(_legs)} legs L={_tot} -> {_ppl} rot={_prot0} '
+              f'@ ({_ppx:.1f},{_ppy:.1f},{_pz})[{_poop}] zsrc={_pzsrc} {_pdist["dist_note"]}')
+    if _poopdef:
+        print(f'NOTE {_poopdef} profiles: no tag X=/Y= or --starter-x/--starter-y — out-of-plane defaults to 0')
+
+    # ---- tagless plan cranks: --profiles auto converts untagged open 3+-pt
+    # REBAR-H/LINK traces (dia from the layer) into profiles; anything with
+    # a bar tag within 1500 keeps its legacy straight-chord row. Default
+    # tags-mode leaves this off so mixed/tagged plan files convert exactly
+    # as before.
+    if str(a.profiles).lower() == 'auto':
+        _auto_n = 0
+        for _e in msp.query('LWPOLYLINE'):
+            if (_e.is_closed or id(_e) in stair_used or id(_e) in _prof_used
+                    or not (_e.dxf.layer.startswith('REBAR-H') or _e.dxf.layer.startswith('REBAR-LINK'))):
+                continue
+            _q = [(float(p[0]), float(p[1])) for p in _e.vertices()]
+            if len(_q) < 3:
+                continue
+            _tagged = False
+            for _tx, _ps in texts:
+                if min(math.hypot(_ps[0]-x, _ps[1]-y) for x, y in _q) < 1500:
+                    _tagged = True
+                    break
+            if _tagged:
+                continue
+            _legs = []
+            for _k in range(1, len(_q)):
+                _dx, _dy = _q[_k][0]-_q[_k-1][0], _q[_k][1]-_q[_k-1][1]
+                _ln = math.hypot(_dx, _dy)
+                if _ln < 1e-6:
+                    continue
+                _legs.append([round(_ln, 1), round(math.degrees(math.atan2(_dy, _dx)), 1)])
+            if not _legs:
+                continue
+            _tot = round(sum(l for l, _ in _legs), 1)
+            _lay = re.search(r'H(\d+)', _e.dxf.layer, re.I)
+            _pdia = int(_lay.group(1)) if _lay else 16
+            _pidx += 1
+            _pmark = f'PB{_pidx}'
+            _ppl = str(a.starter_plane).upper() if str(a.starter_plane).upper() in ('XY', 'XZ', 'YZ') else 'XY'
+            if _ppl == 'XY':
+                _ppx, _ppy = round(_q[0][0], 2), round(_q[0][1], 2)
+                if a.starter_x is not None:
+                    _flagign[0] += 1
+                if a.starter_y is not None:
+                    _flagign[1] += 1
+            elif _ppl == 'YZ':
+                _ppy = round(_q[0][0], 2)
+                if a.starter_y is not None:
+                    _flagign[1] += 1  # --starter-y unused on a YZ plane
+                _ppx = round(float(a.starter_x), 2) if a.starter_x is not None else 0.0
+            else:
+                _ppx = round(_q[0][0], 2)
+                if a.starter_x is not None:
+                    _flagign[0] += 1  # --starter-x unused on an XZ plane
+                _ppy = round(float(a.starter_y), 2) if a.starter_y is not None else 0.0
+            if a.starter_z is not None:
+                _pz, _pzsrc = float(a.starter_z), 'default'
+            else:
+                _pz, _pzsrc = 0.0, 'default-0'
+            _pov = {'rtype': 'profile', 'plane': _ppl, 'rot': 0.0,
+                    'L': _tot, 'z': _pz, 'zsrc': _pzsrc,
+                    'tag': '', 'legs': _legs, 'nosplit': True,
+                    'host': (a.starter_host or '')}
+            _pdist = _prof_dist(None, _ppl)
+            for _gk, _gv in _pdist.items():
+                if _gk != 'dist_note':
+                    _pov[_gk] = _gv
+            if _tot > a.stock:
+                print(f'NOTE {_pmark}: profile {round(_tot)} over stock — single piece, split manually in app')
+            _prof_used.add(id(_e))
+            bars.append(_CBar(f'PROFILE-H{_pdia}', _ppx, _ppy, _pmark, dict(_pov)))
+            _auto_n += 1
+            print(f'{_pmark}: auto-profile H{_pdia} {len(_legs)} legs L={_tot} -> {_ppl} @ ({_ppx:.1f},{_ppy:.1f},{_pz}) {_pdist["dist_note"]}')
+        if _auto_n:
+            print(f'{_auto_n} untagged traces auto-profiled (tagged bars keep legacy rows)')
+    if _prof_used:
+        bars[:] = [b for b in bars if id(b) not in _prof_used]
+        print(f'{len(_prof_used)} traces consumed as profiles (no chord rows)')
+    if _flagign[0]:
+        print(f'WARN {_flagign[0]} bars: --starter-x given but unused (YZ plane needs X; XZ/XY ignore it)')
+    if _flagign[1]:
+        print(f'WARN {_flagign[1]} bars: --starter-y given but unused (XZ plane needs Y; YZ/XY ignore it)')
 
     rows = []; tag = 0
     odir = []  # (mark, rtype, ang, len, slabId) for the parity-orientation check
@@ -1461,11 +1765,13 @@ def main():
             width_txt = ext_txt
         if rtype in ('c_link', 'c_link_with_hook', 'tie') and L <= 0:
             L, Lsrc = 110.0, 'default'
-        lap = 0 if rtype in ('c_link', 'c_link_with_hook', 'tie') else (lap_len(dia, bond_bar) if L > a.stock else 0)
+        lap = 0 if rtype in ('c_link', 'c_link_with_hook', 'tie', 'profile') else (lap_len(dia, bond_bar) if L > a.stock else 0)
 
-        # split > stock into lapped pieces (verticals split upward in Z)
+        # split > stock into lapped pieces (verticals split upward in Z);
+        # drawn profiles never split (a lap mid-crank is meaningless — NOTE
+        # when over stock and emit one piece)
         segs = []; s = 0.0
-        if L <= a.stock: segs = [(0.0, L, 0)]
+        if (ov and ov.get('nosplit')) or L <= a.stock: segs = [(0.0, L, 0)]
         else:
             while L - s > a.stock:
                 segs.append((s, a.stock, lap)); s += a.stock - lap
@@ -1507,6 +1813,9 @@ def main():
             if ov and 'plan_rotation' in ov:
                 # generated bars (starters) aim via plan rotation on any type
                 row['plan_rotation'] = ov['plan_rotation']
+            if ov and 'legs' in ov:
+                # drawn section profile: per-leg [[len, compassDeg]...] JSON
+                row['legs'] = json.dumps(ov['legs'])
             if ov:
                 for gk in ('qty_x', 'spacing_x', 'qty_y', 'spacing_y',
                            'qty_z', 'spacing_z', 'offset_x', 'offset_y', 'offset_z'):

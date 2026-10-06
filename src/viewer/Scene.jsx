@@ -172,23 +172,25 @@ function DiveZoom() {
       // Velocity itself is capped so one fling can't build runaway momentum.
       const clamped = Math.max(-250, Math.min(250, delta));
       const gain = useStore.getState().nav?.zoomSpeed ?? 1;
-      zoomVel.current = Math.max(-VEL_MAX, Math.min(VEL_MAX, zoomVel.current + clamped * 0.0022 * gain));
+      if ((useStore.getState().nav?.style ?? 'fluid') === 'cad') {
+        // CAD direct: one immediate step per notch (a full glide's worth, no tail)
+        zoomVel.current = 0;
+        applyStep(clamped * 0.0022 * gain);
+      } else {
+        zoomVel.current = Math.max(-VEL_MAX, Math.min(VEL_MAX, zoomVel.current + clamped * 0.0022 * gain));
+      }
     };
 
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, [gl, controls]);
 
-  useFrame((_, deltaSec) => {
+  // Shared dolly step (zoom-to-cursor or pivot dolly + guardrails). Fluid
+  // mode feeds it decayed velocity every frame; CAD mode feeds one direct
+  // step per wheel notch — the same distance, zero glide.
+  const applyStep = (step) => {
     const ctl = controls;
-    if (!ctl || Math.abs(zoomVel.current) < 1e-5) {
-      zoomVel.current = 0;
-      return;
-    }
-
-    const decay = Math.exp(-20 * Math.min(deltaSec, 0.1));
-    const step = zoomVel.current * (1 - decay);
-    zoomVel.current *= decay;
+    if (!ctl) return;
     const r = Math.max(camera.position.distanceTo(ctl.target), 0.005);
 
     // Zoom→cursor off: classic orbit dolly straight at the pivot (pivot stays).
@@ -265,6 +267,20 @@ function DiveZoom() {
     if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('autotest')) {
       console.info(`[dive] r=${r.toFixed(3)} vel=${zoomVel.current.toFixed(3)} cam=[${camera.position.toArray().map((v) => +v.toFixed(3)).join(',')}] tgt=[${ctl.target.toArray().map((v) => +v.toFixed(3)).join(',')}]`);
     }
+  };
+
+  useFrame((_, deltaSec) => {
+    // CAD style never glides: kill leftover velocity, wheel steps apply direct.
+    if ((useStore.getState().nav?.style ?? 'fluid') === 'cad') { zoomVel.current = 0; return; }
+    const ctl = controls;
+    if (!ctl || Math.abs(zoomVel.current) < 1e-5) {
+      zoomVel.current = 0;
+      return;
+    }
+    const decay = Math.exp(-20 * Math.min(deltaSec, 0.1));
+    const step = zoomVel.current * (1 - decay);
+    zoomVel.current *= decay;
+    applyStep(step);
   });
 
   return null;
@@ -1687,7 +1703,7 @@ export default function Scene() {
           />
         );
       })}
-      <OrbitControls makeDefault enableDamping={nav.damping !== false} dampingFactor={0.08}
+      <OrbitControls makeDefault enableDamping={nav.style !== 'cad' && nav.damping !== false} dampingFactor={0.08}
         rotateSpeed={nav.rotateSpeed ?? 1} panSpeed={1.8 * (nav.panSpeed ?? 1)} screenSpacePanning enableZoom={false} minDistance={0} maxDistance={Infinity}
         mouseButtons={{ LEFT: navOrbit ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN }} />
       <FitIfc />

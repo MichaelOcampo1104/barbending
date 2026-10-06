@@ -797,9 +797,9 @@ export const useStore = create((set, get) => ({
   setNavMode: (v) => set({ navMode: v }),
   // Navigation tuning (session-only view prefs: never saved, never in history).
   // Speeds are multipliers on the Blender-style defaults (1.0 = current feel).
-  nav: { rotateSpeed: 1, panSpeed: 1, zoomSpeed: 1, damping: true, zoomToCursor: true },
+  nav: { style: 'fluid', rotateSpeed: 1, panSpeed: 1, zoomSpeed: 1, damping: true, zoomToCursor: true },
   setNav: (patch) => set((s) => ({ nav: { ...s.nav, ...patch } })),
-  resetNav: () => set({ nav: { rotateSpeed: 1, panSpeed: 1, zoomSpeed: 1, damping: true, zoomToCursor: true } }),
+  resetNav: () => set({ nav: { style: 'fluid', rotateSpeed: 1, panSpeed: 1, zoomSpeed: 1, damping: true, zoomToCursor: true } }),
   // Preset view request (Blender-style Top/Bottom/Left/Right/Front/Back/Iso).
   // Scene consumes {dir, n} and keeps the current orbit target (focus stays).
   viewReq: null,
@@ -1098,5 +1098,64 @@ export const useStore = create((set, get) => ({
     const idx = get().setIndices(setId);
     if (!idx.length) return;
     set({ selectedBars: idx, selectedBar: idx[idx.length - 1] });
+  },
+  // Ad-hoc parametric group: tag the given (or currently selected) bars with
+  // a fresh setId so they edit together in the Set card (Dia, dims,
+  // orientation, lengths, type). Unlike face-sketch sets there is no sketch
+  // spec, so grid re-spread stays disabled — positions/lengths still edit
+  // via the multi-select move + uniform/taper lengths. One undo step.
+  groupBars: (idxs) => {
+    const s = get();
+    const list = [...new Set(idxs ?? s.selectedBars ?? [s.selectedBar])]
+      .filter((i) => Number.isInteger(i) && i >= 0 && i < s.bars.length).sort((a, b) => a - b);
+    if (list.length < 2) return { ok: false, msg: 'Select at least 2 bars to group.' };
+    let mx = 0;
+    for (const b of s.bars || []) {
+      const m = /^S(\d+)$/.exec(String(b.setId || ''));
+      if (m) mx = Math.max(mx, Number(m[1]));
+    }
+    const setId = `S${mx + 1}`;
+    const inSet = new Set(list);
+    set((state) => withHist(state, {
+      bars: state.bars.map((b, i) => {
+        if (!inSet.has(i)) return b;
+        const next = { ...b, setId };
+        delete next.setSpec;
+        return next;
+      }),
+      selectedBars: list,
+      selectedBar: list[list.length - 1],
+    }));
+    return { ok: true, setId };
+  },
+  // Remove bars from any group (ungroup a whole setId or just listed bars).
+  // Members keep all dims — they simply edit solo again. One undo step.
+  ungroupBars: (idxs) => {
+    const s = get();
+    const list = [...new Set(idxs ?? s.selectedBars ?? [s.selectedBar])]
+      .filter((i) => Number.isInteger(i) && i >= 0 && i < s.bars.length);
+    if (!list.length) return;
+    const inSet = new Set(list);
+    set((state) => withHist(state, {
+      bars: state.bars.map((b, i) => {
+        if (!inSet.has(i) || !b.setId) return b;
+        const next = { ...b };
+        delete next.setId;
+        delete next.setSpec;
+        return next;
+      }),
+    }));
+  },
+  ungroupSet: (setId) => {
+    if (!setId) return;
+    set((state) => withHist(state, {
+      bars: state.bars.map((b) => {
+        if (b.setId !== setId) return b;
+        const next = { ...b };
+        delete next.setId;
+        delete next.setSpec;
+        return next;
+      }),
+    }));
   },
 }));

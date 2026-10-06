@@ -127,7 +127,36 @@ button.block { width: 100%; margin-top: 8px; }
 .err { font-size: 12px; color: #fca5a5; }
 
 /* bottom BBS strip: full width, flexible height, no dead space */
-.bbs { flex: 0 0 240px; border-top: 1px solid #243352; background: #0d1730; display: flex; flex-direction: column; min-height: 0; }
+.bbs { flex: 0 0 240px; border-top: 1px solid #243352; background: #0d1730; display: flex; flex-direction: column; min-height: 0; position: relative; }
+/* horizontal drag handle across the top edge of the BBS strip */
+.bbs-resizer {
+  height: 6px;
+  flex: 0 0 6px;
+  cursor: row-resize;
+  background: transparent;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  user-select: none;
+  touch-action: none;
+  transition: background 0.15s;
+}
+.bbs-resizer:hover, .bbs-resizer.active {
+  background: #0284c7;
+}
+.bbs-resizer-handle {
+  height: 2px;
+  width: 36px;
+  background: #334155;
+  border-radius: 2px;
+  transition: background 0.15s, width 0.15s;
+}
+.bbs-resizer:hover .bbs-resizer-handle, .bbs-resizer.active .bbs-resizer-handle {
+  background: #38bdf8;
+  width: 52px;
+}
 .bbstool { display: flex; gap: 10px; align-items: center; padding: 6px 12px; flex-wrap: wrap; border-bottom: 1px solid #1a2948; }
 .bbstool strong { font-size: 13px; color: #e2e8f0; }
 .bbs-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #94a3b8; }
