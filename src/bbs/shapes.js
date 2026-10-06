@@ -45,11 +45,14 @@ export function genBarPoints(bar) {
   const d = Number(bar.Dia || 16);
   switch (bar.Rebar_Type) {
     case 'bent': {
-      // L-shape: main leg L along local X, bent leg H along local Y (up/down)
+      // L-shape: main leg L along local X, bent leg H along local Y (up/down).
+      // hook_start 'yes' puts the leg FIRST ([0,0,0] -> [0,H,0] -> [L,H,0]):
+      // the bend sits at the bar start (Pos) instead of trailing the length.
       const L = Number(bar['Length of Bar'] || bar.length || 3000);
       const H = Number(bar.H || 800);
       const dir = String(bar.bent_up_down || 'up').toLowerCase() === 'down' ? -1 : 1;
-      const pts = [[0, 0, 0], [L, 0, 0], [L, dir * H, 0]];
+      const hookFirst = String(bar.hook_start || 'no').toLowerCase() === 'yes';
+      const pts = hookFirst ? [[0, 0, 0], [0, dir * H, 0], [L, dir * H, 0]] : [[0, 0, 0], [L, 0, 0], [L, dir * H, 0]];
       return finish(pts, 1, d);
     }
     case 'crank': {
@@ -211,7 +214,7 @@ export function defaultBar(type, tag = 1) {
     qty: 1,
   };
   switch (type) {
-    case 'bent': return { ...base, 'Length of Bar': 3000, H: 800, bent_up_down: 'up' };
+    case 'bent': return { ...base, 'Length of Bar': 3000, H: 800, bent_up_down: 'up', hook_start: 'no' };
     case 'crank': return { ...base, Long_length: 4000, Crank_step: 300, 'Length of Lap': 500 };
     case 'double_crank': return { ...base, DC_Lap_Start: 1000, DC_Lap_Mid: 2000, DC_Tail_Length: 1000, Crank_step: 300 };
     case 'c_link': return { ...base, length: 1000, c_length_a: 130, c_length_b: 130, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150 };
@@ -447,7 +450,7 @@ export function defaultBarForHost(type, tag = 1, host = null, cover = 30) {
 // position, distribution, group, plane) are preserved on type switch.
 export const DIM_FIELDS_BY_TYPE = {
   straight: ['Length of Bar'],
-  bent: ['Length of Bar', 'H', 'bent_up_down'],
+  bent: ['Length of Bar', 'H', 'bent_up_down', 'hook_start'],
   crank: ['Long_length', 'Crank_step', 'Length of Lap'],
   double_crank: ['DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length', 'Crank_step'],
   c_link: ['length', 'c_length_a', 'c_length_b'],

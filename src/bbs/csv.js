@@ -121,7 +121,7 @@ export function getShapeParameters(bar) {
 export const MASTER_HEADERS = [
   'Rebar_tag', 'Bar_mark', 'Rebar_Type', 'Shape_Code', 'Dia',
   'Pos_x', 'Pos_y', 'Pos_z', 'Group', 'Pos_Rotation', 'Plane',
-  'Length of Bar', 'H', 'bent_up_down',
+  'Length of Bar', 'H', 'bent_up_down', 'hook_start',
   'Long_length', 'Crank_step', 'Length of Lap', 'bond_condition',
   'DC_Lap_Start', 'DC_Lap_Mid', 'DC_Tail_Length',
   'c_length_a', 'c_length_b', 'length', 'double_hook',
@@ -353,6 +353,7 @@ export function getBarShapeKey(bar, matchHost = false) {
   const cut = pts?.cutLengthMm || 0;
   const extra = [];
   if (type === 'bent') extra.push(String(bar.bent_up_down || 'up').toLowerCase());
+  if (type === 'bent') extra.push('hook:' + String(bar.hook_start || 'no').toLowerCase());
   if (type === 'c_link_with_hook') extra.push(String(bar.double_hook || 'no').toLowerCase());
 
   const hostPart = matchHost && bar.host ? `host:${bar.host}|` : '';
@@ -483,6 +484,9 @@ export function parseCsv(text, existingBars = [], concretes = []) {
     }
     if (o.double_hook) {
       o.double_hook = String(o.double_hook).toLowerCase();
+    }
+    if (o.hook_start) {
+      o.hook_start = String(o.hook_start).toLowerCase();
     }
 
     if (Number(o.Visible) === 0) o.hidden = true;

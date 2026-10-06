@@ -137,6 +137,13 @@ function SetCard({ setId, count, dia, type, dimFields, dimBar, onDim, gridSp, se
                 <option value="yes">yes (double hook)</option>
               </select>
             </label>
+          ) : f === 'hook_start' ? (
+            <label key={f} className="fld"><span>hook_start (all)</span>
+              <select value={dimBar[f] ?? 'no'} onChange={(e) => onDim(f, e.target.value)}>
+                <option value="no">no (leg trails length)</option>
+                <option value="yes">yes (leg first at start)</option>
+              </select>
+            </label>
           ) : (
             <label key={f} className="fld"><span>{f} (all)</span>
               <input type="number" value={dimBar[f] ?? ''} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onDim(f, n); }} />
@@ -347,6 +354,13 @@ function BarEditor() {
           <select value={bar[f] ?? 'no'} onChange={(e) => set(f, e.target.value)}>
             <option value="no">no (single hook)</option>
             <option value="yes">yes (double hook)</option>
+          </select>
+        </label>
+      ) : f === 'hook_start' ? (
+        <label key={f} className="fld"><span>hook_start</span>
+          <select value={bar[f] ?? 'no'} onChange={(e) => set(f, e.target.value)}>
+            <option value="no">no (leg trails length)</option>
+            <option value="yes">yes (leg first at start)</option>
           </select>
         </label>
       ) : f === 'polyline' ? (

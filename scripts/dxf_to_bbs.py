@@ -59,6 +59,38 @@
 #     so the flight leg matches SLOPE= (lengths verbatim, ~1-2 deg kink
 #     correction, else the leg would dive through the flight soffit);
 #     section-spanners (flight root ~waist depth up) are A-seated verbatim.
+#   drawn-circle starters: one bent dowel per CIRCLE (any layer — the DXF
+#     is a SECTION: centre X = in-plane horizontal, centre Y = ELEVATION
+#     (becomes Pos_z unless Z= wins); the out-of-plane coordinate is NOT in
+#     the drawing — give --starter-x (YZ plane: App X of the plane) or
+#     --starter-y (XZ plane: App Y of the plane), or per-group X=/Y= in the
+#     spec tag. So YZ: Pos=(X-input, circle-X, circle-Y); XZ:
+#     Pos=(circle-X, Y-input, circle-Y). Diameter = drawn circle diameter
+#     (2x radius, snapped to standard with a NOTE). Nearest
+#     direction line (LINE, or OPEN polyline on a non-REBAR layer so real
+#     bars are never consumed) gives Length (line length) + aim (line
+#     angle); nearest plain spec tag ("L 2000 ROT 90", "=" optional)
+#     overrides: L= length, ROT= length compass (0=+X, 90=+Y),
+#     [STRAIGHT | BENT] (default BENT), H=/HB= bent leg, H<dia>/DIA=
+#     diameter, VIEW=/PLANE= plane, X=/Y=/Z= (or POS X/Y/Z n) position,
+#     HOST=, GOOD/POOR. Tags carrying VERT/TIE/RISER/LINK/BENT/STARTER
+#     belong to other systems — those circles are skipped with a WARN.
+#     Output bent, Rot 0: main Length runs horizontally OUT of the section
+#     (XZ section: toward +-Y; YZ section: toward +-X) with the corner/run
+#     AT the circle elevation (bend at circle, length after it, upstand
+#     dropping below Pos); plan_rotation aims the length from ROT=
+#     (XZ phi=aim, YZ phi=aim+270). Auto-plane keeps the length
+#     out-of-plane (aim near +-X -> YZ, near +-Y -> XZ); VIEW=/
+#     --starter-plane force the record (then ROT should suit that axis);
+#     bond good. Missing pieces fall back to --starter-length/--starter-rot/
+#     --starter-h/--starter-dia (--starter-dia 0 = dia from circle diameter;
+#     --starter-h 0 = max(150, 10*dia)); --starter-plane auto|XZ|YZ and
+#     --starter-z override every circle; marks ST<n> (--starter-mark).
+#     Hook-first: run/corner AT the circle elevation (upstand drops below
+#     Pos, like a dowel lapping from underneath);
+#     STRAIGHT bars start AT the circle (protrusion origin) and run Length
+#     along the aim with no leg. HOOK=END in the tag (or --starter-hook end)
+#     trails the leg instead.
 #   walls: closed rect on CONC-* + "W1 WALL W1 THK=<height> Z=<base> ...".
 #     Mains are verticals: "WV1 VERT 34xH12 HOST=<wall>" rings the rect like a
 #     column (perimeter positions, full internal height, good bond).
@@ -119,7 +151,7 @@ import ezdxf
 
 MASTER = ['Rebar_tag','Bar_mark','Rebar_Type','Shape_Code','Dia',
 'Pos_x','Pos_y','Pos_z','Group','Pos_Rotation','Plane',
-'Length of Bar','H','bent_up_down','Long_length','Crank_step','Length of Lap',
+ 'Length of Bar','H','bent_up_down','hook_start','Long_length','Crank_step','Length of Lap',
 'bond_condition',
 'DC_Lap_Start','DC_Lap_Mid','DC_Tail_Length',
 'c_length_a','c_length_b','length','double_hook',
@@ -190,6 +222,17 @@ def main():
     ap.add_argument('--cover', type=float, default=40)
     ap.add_argument('--gap', type=float, default=25)
     ap.add_argument('--out', default='')
+    ap.add_argument('--starter-length', type=float, default=2000.0)
+    ap.add_argument('--starter-rot', type=float, default=0.0)
+    ap.add_argument('--starter-h', type=float, default=0.0)
+    ap.add_argument('--starter-dia', type=int, default=0)
+    ap.add_argument('--starter-plane', default='auto')
+    ap.add_argument('--starter-z', type=float, default=None)
+    ap.add_argument('--starter-mark', default='ST')
+    ap.add_argument('--starter-x', type=float, default=None)
+    ap.add_argument('--starter-y', type=float, default=None)
+    ap.add_argument('--starter-hook', default='start', choices=['start', 'end'])
+    ap.add_argument('--starter-type', default='bent', choices=['bent', 'straight'])
     a = ap.parse_args()
 
     doc = ezdxf.readfile(a.dxf); msp = doc.modelspace()
@@ -718,6 +761,210 @@ def main():
         print(f'{dmark}: {nn} transverse H{ddia} on {dh["name"]} '
               f'(L={dlen} {"even" if dnz else "@"+str(dsp)})')
 
+    # ---- drawn-circle starters: one bent dowel per CIRCLE (see header) ----
+    STD_DIA = (10, 13, 16, 20, 25, 32, 40, 50)
+    circles = [e for e in msp.query('CIRCLE')]
+    _bar_ids = set(id(e) for e in bars)
+    dir_lines = [e for e in msp.query('LINE')]
+    dir_lines += [e for e in msp.query('LWPOLYLINE')
+                  if (not e.is_closed and id(e) not in _bar_ids
+                      and not e.dxf.layer.startswith('REBAR-H')
+                      and not e.dxf.layer.startswith('REBAR-LINK'))]
+    alltexts = [(t.plain_text(), t.dxf.insert) for t in msp.query('TEXT MTEXT')]
+    _SKIPW = re.compile(r'\b(VERT|TIE|RISER|LINK|C_LINK|HOOK|BENT|STARTER)\b', re.I)
+    _SL = re.compile(r'\bL\s*=?\s*([\d.]+)', re.I)
+    _SROT = re.compile(r'\bROT\s*=?\s*([-\d.]+)', re.I)
+    _SH = re.compile(r'\bH\s*=\s*([\d.]+)', re.I)
+    _SHB = re.compile(r'\bHB\s*=?\s*([\d.]+)', re.I)
+    _SDIA = re.compile(r'\bDIA\s*=?\s*H?(\d+)', re.I)
+    _SHDIA = re.compile(r'H(\d+)(?:\s|$|-|$)', re.I)
+    def _segdist(px, py, ax, ay, bx, by):
+        vx, vy = bx-ax, by-ay
+        vv = vx*vx+vy*vy or 1.0
+        tt = max(0.0, min(1.0, ((px-ax)*vx+(py-ay)*vy)/vv))
+        return math.hypot(px-(ax+tt*vx), py-(ay+tt*vy))
+    def _line_geom(e):
+        try:
+            if e.dxftype() == 'LINE':
+                a, b = e.dxf.start, e.dxf.end
+            else:
+                q = [(p[0], p[1]) for p in e.vertices()]
+                a, b = q[0], q[-1]
+            ln = math.hypot(b[0]-a[0], b[1]-a[1])
+            an = math.degrees(math.atan2(b[1]-a[1], b[0]-a[0])) if ln else 0.0
+            return ln, an
+        except Exception:
+            return None
+    class _CBar:
+        def __init__(self, layer, x, y, mark, ov):
+            self.dxf = SimpleNamespace(layer=layer)
+            self.is_closed = False
+            self._xy = (round(x, 2), round(y, 2))
+            self._circ = True
+            self._circ_mark = mark
+            self._ov = ov
+        def vertices(self):
+            return [self._xy, self._xy]
+    if circles:
+        print(f'{len(circles)} starter circles, {len(dir_lines)} direction lines')
+    _sidx = 0
+    _oopdef = 0
+    for _ce in sorted(circles,
+                      key=lambda e: (round(float(e.dxf.center[0]), 2),
+                                     round(float(e.dxf.center[1]), 2))):
+        # section convention: DXF X = in-plane horizontal, DXF Y = elevation
+        # (true DXF Z is ignored)
+        _cx, _cy = float(_ce.dxf.center[0]), float(_ce.dxf.center[1])
+        _cr = float(_ce.dxf.radius)
+        _spec, _sd = '', None
+        for _tx, _ps in sorted(alltexts,
+                               key=lambda t: math.hypot(t[1][0]-_cx, t[1][1]-_cy)):
+            if _SL.search(_tx) or _SROT.search(_tx):
+                _spec, _sd = _tx, math.hypot(_ps[0]-_cx, _ps[1]-_cy)
+                break
+        if _spec and _SKIPW.search(re.sub(r'\bHOOK\s*=?\s*(START|END)\b|\bHOOKSTART\b|\bBENT\b|\bSTRAIGHT\b', '', _spec, flags=re.I)):
+            print(f'WARN circle @ ({_cx:.0f},{_cy:.0f}): tag {_spec[:44]!r} belongs to another system — skipped')
+            continue
+        # bar type: STRAIGHT | BENT in the tag wins, else --starter-type
+        # (default bent); straight bars start at the circle (protrusion
+        # origin) and run Length along the aim with no leg
+        _mT = re.search(r'\b(STRAIGHT|BENT)\b', _spec, re.I)
+        if _mT:
+            _want_straight = _mT.group(1).upper() == 'STRAIGHT'
+        else:
+            _want_straight = str(a.starter_type).lower() == 'straight'
+        # hook side: HOOK=START|END (or HOOKSTART) in the tag wins, else
+        # --starter-hook (default start: upstand at the circle, length after)
+        _mHK = re.search(r'\bHOOK\s*=?\s*(START|END)\b|\bHOOKSTART\b', _spec, re.I)
+        if _mHK:
+            _hook = 'yes' if (_mHK.group(1) or 'START').upper() == 'START' else 'no'
+        else:
+            _hook = 'yes' if str(a.starter_hook).lower() == 'start' else 'no'
+        _bl, _ba, _bd = 0.0, None, None
+        for _le in dir_lines:
+            _g = _line_geom(_le)
+            if not _g:
+                continue
+            _ln, _an = _g
+            try:
+                if _le.dxftype() == 'LINE':
+                    _ax, _ay = float(_le.dxf.start[0]), float(_le.dxf.start[1])
+                    _bx, _by = float(_le.dxf.end[0]), float(_le.dxf.end[1])
+                else:
+                    _q = [(p[0], p[1]) for p in _le.vertices()]
+                    _ax, _ay, _bx, _by = _q[0][0], _q[0][1], _q[-1][0], _q[-1][1]
+            except Exception:
+                continue
+            _dd = _segdist(_cx, _cy, _ax, _ay, _bx, _by)
+            if _bd is None or _dd < _bd:
+                _bd, _bl, _ba = _dd, _ln, _an
+        _mL = _SL.search(_spec); _mR = _SROT.search(_spec)
+        _mH = _SHB.search(_spec) or _SH.search(_spec)
+        _mD = _SDIA.search(_spec); _mHd = _SHDIA.search(_spec)
+        if _mD:
+            _dia = int(_mD.group(1))
+        elif _mHd:
+            _dia = int(_mHd.group(1))
+        elif a.starter_dia:
+            _dia = int(a.starter_dia)
+        else:
+            _d2 = _cr*2
+            _dia = min(STD_DIA, key=lambda d: abs(d-_d2))
+            if abs(_dia-_d2) > 1.0:
+                print(f'NOTE circle @ ({_cx:.0f},{_cy:.0f}): r={_cr:.0f} -> nearest H{_dia}')
+        if _mL:
+            _L, _Lsrc = float(_mL.group(1)), 'tag'
+        elif _bl:
+            _L, _Lsrc = round(_bl, 1), 'line'
+        else:
+            _L, _Lsrc = float(a.starter_length), 'default'
+            print(f'NOTE circle @ ({_cx:.0f},{_cy:.0f}): no line/tag length — default {_L:.0f}')
+        if _mR:
+            _aim = float(_mR.group(1)) % 360.0
+        elif _ba is not None:
+            _aim = round(_ba % 360.0, 1)
+        else:
+            _aim = float(a.starter_rot) % 360.0
+        if _mH:
+            _H = float(_mH.group(1))
+        elif a.starter_h:
+            _H = float(a.starter_h)
+        else:
+            _H = round(max(150.0, 10*_dia), 1)
+        _mUD = UD.search(_spec)
+        _sdir = -1.0 if (_mUD and _mUD.group(1).upper() == 'DOWN') else 1.0
+        _mv = LEGVW.search(_spec)
+        _mp = re.search(r'\bPLANE\s*=?\s*(XY|XZ|YZ)\b', _spec, re.I)
+        if _mv:
+            _pl = _mv.group(1).upper()
+        elif _mp:
+            _pl = _mp.group(1).upper()
+        elif str(a.starter_plane).upper() in ('XZ', 'YZ'):
+            _pl = str(a.starter_plane).upper()
+        else:
+            # auto-plane keeps the length OUT of the section: aim along +-X
+            # lives on a YZ record, aim along +-Y on an XZ record
+            _alongX = (abs(math.cos(math.radians(_aim)))
+                       >= abs(math.sin(math.radians(_aim))))
+            _pl = 'YZ' if _alongX else 'XZ'
+        if _pl == 'XZ':
+            _prot = round(_aim % 360.0, 1)  # local X already along App X
+        else:
+            _prot = round((_aim+270.0) % 360.0, 1)  # local X along App Y
+        _mz = (LEGZ.search(_spec)
+               or re.search(r'\bPOS(?:ITION)?\s+Z\s*=?\s*([-\d.]+)', _spec, re.I))
+        if _mz:
+            _z, _zsrc = float(_mz.group(1)), 'tag'
+        elif a.starter_z is not None:
+            _z, _zsrc = float(a.starter_z), 'default'
+        else:
+            _z, _zsrc = round(_cy, 1), 'circle-Y'
+        if not _want_straight and _hook == 'yes':
+            # hook-first: the run/corner sits AT the circle elevation (like a
+            # straight bar protruding from the circle), so the upstand drops
+            # below it — Pos lowered by the signed leg
+            _z, _zsrc = round(_z - _sdir*_H, 1), _zsrc + '+corner@cY'
+        # out-of-plane coordinate is NOT in the section: tag X=/Y= (or
+        # POS X n / POS Y n) wins, else --starter-x (YZ) / --starter-y (XZ),
+        # else 0 with a NOTE
+        _mX = (re.search(r'\bX\s*=\s*([-\d.]+)', _spec, re.I)
+               or re.search(r'\bPOS(?:ITION)?\s+X\s*=?\s*([-\d.]+)', _spec, re.I))
+        _mY = (re.search(r'\bY\s*=\s*([-\d.]+)', _spec, re.I)
+               or re.search(r'\bPOS(?:ITION)?\s+Y\s*=?\s*([-\d.]+)', _spec, re.I))
+        if _pl == 'YZ':
+            _py = round(_cx, 2)  # section X runs along App Y
+            if _mX:
+                _px, _oopsrc = round(float(_mX.group(1)), 2), 'tag-X'
+            elif a.starter_x is not None:
+                _px, _oopsrc = round(float(a.starter_x), 2), 'input-X'
+            else:
+                _px, _oopsrc = 0.0, 'default-0'
+                _oopdef += 1
+        else:
+            _px = round(_cx, 2)  # section X runs along App X
+            if _mY:
+                _py, _oopsrc = round(float(_mY.group(1)), 2), 'tag-Y'
+            elif a.starter_y is not None:
+                _py, _oopsrc = round(float(a.starter_y), 2), 'input-Y'
+            else:
+                _py, _oopsrc = 0.0, 'default-0'
+                _oopdef += 1
+        _sidx += 1
+        _mark = f'{a.starter_mark}{_sidx}'
+        _ov = {'starter': True, 'transverse': True,
+               'rtype': 'straight' if _want_straight else 'bent',
+               'plane': _pl, 'rot': 0.0, 'L': round(_L, 1), 'H': round(_H, 1),
+               'z': _z, 'zsrc': _zsrc, 'plan_rotation': _prot,
+               'tag': _spec, 'aim': _aim, 'Lsrc': _Lsrc, 'hook_start': _hook}
+        bars.append(_CBar(f'REBAR-H{_dia}', _px, _py, _mark, dict(_ov)))
+        print(f'{_mark}: circle H{_dia} dxf=({_cx:.1f},{_cy:.1f}) -> '
+              f'({_px:.1f},{_py:.1f},{_z})[{_oopsrc}] L={_L:.0f}({_Lsrc}) '
+              f'aim={_aim} -> {_pl} prot={_prot} '
+              f'[{"straight (no leg)" if _want_straight else f"H={_H:.0f} hook@{_hook}"}]')
+
+    if _oopdef:
+        print(f'NOTE {_oopdef} circles: no tag X=/Y= or --starter-x/--starter-y — out-of-plane defaults to 0')
+
     rows = []; tag = 0
     odir = []  # (mark, rtype, ang, len, slabId) for the parity-orientation check
     for b in bars:
@@ -782,7 +1029,7 @@ def main():
             tag_dia = _tagdia(m2)
             return d + (0 if tag_dia in (lay_dia_n, 0) else 5000)
         best = None
-        if texts:
+        if texts and not getattr(b, '_circ', False):
             scored = sorted(((score(t), t) for t in texts), key=lambda r: r[0])
             best = scored[0][1]
             # tags drift during CAD edits; a close runner-up means the pairing
@@ -794,6 +1041,12 @@ def main():
         raw = best[0] if best else ''
         m = TAG.search(raw) if best else None
         mark = (m.group(1) if m and m.group(1) else f'B{len(rows)+1}')
+        if getattr(b, '_circ', False):
+            # drawn-circle starter: own mark + spec tag (generic pairing
+            # above is skipped so nearby unrelated tags never leak in)
+            raw = (getattr(b, '_ov', None) or {}).get('tag', '') or ''
+            m = TAG.search(raw) if raw else None
+            mark = b._circ_mark
         dd = _tagdia(m)
         if dd:
             dia = dd
@@ -920,6 +1173,11 @@ def main():
             else:
                 L, Lsrc = 0.0, 'none-WARN-no-H'
                 print(f'WARN {mark}: VERT with no H= and no host depth — zero-length row')
+        if ov and ov.get('transverse'):
+            # section starter: horizontal main — stock splits run along the
+            # length compass (world dir is (cos aim, sin aim) on both planes)
+            _th = math.radians(float(ov.get('aim', 0.0)))
+            ux, uy, uz = round(math.cos(_th), 4), round(math.sin(_th), 4), 0.0
         if ov and 'L' in ov:
             L, Lsrc = ov['L'], 'starter'
         tie_h = 0.0
@@ -1236,8 +1494,10 @@ def main():
                 row['H'] = (ov['H'] if ov and 'H' in ov else leg_h)
                 row['bent_up_down'] = (ov['bent_up_down'] if ov and 'bent_up_down' in ov
                                        else (updown or 'up'))
-                if ov and 'plan_rotation' in ov:
-                    row['plan_rotation'] = ov['plan_rotation']
+                row['hook_start'] = (ov['hook_start'] if ov and 'hook_start' in ov else 'no')
+            if ov and 'plan_rotation' in ov:
+                # generated bars (starters) aim via plan rotation on any type
+                row['plan_rotation'] = ov['plan_rotation']
             if ov:
                 for gk in ('qty_x', 'spacing_x', 'qty_y', 'spacing_y',
                            'qty_z', 'spacing_z', 'offset_x', 'offset_y', 'offset_z'):
