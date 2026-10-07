@@ -190,6 +190,31 @@ py scripts/dxf_to_bbs.py inputs/additional_bar_shapes.dxf
 - Schedule: shape 99 (special), cut length in A with per-turn bend
   deductions; `legs` round-trips through CSV/project JSON.
 
+## Large projects (BarField renderer)
+
+Projects with hundreds of thousands to millions of physical bars stay interactive: bars are drawn in
+spatial chunks as merged lines when far away and as instanced tubes near the camera, a small selection
+and just-edited bars use the classic highlighted tube look, and the pixel ratio drops while the camera
+moves.
+
+- **Detail** (status bar, next to the fps readout): *Auto* (default, lines far / tubes near), *Lines*
+  (fastest), *Tubes* (always tubes; slow on very large projects). Saved in the browser.
+- A small selection (up to about 400 bar copies) is drawn as classic white-highlighted tubes on top; a
+  bigger one (for example "All", or a row with thousands of copies) is tinted white in place so that
+  selecting many rows stays fast.
+- `?renderer=legacy` forces the old one-mesh-per-bar renderer (also used automatically without WebGL2).
+- If the new renderer cannot be built, the classic renderer shows the first 20,000 bars and a notice.
+- Measure and Pick-to-place still snap to bars (ends, midpoints, nearest points); a click that is not near
+  a snap point no longer lands on the surface of a bar that is not selected.
+- `scripts/perf/` measures it (synthetic projects, headless Edge on the real GPU):
+  `node scripts/perf/gen_project.mjs 25000 40 p1m 7`, then
+  `node scripts/perf/cdp_bench.mjs --url http://127.0.0.1:5188/ --project scripts/perf/out/p1m.json --expect 1002336 --budget p1m --enforce`.
+  `node scripts/perf/check_field.mjs --url http://127.0.0.1:5188` checks placement, clipping, picking,
+  edits, bulk changes and the fallback against the legacy renderer. See `scripts/perf/README.md`.
+- Still slow at very large scale (separate follow-ups): the BBS table and bar dropdown render every row
+  (the table takes seconds to render 25,000 rows), undo clones the whole bar list, Save uses
+  `localStorage` (about 5 MB), and Measure / Pick snapping scans every bar.
+
 ## Troubleshooting
 
 | Symptom | Fix |

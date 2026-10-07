@@ -1,6 +1,6 @@
-// Which bar renderer is active: ?renderer=field | legacy. Until the plan's last task the default is
-// 'legacy' (today's behaviour). The field renderer needs WebGL2.
-export const DEFAULT_RENDERER = 'legacy';
+// Which bar renderer is active: ?renderer=field | legacy. 'field' is the default; ?renderer=legacy
+// forces the classic per-bar meshes. The field renderer needs WebGL2 (otherwise legacy is used).
+export const DEFAULT_RENDERER = 'field';
 
 export function getRendererMode() {
   try {

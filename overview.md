@@ -32,7 +32,8 @@ everything runs from static files.
 | `src/bbs/shapes.js` | 6 shape generators → 3D polylines + cut lengths; `distCount`/`distOffsets` distribution grid; `applyTypeDefaults` for shape switching |
 | `src/bbs/calc.js` | `D²/162.2` unit weights, bend deductions |
 | `src/bbs/csv.js` | FreeCAD-compatible CSV export/import (`MASTER_HEADERS` superset) |
-| `src/viewer/Scene.jsx` | Canvas, lights, grid, `RebarMesh` (tube per bar × distribution copies), `ConcreteMesh`, `DiveZoom` (stall-free wheel dives), `PickHandler`, `MeasureHandler` + `MeasureView` (ephemeral measure) |
+| `src/viewer/Scene.jsx` | Canvas, lights, grid, `RebarMesh` (tube per bar × distribution copies; now only the selected / just-edited rows, `BarField` draws the rest), `ConcreteMesh`, `DiveZoom` (stall-free wheel dives), `PickHandler`, `MeasureHandler` + `MeasureView` (ephemeral measure) |
+| `src/viewer/barfield/*` | Default bar renderer: worker-built chunked segments, line / instanced-tube LOD, row-state texture, ray picker, adaptive quality (`BarField.jsx` composes them) |
 | `src/viewer/IfcModel.jsx` | (lazy) IFC subsets, ghost/solid materials, click-select + highlight, pick-to-place |
 | `src/viewer/FitIfc.jsx` | Camera fit to IFC bbox |
 | `src/viewer/SectionBox.jsx` | Revit-style section box: push/pull faces, move/rotate gizmos, stencil cap quads, size tag |
@@ -44,9 +45,9 @@ everything runs from static files.
 
 ## Data flows
 
-**Rebar:** form edit → `updateBar` → `genBarPoints` (local mm polyline) →
-`TubeGeometry` per distribution copy + `enrichBar` (cut length, `qty×qty_x×qty_y`
-weight) → BBS row → CSV export.
+**Rebar:** form edit → `updateBar` → `genBarPoints` (local mm polyline) → BarField
+(segments per distribution copy in chunks; the edited row shows as a classic tube until it moves
+into a delta chunk) + `enrichBar` (cut length, `qty×qty_x×qty_y` weight) → BBS row → CSV export.
 
 **IFC load:** file → `arrayBuffer` → STEP header sniff (IFC4 gate + unit regex) →
 `IFCLoader.parse` (`COORDINATE_TO_ORIGIN`) → per-type id lists → per-element

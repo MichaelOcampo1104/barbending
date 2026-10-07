@@ -101,6 +101,30 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
 - `src/ifc/IfcPanel.jsx` and `src/ifc/units.js` are static-safe (no parser
   imports). Never add a static `web-ifc*` import outside the lazy boundary.
 
+## Bar renderer (`src/viewer/barfield/`)
+
+- Default renderer is the **BarField** (chunked lines + instanced tubes, spec in
+  `docs/superpowers/specs/2026-10-07-barfield-renderer-design.md`); `?renderer=legacy` selects the
+  old per-bar `RebarMesh` list. `RebarMesh` still draws a small selection and just-edited rows (the
+  overlay), because it costs one mesh per bar copy: the overlay is capped at 300 rows AND 400 bar copies
+  (`rowState.js` / `overlayRows.js`); a heavier selection is tinted in place instead. Do not raise the cap
+  without re-measuring (50 selected rows of 40 copies ran at 8.6 fps at 1M bars).
+- Pure modules (`buildField`, `rowState`, `overlayRows`, `diffRows`, `lod`, `quality`, `fieldPick`,
+  `workerCore`, `fieldClient`) have Node tests in `tests/barfield/` (`npm test`); they import with explicit
+  `.js` extensions and must not touch three.js, React or the DOM.
+- Field objects are static (`matrixAutoUpdate = false`), have no event handlers, and are NOT pick roots:
+  bars are picked from data (`fieldPick.js` through `fieldRegistry`), never by raycasting meshes. The
+  pick is computed once per pointer event (`ev`), because `PickHandler` may select the bar before
+  `QueryHandler` runs for the same click.
+- Row id texture layout: R = state (0 normal, 1 hidden, 2 overlay, 3 tint), G = colour slot, B = radius (m).
+  Edited rows use virtual ids `rowCount + k` (delta chunk); `deltaRows[k]` maps back to the bar index.
+- Do not call setState inside the sync effect in `BarField.jsx` (lint rule `set-state-in-effect`): the
+  overlay list is an external store, read with `useSyncExternalStore`.
+- Browser checks: `scripts/perf/check_field.mjs` (needs a built preview) and `scripts/perf/cdp_bench.mjs`.
+  `?autotest=...` exposes `window.__scene`, `__camera` and `__store` for them; `?fieldfail=1` forces the
+  field build to fail to exercise the fallback. The rig reads the fps / bar count from the status bar text,
+  so keep "N fps · cam … · N bars" in one `.statusbar span`.
+
 ## Dev servers & the stale-tab problem
 
 - `:5173` dev (`npm run dev`, started with `CHOKIDAR_USEPOLLING=1` — native
