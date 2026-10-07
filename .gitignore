@@ -32,3 +32,6 @@ inputs/P103-TCSJV-CP03-ZZ-S-STR-M3-PIM-0001.ifc
 *.njsproj
 *.sln
 *.sw?
+
+# Performance rig output (generated projects, results, screenshots)
+scripts/perf/out/

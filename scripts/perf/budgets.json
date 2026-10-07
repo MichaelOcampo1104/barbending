@@ -1,0 +1,4 @@
+{
+  "p1m": { "minIdleFps": 30, "minOrbitFps": 30, "minCloseupFps": 24, "maxViewportMs": 5000, "maxHeapMB": 1500, "maxFieldBlockMs": 200 },
+  "p3m": { "minIdleFps": 15 }
+}
