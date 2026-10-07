@@ -45,6 +45,6 @@ are listed in `runs`): on a machine shared with other GPU users one window can w
 | `gen_project.mjs` | Synthetic project JSON (mixed bar types, grids) |
 | `cdp_bench.mjs` | Load time, memory, DOM size, draw calls, fps (idle / orbit / zoom / close-up), latencies |
 | `check_field.mjs` | Functional checks of the field renderer against the legacy renderer (parity, picking, fallback) |
-| `check_views.mjs` | Functional checks of the true views and the orthographic camera: exact axes from the dropdown and the gizmo, parallel projection, seamless Persp/Ortho switching, orbit / wheel / pan / keys / Fit All, picking, LOD, section box (`--only views\|ortho\|gizmo\|nav\|field\|section`) |
+| `check_views.mjs` | Functional checks of the true views and the orthographic camera: exact axes from the dropdown and the gizmo, parallel projection, seamless Persp/Ortho switching, orbit / wheel / pan / keys / Fit All, picking, LOD, section box, Fit IFC and a loaded IFC model (`--only views\|ortho\|gizmo\|nav\|field\|section\|ifc`) |
 
 Set `EDGE_PATH` if Edge is not at `C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe`.

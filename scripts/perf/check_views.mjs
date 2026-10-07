@@ -9,6 +9,8 @@
 //          under the cursor stays put); right-drag pans like the perspective camera; +/- keys zoom; Fit All fits.
 // field  : bars pick by click (the nearest one along the ray) and switch lines <-> tubes with the zoom.
 // section: the section box clips in the orthographic view.
+// ifc    : a loaded IFC model (public/sample-concrete.ifc): Fit IFC keeps the orthographic view and frames the
+//          model, perspective Fit IFC is unchanged, and the model stays drawn after zooming out / in and in Top.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +26,7 @@ const arg = (name, dflt) => {
 };
 const base = (arg('url') || '').replace(/\/$/, '');
 const only = arg('only', '');
-if (!base) { console.error('usage: node scripts/perf/check_views.mjs --url <app base url> [--only views|ortho|gizmo|nav|field|section]'); process.exit(2); }
+if (!base) { console.error('usage: node scripts/perf/check_views.mjs --url <app base url> [--only views|ortho|gizmo|nav|field|section|ifc]'); process.exit(2); }
 
 let failures = 0;
 const report = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${msg}`); if (!ok) failures += 1; };
@@ -447,7 +449,110 @@ async function section() {
   }
 }
 
-const sections = { views, ortho, gizmo, nav, field, section };
+// Canvas snapshot and "how many pixels differ from it" (needs preserveDrawingBuffer, on under ?autotest).
+const SNAP = `(() => { const c = document.querySelector('canvas'); const t = document.createElement('canvas'); t.width = c.width; t.height = c.height;
+  const x = t.getContext('2d', { willReadFrequently: true }); x.drawImage(c, 0, 0); window.__snap = x.getImageData(0, 0, t.width, t.height).data; return true; })()`;
+const DIFF = `(() => { const c = document.querySelector('canvas'); const t = document.createElement('canvas'); t.width = c.width; t.height = c.height;
+  const x = t.getContext('2d', { willReadFrequently: true }); x.drawImage(c, 0, 0); const d = x.getImageData(0, 0, t.width, t.height).data; const a = window.__snap;
+  const k = c.width / c.clientWidth; let n = 0, sx = 0, sy = 0;
+  const changed = (i) => Math.abs(d[i] - a[i]) + Math.abs(d[i + 1] - a[i + 1]) + Math.abs(d[i + 2] - a[i + 2]) > 60;
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) { if (changed(i)) { n++; sx += p % t.width; sy += (p / t.width) | 0; } }
+  if (!n) return { n: 0, x: 0, y: 0 };
+  const mx = sx / n, my = sy / n; let best = 1e18, bx = 0, by = 0;
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) { if (!changed(i)) continue; const px = p % t.width, py = (p / t.width) | 0; const dd = (px - mx) ** 2 + (py - my) ** 2; if (dd < best) { best = dd; bx = px; by = py; } }
+  return { n, x: bx / k, y: by / k }; })()`;
+const FIT_IFC = '(Array.from(document.querySelectorAll("button")).find((e) => e.textContent.trim() === "Fit IFC") || { click() {} }).click()';
+
+async function ifc() {
+  const b = await launchBrowser({ instrument: INSTR });
+  try {
+    await openProject(b, 'autotest=ifc-ortho');
+    // The IFC loader lives in the Concrete tab; use its own file input, the same path as a user upload.
+    await b.ev("(Array.from(document.querySelectorAll('.tabs button')).find((e) => e.textContent.trim() === 'Concrete') || { click() {} }).click()");
+    await sleep(600);
+    const sample = path.join(here, '..', '..', 'public', 'sample-concrete.ifc');
+    const idx = await b.ev("Array.from(document.querySelectorAll('input[type=file]')).findIndex((i) => /ifc/i.test(i.accept))");
+    if (idx < 0) { report(false, 'ifc: the IFC file input was not found'); return; }
+    const root = await b.send('DOM.getDocument', { depth: 0 });
+    const q = await b.send('DOM.querySelectorAll', { nodeId: root.root.nodeId, selector: 'input[type=file]' });
+    await b.send('DOM.setFileInputFiles', { files: [sample], nodeId: q.nodeIds[idx] });
+    let loaded = false;
+    for (let i = 0; i < 120 && !loaded; i++) { await sleep(500); loaded = await b.ev('!!window.__store.getState().ifc', 15000).catch(() => false); }
+    report(loaded, 'ifc: the sample IFC loads through the IFC panel');
+    if (!loaded) return;
+    await sleep(1500);
+    await b.ev(FIT_IFC);
+    await sleep(600);
+    await settle(b);
+
+    // Perspective: Fit IFC frames from the fixed oblique offset, as before.
+    const cam0 = await b.ev(CAM);
+    const fit = await b.ev('JSON.parse(JSON.stringify(window.__store.getState().ifcFit))');
+    const tgt = await b.ev('window.__controls.target.toArray()');
+    const off = cam0.pos.map((v, i) => v - tgt[i]);
+    const len = Math.hypot(...off);
+    const want = [0.8, 0.6, -0.9];
+    const wl = Math.hypot(...want);
+    report(!cam0.ortho && off.every((v, i) => near(v / len, want[i] / wl, 0.01)),
+      `ifc: Fit IFC in perspective still frames from the oblique offset (${cam0.type}, direction ${fmt(off.map((v) => v / len))})`);
+
+    // Orthographic Front: Fit IFC keeps the view and frames the model.
+    await chooseView(b, 'front');
+    await settle(b);
+    await b.ev(FIT_IFC);
+    await sleep(600);
+    await settle(b);
+    const cam1 = await b.ev(CAM);
+    const name1 = await viewName(b);
+    report(cam1.ortho && name1 === 'front', `ifc: Fit IFC in the orthographic Front keeps the view (view "${name1}", ${cam1.type})`);
+    const R = await rectOf(b);
+    const c = await toScreen(b, fit.center);
+    const expectR = Math.min(R.w, R.h) / 2 / 1.1;
+    report(near(c[0], R.w / 2, 2) && near(c[1], R.h / 2, 2), `ifc: the model is centred (centre at ${c[0].toFixed(0)}, ${c[1].toFixed(0)} of ${R.w.toFixed(0)} x ${R.h.toFixed(0)})`);
+    report(near(fit.radius * cam1.zoom, expectR, 3), `ifc: the bounding sphere fills the view (${(fit.radius * cam1.zoom).toFixed(0)} px radius, expected ${expectR.toFixed(0)})`);
+
+    // The model is really drawn: pixels change when it is switched off (opacity 0).
+    const drawn = async () => {
+      await b.ev('window.__store.getState().setIfcOpacity(1)');
+      await sleep(900);
+      await b.ev(SNAP);
+      await b.ev('window.__store.getState().setIfcOpacity(0)');
+      await sleep(900);
+      const r = await b.ev(DIFF);
+      await b.ev('window.__store.getState().setIfcOpacity(1)');
+      await sleep(300);
+      return r;
+    };
+    const centre = [R.x + R.w / 2, R.y + R.h / 2];
+    const dFit = await drawn();
+    report(dFit.n > 400, `ifc: the model is drawn in the orthographic Front (${dFit.n} px change when it is hidden)`);
+    for (let i = 0; i < 6; i++) { await wheel(b, centre, 200); await sleep(60); }
+    await settle(b);
+    const dOut = await drawn();
+    report(dOut.n > 100, `ifc: and after zooming out (${(fit.radius * (await b.ev(CAM)).zoom).toFixed(0)} px radius, ${dOut.n} px change)`);
+    // Zoom in about a point that is on the model (zoom-to-cursor keeps it under the cursor).
+    const onModel = [R.x + dOut.x, R.y + dOut.y];
+    for (let i = 0; i < 20; i++) { await wheel(b, onModel, -200); await sleep(60); }
+    await settle(b);
+    const dIn = await drawn();
+    report(dIn.n > 400, `ifc: and after zooming in on it (${(fit.radius * (await b.ev(CAM)).zoom).toFixed(0)} px radius, ${dIn.n} px change)`);
+
+    // Top view.
+    await chooseView(b, 'top');
+    await settle(b);
+    await b.ev(FIT_IFC);
+    await sleep(600);
+    await settle(b);
+    const cam2 = await b.ev(CAM);
+    const dTop = await drawn();
+    report(cam2.ortho && (await viewName(b)) === 'top' && dTop.n > 400, `ifc: the model is drawn in the orthographic Top (view "${await viewName(b)}", ${dTop.n} px change)`);
+    report(b.consoleErrors.length === 0, `ifc: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+  } finally {
+    b.close();
+  }
+}
+
+const sections = { views, ortho, gizmo, nav, field, section, ifc };
 try {
   for (const [name, fn] of Object.entries(sections)) {
     if (!only || only === name) await fn();

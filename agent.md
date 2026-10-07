@@ -148,10 +148,13 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
 - Mutate cameras / controls only in `cameraOps.js`: the React-compiler lint rule `react(immutability)`
   rejects direct property writes on hook-returned objects inside components. Pure math goes in
   `cameraMath.js` (no React; `tests/views/` runs both under `npm test`).
+- Fit IFC (`FitIfc.jsx`) keeps the view direction in the orthographic camera (recentre + zoom to the bounding
+  sphere) and uses its fixed oblique offset only in perspective; `AutoClipping` leaves the orthographic depth
+  range (±2000) alone.
 - Layout: `.vptools` (toolbar) is `pointer-events: none` with its children `auto` and stops 140 px short of
   the right edge, so the axis gizmo heads stay clickable; the view pill sits under the gizmo. Keep the
   bottom-left of the canvas free (hint bar; a click on empty canvas deselects).
-- Browser checks: `scripts/perf/check_views.mjs` (needs a built preview, 68 checks), next to
+- Browser checks: `scripts/perf/check_views.mjs` (needs a built preview, 78 checks), next to
   `check_field.mjs`; `cdp_bench.mjs --view front` benchmarks the orthographic camera.
 
 ## Dev servers & the stale-tab problem
