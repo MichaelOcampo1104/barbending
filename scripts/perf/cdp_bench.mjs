@@ -19,7 +19,7 @@ const arg = (name, dflt) => {
 };
 const url = arg('url');
 if (!url) {
-  console.error('usage: node scripts/perf/cdp_bench.mjs --url <app url> [--project file.json] [--label x] [--dpr 1] [--expect <bars>] [--budget p1m] [--enforce]');
+  console.error('usage: node scripts/perf/cdp_bench.mjs --url <app url> [--project file.json] [--label x] [--dpr 1] [--expect <bars>] [--budget p1m] [--view front] [--enforce]');
   process.exit(2);
 }
 const projPath = arg('project', '-');
@@ -28,9 +28,10 @@ const dpr = Number(arg('dpr', '1'));
 const expected = Number(arg('expect', '0'));
 const budgetKey = arg('budget', '');
 const detail = arg('detail', ''); // bar detail preference to run with (field renderer)
+const view = arg('view', ''); // preset view to measure in (top / bottom / front / back / left / right: orthographic, iso: perspective)
 const enforce = process.argv.includes('--enforce');
 
-const R = { label, url, dpr, detail: detail || 'default' };
+const R = { label, url, dpr, detail: detail || 'default', view: view || 'default' };
 const LOAD_EV_MS = 5 * 60 * 1000; // the BBS table can block the page for minutes at 75,000 rows
 const tBench = Date.now();
 // Progress goes to stderr so a stalled run is visible; the RESULT line on stdout is unchanged.
@@ -155,6 +156,11 @@ try {
   // Frame the whole model (worst case: everything in the frustum).
   await ev('(document.querySelector(\'button[title="Fit entire model in view"]\') || { click() {} }).click()');
   await sleep(2500);
+  if (view) {
+    const v = JSON.stringify(view);
+    await ev(`(() => { const s = Array.from(document.querySelectorAll('select')).find((x) => Array.from(x.options).some((o) => o.value === ${v})); s.value = ${v}; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await sleep(3000);
+  }
   const prof = !!process.env.PROFILE;
   if (prof) { await send('Profiler.enable'); await send('Profiler.setSamplingInterval', { interval: 500 }); await send('Profiler.start'); }
   // Median of three measurement windows: the frame rate wobbles by several fps from run to run on a shared

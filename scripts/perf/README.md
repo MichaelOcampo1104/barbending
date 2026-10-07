@@ -24,6 +24,8 @@ node scripts/perf/cdp_bench.mjs --url "http://127.0.0.1:5188/" \
 ```
 
 `--enforce` checks `budgets.json` (reference machine: Intel UHD, 1600×900, DPR 1, no IFC).
+`--view front` (or top / bottom / back / left / right / iso) picks that preset from the dropdown before measuring, to benchmark the
+orthographic camera (1M bars, Front: 52 fps idle, 40 orbit, 58 zoom, 60 close-up).
 Without it the run only prints results. `PROFILE=1` adds a CPU profile (best against the dev server).
 
 Reading the load numbers: `load.ms` is the wall-clock time until the page is responsive again, and
@@ -43,5 +45,6 @@ are listed in `runs`): on a machine shared with other GPU users one window can w
 | `gen_project.mjs` | Synthetic project JSON (mixed bar types, grids) |
 | `cdp_bench.mjs` | Load time, memory, DOM size, draw calls, fps (idle / orbit / zoom / close-up), latencies |
 | `check_field.mjs` | Functional checks of the field renderer against the legacy renderer (parity, picking, fallback) |
+| `check_views.mjs` | Functional checks of the true views and the orthographic camera: exact axes from the dropdown and the gizmo, parallel projection, seamless Persp/Ortho switching, orbit / wheel / pan / keys / Fit All, picking, LOD, section box (`--only views\|ortho\|gizmo\|nav\|field\|section`) |
 
 Set `EDGE_PATH` if Edge is not at `C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe`.
