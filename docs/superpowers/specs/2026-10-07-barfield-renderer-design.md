@@ -102,9 +102,11 @@ Changes to existing files:
   used by both overlay meshes and the field picker; give `QueryHandler` a field-pick
   fallback; keep `collectPickTargets` working (field objects are not pick roots).
 - `src/store.js`: one persisted view setting `barDetail` (`'auto' | 'lines' | 'tubes'`,
-  default `'auto'`, saved in `localStorage` like the other view preferences).
+  default `'auto'`, saved in `localStorage` under `barbending.barDetail`, like the layout sizes).
 - `src/App.jsx`: a **Detail** selector in the viewport bar.
-- `AutotestDump` (test hook): count field draw objects in its census.
+- `AutotestDump` (test hook): count field draw objects in its census and expose `window.__store`.
+  The field publishes `window.__barfield` stats for the perf rig, and `?fieldfail=1` forces a
+  build failure to exercise the fallback.
 
 No new runtime dependencies. The worker uses Vite's
 `new Worker(new URL('./barField.worker.js', import.meta.url), { type: 'module' })`.
@@ -119,7 +121,9 @@ FieldData {
   seg:      Float32Array(6 * segCount)   // start xyz, end xyz; scene space, metres, Y up
   rowOfVtx: Float32Array(2 * segCount)   // row index per vertex (lines read it; picker reads [2*i])
   rows: { radiusM: Float32Array, colorIdx: Uint8Array }   // per row, length rowCount
-  chunks: [{ start, count, min[3], max[3], center[3], radius, maxRadiusM }]
+  chunks: [{ start, count, min[3], max[3], center[3], radius, maxRadiusM, blockStart, blockCount }]
+  blocks: { start: Int32Array, size: Int32Array, bounds: Float32Array(6 * B), maxRadiusM: Float32Array }
+          // pick blocks: at most 256 consecutive segments each; they partition every chunk
   bounds: { min[3], max[3] }
 }
 ```
@@ -147,6 +151,11 @@ with at least one segment become chunks; segments are counting-sorted so every c
 one contiguous range. Chunk bounds come from the real segment endpoints, so culling is
 exact even when a long segment crosses a cell border.
 
+Inside each chunk the same octree keeps splitting down to **pick blocks** of at most 256
+segments (depth <= 14, edge >= 2 cm). A block is a contiguous range with its own bounds and
+every chunk owns a contiguous run of blocks. Blocks exist only to make click picking fast
+(section 7.1); rendering uses chunks.
+
 ### 5.4 Worker protocol
 
 - Main → worker: `{ type: 'build', id, rows }`
@@ -167,13 +176,17 @@ tinted rows.
 ### 5.6 Keeping the field in sync with `bars`
 
 Rows are immutable objects and unchanged rows keep their identity, so `BarField` diffs
-`bars` against the previous array by reference (O(rows)). If most references changed
-(undo, redo, import) it compares cheap per-row signatures to find rows that really changed.
+`bars` against the array the field was built from, by reference (O(rows)). Rows whose identity
+changed are compared by a geometry signature (view-only fields such as `hidden`, `host`,
+`Group` and `Bar_mark` are ignored) to find the rows that really changed. If more than 2,000
+rows changed identity (undo, redo or import of a large project) it does not compare one by
+one and rebuilds in the worker instead.
 
 - **Edited rows (same array length):** the row switches to *overlay* at once (drawn by
   `RebarMesh`, zero edit latency). After 400 ms without further edits its geometry is
   built on the main thread into a small **delta chunk** drawn by the same shaders; the
-  old copies stay hidden through row state.
+  old copies stay hidden through row state. Delta rows use virtual row ids `rowCount + k` in
+  the texture and map back to bar indices for picking.
 - **Full rebuild in the worker** when the delta exceeds about 5% of rows, after 10 s idle
   with a non-empty delta, or when the array length changes (add, remove, import). The
   previous field stays visible until the new one swaps in atomically; a small
@@ -234,7 +247,8 @@ Recomputed at most every 100 ms or when the camera or quality changes.
 
 On pointer-up without drag (same threshold as `PickHandler`, skipped while draw,
 measure or box-select own the click): build the pick ray, intersect it with chunk
-bounds, visit chunks front to back and test their segments. A segment is hit when the
+bounds, visit chunks front to back, then the pick blocks of each chunk (bounds test), and
+test only the segments of blocks the ray touches. A segment is hit when the
 3D ray–segment distance is at most `max(radius, 6 px · world size of one pixel at that
 depth)`. Hidden and overlay rows are skipped; a hit outside the active section box
 (`isWorldPointInSectionBox`) is ignored. The nearest hit along the ray wins; search stops
@@ -260,8 +274,8 @@ DiveZoom, section box dragging.
 
 ### 8.1 Adaptive quality (`quality.js`)
 
-Target frame time 33 ms. *Interacting* means OrbitControls start / end, DiveZoom
-velocity above a small threshold, or a fit / view animation in progress.
+Target frame time 33 ms. *Interacting* means the camera moved within the last 250 ms,
+whatever moved it (orbit, wheel zoom, keys, fit / view animations).
 
 - While interacting: if the frame-time EMA exceeds 40 ms for 10 frames, step down one
   level. Levels pair a pixel ratio with a tube budget: (1.75, 5M), (1.25, 3M), (1.0, 1.5M),
