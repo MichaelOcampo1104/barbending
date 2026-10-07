@@ -22,6 +22,13 @@ node scripts/perf/cdp_bench.mjs --url "http://127.0.0.1:5188/?renderer=field" \
 `--enforce` checks `budgets.json` (reference machine: Intel UHD, 1600×900, DPR 1, no IFC).
 Without it the run only prints results. `PROFILE=1` adds a CPU profile (best against the dev server).
 
+Reading the load numbers: `load.ms` is the wall-clock time until the page is responsive again, and
+`load.blockedMs` is the main-thread time lost to long tasks — at 1M bars nearly all of that is the BBS
+table rendering every row (sub-project B). `viewportMs` is the time from the page being responsive until
+the bars are drawn (the budgeted number: the viewport only, as the spec defines it). `viewportWallMs` is
+import-to-drawn wall-clock with the table included; it is reported, not budgeted. Both need the field
+renderer (`?renderer=field`), which publishes `window.__barfield`.
+
 ## Scripts
 
 | Script | Purpose |

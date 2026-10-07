@@ -921,27 +921,42 @@ try {
     const q = await send('DOM.querySelectorAll', { nodeId: root.root.nodeId, selector: 'input[type=file]' });
     const lt0 = await ev('window.__lt.length');
     const v0 = await ev('(window.__barfield && window.__barfield.version) || 0');
+    const bars0 = (await ev('window.__status()')).bars; // read before the import starts
     const tStart = Date.now();
     await send('DOM.setFileInputFiles', { files: [path.resolve(projPath)], nodeId: q.nodeIds[0] });
     // Poll; each evaluate only answers once the main thread is free again.
-    let quick = 0, last = null, loaded = false, viewportMs = null;
+    const fieldReadyExpr = '!!(window.__barfield && window.__barfield.ready && window.__barfield.version > ' + v0 + ')';
+    // The default project already has bars, so "the project is in" means the expected count, or any
+    // count different from what the page showed before the import.
+    const projectIn = (s) => s.bars > 0 && (expected ? s.bars === expected : s.bars !== bars0);
+    let quick = 0, last = null, loaded = false, tFree = null, readyAt = null;
     while (Date.now() - tStart < 10 * 60 * 1000 && !b.isCrashed()) {
       const p0 = Date.now();
       try { last = await ev('window.__status()', 90000); } catch (e) { R.loadError = e.message; break; }
       const rt = Date.now() - p0;
-      if (viewportMs === null) {
-        const fieldReady = await ev('!!(window.__barfield && window.__barfield.ready && window.__barfield.version > ' + v0 + ')', 90000).catch(() => false);
-        if (fieldReady) viewportMs = Date.now() - tStart;
-      }
-      if (last.bars > 0 && (!expected || last.bars === expected)) {
+      // First answer with the project's bars in the store: the BBS table's synchronous render (spec
+      // section 2: not part of the viewport budget) has finished by then, so the page is free again.
+      if (tFree === null && projectIn(last)) tFree = Date.now();
+      if (readyAt === null && await ev(fieldReadyExpr, 90000).catch(() => false)) readyAt = Date.now();
+      if (projectIn(last)) {
         quick = rt < 200 ? quick + 1 : 0;
         if (quick >= 3) { loaded = true; break; }
       }
       await sleep(80);
     }
     R.load = { ms: Date.now() - tStart, loaded, barsShown: last && last.bars };
-    R.viewportMs = viewportMs;
     if (!loaded) { R.status = b.isCrashed() ? 'CRASHED' : (R.loadError ? 'HUNG' : 'LOAD-INCOMPLETE'); finish(1); }
+    // The field is drawn a little after the page is responsive again (build + install): keep waiting.
+    if (readyAt === null && await ev('!!window.__barfield').catch(() => false)) {
+      for (let i = 0; i < 600 && readyAt === null; i++) {
+        if (await ev(fieldReadyExpr, 90000).catch(() => false)) readyAt = Date.now();
+        else await sleep(100);
+      }
+    }
+    // viewportMs: from the page being responsive until the bars are drawn (budgeted).
+    // viewportWallMs: from the import until the bars are drawn, BBS table included (reported only).
+    R.viewportMs = readyAt !== null && tFree !== null ? Math.max(0, readyAt - tFree) : null;
+    R.viewportWallMs = readyAt !== null ? readyAt - tStart : null;
     const lts = await ev(`window.__lt.slice(${lt0}).map(x => x[1])`);
     R.load.longTasks = lts.length;
     R.load.blockedMs = Math.round(lts.reduce((s, v) => s + v, 0));
@@ -1055,6 +1070,13 @@ node scripts/perf/cdp_bench.mjs --url "http://127.0.0.1:5188/?renderer=field" \
 
 `--enforce` checks `budgets.json` (reference machine: Intel UHD, 1600×900, DPR 1, no IFC).
 Without it the run only prints results. `PROFILE=1` adds a CPU profile (best against the dev server).
+
+Reading the load numbers: `load.ms` is the wall-clock time until the page is responsive again, and
+`load.blockedMs` is the main-thread time lost to long tasks — at 1M bars nearly all of that is the BBS
+table rendering every row (sub-project B). `viewportMs` is the time from the page being responsive until
+the bars are drawn (the budgeted number: the viewport only, as the spec defines it). `viewportWallMs` is
+import-to-drawn wall-clock with the table included; it is reported, not budgeted. Both need the field
+renderer (`?renderer=field`), which publishes `window.__barfield`.
 
 ## Scripts
 
@@ -1579,7 +1601,7 @@ git commit -m "feat(barfield): row state helpers (hide / overlay / tint) and tex
   - `class FieldView` from `fieldObjects.js`: `new FieldView(data, { deltaCapacity = 0 })`; fields `group`, `data`, `rowCount`, `texelCount`, `texData`, `states` (Uint8Array over texels), `radiusM` (Float32Array over texels), `items` (`[{ data, chunk, lines, tubes, delta, lastUsed, sphere }]`), `staticCount`, `frame`; methods `writeRowAttrs(id, colorIdx, radiusM)`, `touch()`, `setStates(states)`, `addChunks(data, delta)`, `removeDelta()`, `dataSets() → FieldData[]`, `applyTubeSet(wanted: Set<number>)` (item indices), `dispose()`.
   - `fieldStatus` (`get`, `set(patch)`, `subscribe`), `fieldStats`, `publishStats(patch)`, `timed(fn)` from `fieldStatus.js`.
   - `getRendererMode()`, `fieldSupported()`, `isFieldRendererActive()`, `DEFAULT_RENDERER` from `rendererFlag.js`.
-  - `export function handleBarClick(i, ev)` and `export function handleBarDoubleClick(i)` from `Scene.jsx`.
+  - `function handleBarClick(i, ev)` and `function handleBarDoubleClick(i)` in `Scene.jsx` (module-private: only `Scene.jsx` uses them, and exporting non-components from a component file trips the `only-export-components` lint rule).
   - `<BarField renderOverlayBar={(i) => ReactNode} />`.
   - `window.__barfield = fieldStats` (`{ ready, version, rows, segments, chunks, buildMs, maxBlockMs, usingFallback }`).
 
@@ -2000,7 +2022,7 @@ export function isFieldRendererActive() {
 Create `src/viewer/barfield/BarField.jsx`:
 
 ```jsx
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useStore } from '../../store.js';
 import { FieldBuilder } from './fieldClient.js';
@@ -2018,7 +2040,6 @@ export default function BarField({ renderOverlayBar }) {
   const builderRef = useRef(null);
   const viewRef = useRef(null);
   const [version, setVersion] = useState(0);
-  const [overlay, setOverlay] = useState([]);
 
   // One builder (and worker) for the component's lifetime.
   useEffect(() => {
@@ -2068,13 +2089,15 @@ export default function BarField({ renderOverlayBar }) {
   }, [root]);
 
   // Row states: hidden rows vanish from the field, selected rows are drawn by the overlay instead.
+  // The overlay list is derived during render, and the texture update runs in a layout effect, so a
+  // selected row leaves the field and appears as an overlay mesh within the same frame.
   const hiddenMask = useMemo(() => computeHiddenMask({ bars, concretes }), [bars, concretes]);
-  useEffect(() => {
-    const { states, overlay: list } = composeRowStates({ hiddenMask, selectedBars });
+  const rowStates = useMemo(() => composeRowStates({ hiddenMask, selectedBars }), [hiddenMask, selectedBars]);
+  useLayoutEffect(() => {
     const view = viewRef.current;
-    if (view) timed(() => view.setStates(states));
-    setOverlay((prev) => (prev.length === list.length && prev.every((v, i) => v === list[i]) ? prev : list));
-  }, [hiddenMask, selectedBars, version]);
+    if (view) timed(() => view.setStates(rowStates.states));
+  }, [rowStates, version]);
+  const overlay = rowStates.overlay;
 
   return (
     <>
@@ -2101,7 +2124,7 @@ import { isFieldRendererActive } from './barfield/rendererFlag.js';
 ```js
 // Click handling shared by the classic RebarMesh groups and the BarField picker: select,
 // Ctrl/Cmd/Shift toggle, lap picking. Same behaviour as the closure that used to live in Scene().
-export function handleBarClick(i, ev) {
+function handleBarClick(i, ev) {
   const st = useStore.getState();
   if (st.measure?.active || st.boxSelect) return;
   // Lap picking: first click anchors, second click laps + selects.
@@ -2120,7 +2143,7 @@ export function handleBarClick(i, ev) {
   else st.selectBar(i);
 }
 
-export function handleBarDoubleClick(i) {
+function handleBarDoubleClick(i) {
   const st = useStore.getState();
   st.selectBar(i);
   st.requestFit('bar', i);
@@ -2349,7 +2372,14 @@ async function parity() {
         stats[mode] = await b.ev(PIXEL_STATS);
         const shot = await b.send('Page.captureScreenshot', { format: 'png' });
         fs.writeFileSync(path.join(outDir, `check-${mode}${section ? '-section' : ''}.png`), Buffer.from(shot.data, 'base64'));
-        if (mode === 'field') report(b.consoleErrors.length === 0, `field renderer logged no errors (${section ? 'section' : 'plain'})${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+        if (mode === 'field') {
+          report(b.consoleErrors.length === 0, `field renderer logged no errors (${section ? 'section' : 'plain'})${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+          // The scene census (AutotestDump) must show chunk line objects, and the one selected row
+          // (the project file selects bar 0) must be drawn by the overlay RebarMesh, not the field.
+          const dump = JSON.parse(await b.ev("document.getElementById('autotest-dump') ? document.getElementById('autotest-dump').textContent : '{}'"));
+          report(!!dump.field && dump.field.lines > 0, `${section ? 'section' : 'plain'}: field chunk line objects exist (${dump.field ? dump.field.lines : 'no census'})`);
+          report(dump.tube !== undefined && dump.tube !== 'none' && (dump.selectedBars || []).length === 1, `${section ? 'section' : 'plain'}: the selected row is drawn by the overlay mesh (selected=${(dump.selectedBars || []).length}, tube=${String(dump.tube).slice(0, 20)})`);
+        }
       }
       const L = stats.legacy, F = stats.field, tol = 14;
       const label = section ? 'section box on' : 'no section box';
@@ -2395,7 +2425,7 @@ sleep 4
 node scripts/perf/check_field.mjs --url http://127.0.0.1:5188 --only parity
 ```
 
-Expected: `RESULT: PASS` with 10 PASS lines (no errors logged; legacy and field draw bars; same screen extent and centre of mass, with and without the section box). Screenshots are saved to `scripts/perf/out/check-*.png` — open `check-field.png` and `check-legacy.png`: the field one shows the same bars as thin amber lines. If the extent check fails with the section box on, the bars are not being clipped: re-check that both materials set `clipping: true` and `clippingPlanes = sectionPlanes`.
+Expected: `RESULT: PASS` with 14 PASS lines (no errors logged; chunk line objects exist; the selected row is drawn by the overlay mesh; legacy and field draw bars; same screen extent and centre of mass, with and without the section box). Screenshots are saved to `scripts/perf/out/check-*.png` — open `check-field.png` and `check-legacy.png`: the field one shows the same bars as thin amber lines. If the extent check fails with the section box on, the bars are not being clipped: re-check that both materials set `clipping: true` and `clippingPlanes = sectionPlanes`.
 
 Then measure the lines-only field renderer:
 

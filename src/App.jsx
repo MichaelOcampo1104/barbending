@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo, Fragment } from 'react';
 import Scene from './viewer/Scene.jsx';
+import FieldBadge from './viewer/barfield/FieldBadge.jsx';
 import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
 import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost, memberKind, slabLinkSpine, getBentDefaults, parseLegs } from './bbs/shapes.js';
@@ -2235,7 +2236,7 @@ export default function App() {
         ) : (
           <div className="rail"><button onClick={() => setLeftOpen(true)} title="Expand panel">»</button></div>
         )}
-        <section className="view"><Scene /><ViewportBar /><MeasureHud /><QueryHud /><FaceSketchHud /></section>
+        <section className="view"><Scene /><ViewportBar /><MeasureHud /><QueryHud /><FaceSketchHud /><FieldBadge /></section>
         {ifcActive && (
           <aside className="rside">
             <div className="rsidehead">IFC control</div>

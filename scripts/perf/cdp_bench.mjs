@@ -90,27 +90,42 @@ try {
     const q = await send('DOM.querySelectorAll', { nodeId: root.root.nodeId, selector: 'input[type=file]' });
     const lt0 = await ev('window.__lt.length');
     const v0 = await ev('(window.__barfield && window.__barfield.version) || 0');
+    const bars0 = (await ev('window.__status()')).bars; // read before the import starts
     const tStart = Date.now();
     await send('DOM.setFileInputFiles', { files: [path.resolve(projPath)], nodeId: q.nodeIds[0] });
     // Poll; each evaluate only answers once the main thread is free again.
-    let quick = 0, last = null, loaded = false, viewportMs = null;
+    const fieldReadyExpr = '!!(window.__barfield && window.__barfield.ready && window.__barfield.version > ' + v0 + ')';
+    // The default project already has bars, so "the project is in" means the expected count, or any
+    // count different from what the page showed before the import.
+    const projectIn = (s) => s.bars > 0 && (expected ? s.bars === expected : s.bars !== bars0);
+    let quick = 0, last = null, loaded = false, tFree = null, readyAt = null;
     while (Date.now() - tStart < 10 * 60 * 1000 && !b.isCrashed()) {
       const p0 = Date.now();
       try { last = await ev('window.__status()', 90000); } catch (e) { R.loadError = e.message; break; }
       const rt = Date.now() - p0;
-      if (viewportMs === null) {
-        const fieldReady = await ev('!!(window.__barfield && window.__barfield.ready && window.__barfield.version > ' + v0 + ')', 90000).catch(() => false);
-        if (fieldReady) viewportMs = Date.now() - tStart;
-      }
-      if (last.bars > 0 && (!expected || last.bars === expected)) {
+      // First answer with the project's bars in the store: the BBS table's synchronous render (spec
+      // section 2: not part of the viewport budget) has finished by then, so the page is free again.
+      if (tFree === null && projectIn(last)) tFree = Date.now();
+      if (readyAt === null && await ev(fieldReadyExpr, 90000).catch(() => false)) readyAt = Date.now();
+      if (projectIn(last)) {
         quick = rt < 200 ? quick + 1 : 0;
         if (quick >= 3) { loaded = true; break; }
       }
       await sleep(80);
     }
     R.load = { ms: Date.now() - tStart, loaded, barsShown: last && last.bars };
-    R.viewportMs = viewportMs;
     if (!loaded) { R.status = b.isCrashed() ? 'CRASHED' : (R.loadError ? 'HUNG' : 'LOAD-INCOMPLETE'); finish(1); }
+    // The field is drawn a little after the page is responsive again (build + install): keep waiting.
+    if (readyAt === null && await ev('!!window.__barfield').catch(() => false)) {
+      for (let i = 0; i < 600 && readyAt === null; i++) {
+        if (await ev(fieldReadyExpr, 90000).catch(() => false)) readyAt = Date.now();
+        else await sleep(100);
+      }
+    }
+    // viewportMs: from the page being responsive until the bars are drawn (budgeted).
+    // viewportWallMs: from the import until the bars are drawn, BBS table included (reported only).
+    R.viewportMs = readyAt !== null && tFree !== null ? Math.max(0, readyAt - tFree) : null;
+    R.viewportWallMs = readyAt !== null ? readyAt - tStart : null;
     const lts = await ev(`window.__lt.slice(${lt0}).map(x => x[1])`);
     R.load.longTasks = lts.length;
     R.load.blockedMs = Math.round(lts.reduce((s, v) => s + v, 0));

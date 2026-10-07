@@ -53,6 +53,10 @@ from `scripts/perf/gen_project.mjs`, **no IFC loaded**, section box on.
 The import-to-drawn budget covers the **viewport only**. The BBS table still renders
 every row until sub-project B (25,000 rows currently block the main thread for about
 17 s, mostly DOM work); that cost is not part of A's budget but is reported by the rig.
+Because the table and the viewport share the main thread, the rig measures the budgeted time
+(`viewportMs`) from the moment the page answers again after the import, so the table's synchronous
+render is excluded, until the bars are drawn. The wall-clock import-to-drawn time with the table
+included is reported separately as `viewportWallMs`.
 
 The rig prints results on any machine and only fails the run when started with
 `--enforce` (budgets are specific to the reference machine).

@@ -12,6 +12,8 @@ import SectionBox from './SectionBox.jsx';
 import TraceTool from './TraceTool.jsx';
 import { sectionPlanes } from './sectionPlanes.js';
 import { stencilMats } from './stencilMats.js';
+import BarField from './barfield/BarField.jsx';
+import { isFieldRendererActive } from './barfield/rendererFlag.js';
 
 const noopStencilRaycast = () => null;
 const SNAP_PX = 14; // screen-space aperture for the snap magnet
@@ -1020,6 +1022,12 @@ function AutotestDump() {
           + `bb=[${bb.min.toArray().map((v) => v.toFixed(2)).join(',')}]-[${bb.max.toArray().map((v) => v.toFixed(2)).join(',')}] `
           + `clip=${o.material.clippingPlanes === sectionPlanes}/${mp.numClippingPlanes}`;
       });
+      // BarField census: chunk line / tube objects and how many are currently drawn.
+      let fieldLines = 0, fieldTubes = 0, fieldVisible = 0;
+      scene.traverse((o) => {
+        if (o.userData?.barField === 'lines') { fieldLines += 1; if (o.visible) fieldVisible += 1; }
+        else if (o.userData?.barField === 'tubes') { fieldTubes += 1; if (o.visible) fieldVisible += 1; }
+      });
       // Pixel verdict: 5 sample points along the default bar OUTSIDE the box
       // (bar x∈[0,3] at y=z=0; thirded box x∈[-1.33,1.33]) must read background.
       let verdict = 'n/a';
@@ -1052,6 +1060,8 @@ function AutotestDump() {
         sampleMat: sample,
         tube: tubeInfo,
         pick: useStore.getState().ifcPick,
+        field: { lines: fieldLines, tubes: fieldTubes, visible: fieldVisible },
+        selectedBars: useStore.getState().selectedBars,
         lastPick: useStore.getState().lastPick,
         barPos: (() => {
           const s = useStore.getState();
@@ -1078,6 +1088,33 @@ const S = 0.001;
 
 const DIA_COLORS = { 10: '#22c55e', 12: '#84cc16', 16: '#f59e0b', 20: '#ef4444', 25: '#a855f7', 32: '#3b82f6', 40: '#e11d48' };
 const colorFor = (dia) => DIA_COLORS[dia] || '#f59e0b';
+
+// Click handling shared by the classic RebarMesh groups and the BarField picker: select,
+// Ctrl/Cmd/Shift toggle, lap picking. Same behaviour as the closure that used to live in Scene().
+function handleBarClick(i, ev) {
+  const st = useStore.getState();
+  if (st.measure?.active || st.boxSelect) return;
+  // Lap picking: first click anchors, second click laps + selects.
+  if (st.lapArmed) {
+    if (st.lapAnchor == null) { st.setLapAnchor(i); return; }
+    if (st.lapAnchor === i) return;
+    st.selectBar(i);
+    const r = st.applyLapSplice(st.lapAnchor, i);
+    if (!r.ok) alert(r.msg);
+    else { st.setLapAnchor(null); st.setLapArmed(false); }
+    return;
+  }
+  // Ctrl/Cmd/Shift-click toggles into the multi-selection so the box result can be adjusted bar by bar.
+  const add = ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey);
+  if (add) st.toggleBarSelected(i);
+  else st.selectBar(i);
+}
+
+function handleBarDoubleClick(i) {
+  const st = useStore.getState();
+  st.selectBar(i);
+  st.requestFit('bar', i);
+}
 
 function RebarMesh({ bar, index, selected, onClick, onDoubleClick }) {
   const tube = useMemo(() => {
@@ -1620,7 +1657,6 @@ export default function Scene() {
   const concretes = useStore((s) => s.concretes);
   const bars = useStore((s) => s.bars);
   const selectedBars = useStore((s) => s.selectedBars);
-  const selectBar = useStore((s) => s.selectBar);
   const showConcrete = useStore((s) => s.showConcrete);
   const ifcActive = useStore((s) => s.ifcActive);
   const navOrbit = useStore((s) => s.navMode === 'orbit');
@@ -1638,6 +1674,18 @@ export default function Scene() {
   const lapAnchorEnds = (lapArmed && lapAnchor != null && bars[lapAnchor])
     ? barSpliceEnds(bars[lapAnchor]).map(([x, y, z]) => [x * S, z * S, -(y * S)])
     : null;
+
+  const useField = useMemo(() => isFieldRendererActive(), []);
+  const renderBar = (b, i) => (
+    <RebarMesh
+      key={i}
+      bar={b}
+      index={i}
+      selected={(selectedBars || []).includes(i)}
+      onClick={(ev) => handleBarClick(i, ev)}
+      onDoubleClick={() => handleBarDoubleClick(i)}
+    />
+  );
 
   return (
     <Canvas camera={{ position: [6, 4, -6], fov: 45 }} style={{ background: '#0f172a' }}
@@ -1664,44 +1712,16 @@ export default function Scene() {
           <IfcModel />
         </Suspense>
       )}
-      {bars.map((b, i) => {
+      {useField ? (
+        <BarField renderOverlayBar={(i) => renderBar(bars[i], i)} />
+      ) : bars.map((b, i) => {
         // View-only hiding: individually hidden bars, bars hosted on a hidden
         // member, and bars spatially inside a hidden member (covers picked/
         // positioned bars that were never assigned a host). Schedule stays whole.
         if (b.hidden) return null;
         if (b.host && hiddenHosts.has(b.host)) return null;
         if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return null;
-        return (
-          <RebarMesh
-            key={i}
-            bar={b}
-            index={i}
-            selected={(selectedBars || []).includes(i)}
-            onClick={(ev) => {
-              const st = useStore.getState();
-              if (st.measure?.active || st.boxSelect) return;
-              // Lap picking: first click anchors, second click laps + selects.
-              if (st.lapArmed) {
-                if (st.lapAnchor == null) { st.setLapAnchor(i); return; }
-                if (st.lapAnchor === i) return;
-                st.selectBar(i);
-                const r = st.applyLapSplice(st.lapAnchor, i);
-                if (!r.ok) alert(r.msg);
-                else { st.setLapAnchor(null); st.setLapArmed(false); }
-                return;
-              }
-              // Ctrl/Cmd/Shift-click toggles into the multi-selection so the
-              // box result can be adjusted bar by bar.
-              const add = ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey);
-              if (add) st.toggleBarSelected(i);
-              else selectBar(i);
-            }}
-            onDoubleClick={() => {
-              selectBar(i);
-              useStore.getState().requestFit('bar', i);
-            }}
-          />
-        );
+        return renderBar(b, i);
       })}
       <OrbitControls makeDefault enableDamping={nav.style !== 'cad' && nav.damping !== false} dampingFactor={0.08}
         rotateSpeed={nav.rotateSpeed ?? 1} panSpeed={1.8 * (nav.panSpeed ?? 1)} screenSpacePanning enableZoom={false} minDistance={0} maxDistance={Infinity}
