@@ -362,7 +362,7 @@ export function* buildFieldSteps(rows, options = {}) {
         p = { pts, px: Number(row.Pos_x) || 0, py: Number(row.Pos_y) || 0, pz: Number(row.Pos_z) || 0 };
         segTotal += (pts.length - 1) * copies;
       }
-    } catch (err) {
+    } catch {
       p = null;
     }
     prep[i] = p;
