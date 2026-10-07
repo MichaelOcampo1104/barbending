@@ -3,6 +3,9 @@ import * as THREE from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import { chooseTubeChunks } from './lod.js';
 import { qualityState } from './qualityState.js';
+import { pickField } from './fieldPick.js';
+import { fieldRegistry } from './fieldRegistry.js';
+import { isWorldPointInSectionBox } from '../sectionPlanes.js';
 import { useStore } from '../../store.js';
 import { FieldBuilder } from './fieldClient.js';
 import { FieldView } from './fieldObjects.js';
@@ -77,6 +80,38 @@ export default function BarField({ renderOverlayBar }) {
     if (view) timed(() => view.setStates(rowStates.states));
   }, [rowStates, version]);
   const overlay = rowStates.overlay;
+
+  // Let PickHandler / QueryHandler pick bars through the field (rays are in scene metres). Both
+  // handlers listen to the same pointer-up, and the first one to run may select the bar, which turns
+  // its row into an overlay row the picker skips: so the result is computed once per event object.
+  useEffect(() => {
+    const pickRow = (ray, fovRad, viewportHeightPx) => {
+      const view = viewRef.current;
+      if (!view) return null;
+      const section = useStore.getState().section;
+      const r = { origin: [ray.origin.x, ray.origin.y, ray.origin.z], dir: [ray.direction.x, ray.direction.y, ray.direction.z] };
+      let best = null;
+      for (const data of view.dataSets()) {
+        const hit = pickField(data, r, {
+          fovRad, viewportHeightPx, tolPx: 6, rowStates: view.states, rowRadiusM: view.radiusM,
+          accept: (p) => isWorldPointInSectionBox({ x: p[0], y: p[1], z: p[2] }, section),
+        });
+        if (hit && (!best || hit.distance < best.distance)) best = hit;
+      }
+      if (!best) return null;
+      return { row: best.row, distance: best.distance, point: new THREE.Vector3(best.point[0], best.point[1], best.point[2]) };
+    };
+    let last = { ev: null, res: null };
+    fieldRegistry.current = {
+      pick(ray, { fovRad, viewportHeightPx, ev = null }) {
+        if (ev && last.ev === ev) return last.res;
+        const res = pickRow(ray, fovRad, viewportHeightPx);
+        if (ev) last = { ev, res };
+        return res;
+      },
+    };
+    return () => { fieldRegistry.current = null; };
+  }, []);
 
   // Level of detail: at most every 100 ms (and only when something changed) decide which chunks
   // draw as tubes; the rest stay lines. Chunks outside the frustum never spend triangle budget.

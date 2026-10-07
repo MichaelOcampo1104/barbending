@@ -4,6 +4,7 @@
 //          the section box (?autotest=section cuts it to the central third). The amber pixels must
 //          occupy the same screen box (placement + clipping), and the field must draw something.
 // tubes  : Detail = Tubes draws instanced tubes with the same extent as the legacy renderer.
+// pick   : real clicks on the field renderer select / toggle / clear bars.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -149,9 +150,82 @@ async function tubes() {
   }
 }
 
+// pick : real trusted clicks on the field renderer. Click one bar -> that bar is selected; Ctrl-click
+//        another -> both; click empty space -> the selection clears; a double-click zooms to the bar;
+//        with the Query tool on, a click fills the panel. Reads the selection from the ?autotest dump
+//        (selectedBars), so it needs no store access.
+const mulVec4 = (m, v) => [0, 1, 2, 3].map((row) => m[row] * v[0] + m[4 + row] * v[1] + m[8 + row] * v[2] + m[12 + row] * v[3]);
+async function pick() {
+  const bars = [0, 1, 2].map((k) => ({
+    Rebar_tag: k + 1, Bar_mark: `B${k + 1}`, Rebar_Type: 'straight', Plane: 'XY', Dia: 16, 'Length of Bar': 3000,
+    Pos_x: 0, Pos_y: k * 800, Pos_z: 1000 + k * 200, Pos_Rotation: 0, qty: 1, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150,
+    Group: 'pick', bond_condition: 'poor', Visible: 1,
+  }));
+  const projectFile = path.join(outDir, 'check_pick.json');
+  fs.writeFileSync(projectFile, JSON.stringify({ v: 1, app: 'barbending', savedAt: Date.now(), bars, concretes: [], refLines: [], cover: 40, bond: 'poor', selectedBar: 0, selectedBars: [] }));
+  const b = await launchBrowser({ instrument: INSTR });
+  try {
+    await openProject(b, 'renderer=field&autotest=pick', projectFile);
+    const rect = await b.ev('(() => { const r = document.querySelector("canvas").getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()');
+    // Mid-point of bar k on screen. Scene metres: x 1.5, y = height, z = -(app y). The camera is read
+    // fresh every time because zoom-to-bar and Fit move it.
+    const screen = async (k) => {
+      const cam = await b.ev('({ view: Array.from(window.__camera.matrixWorldInverse.elements), proj: Array.from(window.__camera.projectionMatrix.elements) })');
+      const p = [1.5, (1000 + k * 200) / 1000, -(k * 800) / 1000, 1];
+      const c = mulVec4(cam.proj, mulVec4(cam.view, p));
+      return { x: rect.x + (c[0] / c[3] * 0.5 + 0.5) * rect.w, y: rect.y + (-c[1] / c[3] * 0.5 + 0.5) * rect.h };
+    };
+    const press = async (pt, modifiers = 0, clickCount = 1) => {
+      await b.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pt.x, y: pt.y });
+      await b.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.x, y: pt.y, button: 'left', clickCount, modifiers });
+      await b.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.x, y: pt.y, button: 'left', clickCount, modifiers });
+    };
+    const click = async (pt, modifiers = 0) => {
+      await press(pt, modifiers);
+      await sleep(1400); // the autotest dump refreshes once per second
+    };
+    const clickButton = (test) => b.ev(`(() => { const x = Array.from(document.querySelectorAll('button')).find((e) => ${test}); if (x) x.click(); return !!x; })()`);
+    const selected = async () => (await b.ev("JSON.parse(document.getElementById('autotest-dump').textContent).selectedBars")) || [];
+    const same = (a, c) => a.length === c.length && [...a].sort().join() === [...c].sort().join();
+    await click(await screen(2));
+    let s = await selected();
+    report(same(s, [2]), `click on bar 3 selects it (selectedBars=${JSON.stringify(s)})`);
+    await click(await screen(1));
+    s = await selected();
+    report(same(s, [1]), `click on bar 2 replaces the selection (selectedBars=${JSON.stringify(s)})`);
+    await click(await screen(0), 2);
+    s = await selected();
+    report(same(s, [0, 1]), `Ctrl-click on bar 1 adds it (selectedBars=${JSON.stringify(s)})`);
+    await click({ x: rect.x + rect.w * 0.08, y: rect.y + rect.h * 0.92 });
+    s = await selected();
+    report(s.length === 0, `click on empty space clears the selection (selectedBars=${JSON.stringify(s)})`);
+    // Double-click: two quick clicks on bar 2 select it and zoom the camera to it.
+    const camBefore = await b.ev('window.__camera.position.toArray()');
+    const at2 = await screen(1);
+    await press(at2); await sleep(120); await press(at2, 0, 2);
+    await sleep(2500);
+    const camAfter = await b.ev('window.__camera.position.toArray()');
+    s = await selected();
+    report(same(s, [1]), `double-click on bar 2 selects it (selectedBars=${JSON.stringify(s)})`);
+    const moved = Math.hypot(...camAfter.map((v, i) => v - camBefore[i]));
+    report(moved > 0.3, `double-click zooms the camera to the bar (moved ${moved.toFixed(2)} m)`);
+    // Query tool: with it active, a click on a field bar must fill the panel with that bar.
+    await clickButton("e.title.startsWith('Query')");
+    await clickButton("e.title === 'Fit entire model in view'");
+    await sleep(3000);
+    await click(await screen(2));
+    const bodyText = await b.ev('document.body.innerText');
+    report(/Rebar B3/.test(bodyText) && /Bar index/.test(bodyText), 'Query tool names the clicked field bar (Rebar B3, with its rows)');
+    report(b.consoleErrors.length === 0, `no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+  } finally {
+    b.close();
+  }
+}
+
 try {
   if (!only || only === 'parity') await parity();
   if (!only || only === 'tubes') await tubes();
+  if (!only || only === 'pick') await pick();
 } catch (e) {
   console.error('ERROR', e.message);
   failures += 1;

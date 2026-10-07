@@ -2894,7 +2894,7 @@ git commit -m "feat(barfield): instanced tubes with distance LOD and the Detail 
 - Consumes: `FieldData` (`seg`, `rowOfVtx`, `chunks`, `blocks`) from Task 1; `FieldView.dataSets()`, `FieldView.states`, `FieldView.radiusM` (Task 5); `handleBarClick`, `handleBarDoubleClick` (Task 5); `isWorldPointInSectionBox(point, section)` from `src/viewer/sectionPlanes.js`.
 - Produces:
   - `pickField(data, ray, opts?) → { row, distance, point: [x,y,z], seg } | null` where `ray = { origin: [x,y,z], dir: [x,y,z] }` (unit direction, scene metres) and `opts = { fovRad?, viewportHeightPx?, tolPx = 6, rowStates?: Uint8Array, rowRadiusM?: Float32Array, accept?: (point) => boolean }`. Rows with state 1 (hidden) or 2 (overlay) are skipped.
-  - `fieldRegistry = { current }` where `current = { pick(ray: THREE.Ray, { fovRad, viewportHeightPx }) → { row, distance, point: THREE.Vector3 } | null }`; `row` is the bar index.
+  - `fieldRegistry = { current }` where `current = { pick(ray: THREE.Ray, { fovRad, viewportHeightPx, ev? }) → { row, distance, point: THREE.Vector3 } | null }`; `row` is the bar index. Passing the pointer event as `ev` makes the result stable per event (PickHandler may select the bar before QueryHandler runs).
 
 - [ ] **Step 1: Write the failing picker tests**
 
@@ -3116,8 +3116,10 @@ Create `src/viewer/barfield/fieldRegistry.js`:
 
 ```js
 // Lets PickHandler / QueryHandler reach the active BarField without prop drilling. BarField sets
-// `current` while mounted. current.pick(ray, { fovRad, viewportHeightPx }) takes a THREE.Ray in scene
-// metres and returns { row (bar index), distance, point: THREE.Vector3 } or null.
+// `current` while mounted. current.pick(ray, { fovRad, viewportHeightPx, ev }) takes a THREE.Ray in
+// scene metres and returns { row (bar index), distance, point: THREE.Vector3 } or null. Pass the
+// pointer event as `ev`: the result is then computed once per event, so a second handler for the
+// same click sees the same answer even after the first one changed the selection.
 export const fieldRegistry = { current: null };
 ```
 
@@ -3139,24 +3141,33 @@ import { isWorldPointInSectionBox } from '../sectionPlanes.js';
 and directly above the comment line `  // Level of detail: at most every 100 ms (and only when something changed) decide which chunks` insert:
 
 ```jsx
-  // Let PickHandler / QueryHandler pick bars through the field (rays are in scene metres).
+  // Let PickHandler / QueryHandler pick bars through the field (rays are in scene metres). Both
+  // handlers listen to the same pointer-up, and the first one to run may select the bar, which turns
+  // its row into an overlay row the picker skips: so the result is computed once per event object.
   useEffect(() => {
+    const pickRow = (ray, fovRad, viewportHeightPx) => {
+      const view = viewRef.current;
+      if (!view) return null;
+      const section = useStore.getState().section;
+      const r = { origin: [ray.origin.x, ray.origin.y, ray.origin.z], dir: [ray.direction.x, ray.direction.y, ray.direction.z] };
+      let best = null;
+      for (const data of view.dataSets()) {
+        const hit = pickField(data, r, {
+          fovRad, viewportHeightPx, tolPx: 6, rowStates: view.states, rowRadiusM: view.radiusM,
+          accept: (p) => isWorldPointInSectionBox({ x: p[0], y: p[1], z: p[2] }, section),
+        });
+        if (hit && (!best || hit.distance < best.distance)) best = hit;
+      }
+      if (!best) return null;
+      return { row: best.row, distance: best.distance, point: new THREE.Vector3(best.point[0], best.point[1], best.point[2]) };
+    };
+    let last = { ev: null, res: null };
     fieldRegistry.current = {
-      pick(ray, { fovRad, viewportHeightPx }) {
-        const view = viewRef.current;
-        if (!view) return null;
-        const section = useStore.getState().section;
-        const r = { origin: [ray.origin.x, ray.origin.y, ray.origin.z], dir: [ray.direction.x, ray.direction.y, ray.direction.z] };
-        let best = null;
-        for (const data of view.dataSets()) {
-          const hit = pickField(data, r, {
-            fovRad, viewportHeightPx, tolPx: 6, rowStates: view.states, rowRadiusM: view.radiusM,
-            accept: (p) => isWorldPointInSectionBox({ x: p[0], y: p[1], z: p[2] }, section),
-          });
-          if (hit && (!best || hit.distance < best.distance)) best = hit;
-        }
-        if (!best) return null;
-        return { row: best.row, distance: best.distance, point: new THREE.Vector3(best.point[0], best.point[1], best.point[2]) };
+      pick(ray, { fovRad, viewportHeightPx, ev = null }) {
+        if (ev && last.ev === ev) return last.res;
+        const res = pickRow(ray, fovRad, viewportHeightPx);
+        if (ev) last = { ev, res };
+        return res;
       },
     };
     return () => { fieldRegistry.current = null; };
@@ -3234,7 +3245,7 @@ with:
       // handlers a RebarMesh would. A field bar counts as the nearest hit when it is at least as
       // close as any mesh, so the empty-space and IFC branches below behave as they did before.
       const fh = fieldRegistry.current
-        ? fieldRegistry.current.pick(raycaster.current.ray, { fovRad: (camera.fov * Math.PI) / 180, viewportHeightPx: rect.height })
+        ? fieldRegistry.current.pick(raycaster.current.ray, { fovRad: (camera.fov * Math.PI) / 180, viewportHeightPx: rect.height, ev })
         : null;
       if (fh) fieldBarClick(fh.row, ev);
       const hits = fh && (!meshHits.length || fh.distance <= meshHits[0].distance)
@@ -3258,7 +3269,7 @@ with:
 ```js
       const hits = raycaster.current.intersectObjects(targets, false);
       const fh = fieldRegistry.current
-        ? fieldRegistry.current.pick(raycaster.current.ray, { fovRad: (camera.fov * Math.PI) / 180, viewportHeightPx: rect.height })
+        ? fieldRegistry.current.pick(raycaster.current.ray, { fovRad: (camera.fov * Math.PI) / 180, viewportHeightPx: rect.height, ev })
         : null;
       console.info(`[query] targets=${targets.length} hits=${hits.length} field=${fh ? fh.row : '-'}`);
       if (fh && (!hits.length || fh.distance <= hits[0].distance)) {
@@ -3324,8 +3335,9 @@ with:
 
 ```js
 // pick : real trusted clicks on the field renderer. Click one bar -> that bar is selected; Ctrl-click
-//        another -> both; click empty space -> the selection clears. Reads the selection from the
-//        ?autotest dump (selectedBars), so it needs no store access.
+//        another -> both; click empty space -> the selection clears; a double-click zooms to the bar;
+//        with the Query tool on, a click fills the panel. Reads the selection from the ?autotest dump
+//        (selectedBars), so it needs no store access.
 const mulVec4 = (m, v) => [0, 1, 2, 3].map((row) => m[row] * v[0] + m[4 + row] * v[1] + m[8 + row] * v[2] + m[12 + row] * v[3]);
 async function pick() {
   const bars = [0, 1, 2].map((k) => ({
@@ -3338,34 +3350,56 @@ async function pick() {
   const b = await launchBrowser({ instrument: INSTR });
   try {
     await openProject(b, 'renderer=field&autotest=pick', projectFile);
-    const cam = await b.ev('({ view: Array.from(window.__camera.matrixWorldInverse.elements), proj: Array.from(window.__camera.projectionMatrix.elements) })');
     const rect = await b.ev('(() => { const r = document.querySelector("canvas").getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()');
-    // mid-point of bar k in scene metres: x 1.5, y = height, z = -(app y)
-    const screen = (k) => {
+    // Mid-point of bar k on screen. Scene metres: x 1.5, y = height, z = -(app y). The camera is read
+    // fresh every time because zoom-to-bar and Fit move it.
+    const screen = async (k) => {
+      const cam = await b.ev('({ view: Array.from(window.__camera.matrixWorldInverse.elements), proj: Array.from(window.__camera.projectionMatrix.elements) })');
       const p = [1.5, (1000 + k * 200) / 1000, -(k * 800) / 1000, 1];
       const c = mulVec4(cam.proj, mulVec4(cam.view, p));
       return { x: rect.x + (c[0] / c[3] * 0.5 + 0.5) * rect.w, y: rect.y + (-c[1] / c[3] * 0.5 + 0.5) * rect.h };
     };
-    const click = async (pt, modifiers = 0) => {
+    const press = async (pt, modifiers = 0, clickCount = 1) => {
       await b.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pt.x, y: pt.y });
-      await b.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.x, y: pt.y, button: 'left', clickCount: 1, modifiers });
-      await b.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.x, y: pt.y, button: 'left', clickCount: 1, modifiers });
+      await b.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.x, y: pt.y, button: 'left', clickCount, modifiers });
+      await b.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.x, y: pt.y, button: 'left', clickCount, modifiers });
+    };
+    const click = async (pt, modifiers = 0) => {
+      await press(pt, modifiers);
       await sleep(1400); // the autotest dump refreshes once per second
     };
+    const clickButton = (test) => b.ev(`(() => { const x = Array.from(document.querySelectorAll('button')).find((e) => ${test}); if (x) x.click(); return !!x; })()`);
     const selected = async () => (await b.ev("JSON.parse(document.getElementById('autotest-dump').textContent).selectedBars")) || [];
     const same = (a, c) => a.length === c.length && [...a].sort().join() === [...c].sort().join();
-    await click(screen(2));
+    await click(await screen(2));
     let s = await selected();
     report(same(s, [2]), `click on bar 3 selects it (selectedBars=${JSON.stringify(s)})`);
-    await click(screen(1));
+    await click(await screen(1));
     s = await selected();
     report(same(s, [1]), `click on bar 2 replaces the selection (selectedBars=${JSON.stringify(s)})`);
-    await click(screen(0), 2);
+    await click(await screen(0), 2);
     s = await selected();
     report(same(s, [0, 1]), `Ctrl-click on bar 1 adds it (selectedBars=${JSON.stringify(s)})`);
     await click({ x: rect.x + rect.w * 0.08, y: rect.y + rect.h * 0.92 });
     s = await selected();
     report(s.length === 0, `click on empty space clears the selection (selectedBars=${JSON.stringify(s)})`);
+    // Double-click: two quick clicks on bar 2 select it and zoom the camera to it.
+    const camBefore = await b.ev('window.__camera.position.toArray()');
+    const at2 = await screen(1);
+    await press(at2); await sleep(120); await press(at2, 0, 2);
+    await sleep(2500);
+    const camAfter = await b.ev('window.__camera.position.toArray()');
+    s = await selected();
+    report(same(s, [1]), `double-click on bar 2 selects it (selectedBars=${JSON.stringify(s)})`);
+    const moved = Math.hypot(...camAfter.map((v, i) => v - camBefore[i]));
+    report(moved > 0.3, `double-click zooms the camera to the bar (moved ${moved.toFixed(2)} m)`);
+    // Query tool: with it active, a click on a field bar must fill the panel with that bar.
+    await clickButton("e.title.startsWith('Query')");
+    await clickButton("e.title === 'Fit entire model in view'");
+    await sleep(3000);
+    await click(await screen(2));
+    const bodyText = await b.ev('document.body.innerText');
+    report(/Rebar B3/.test(bodyText) && /Bar index/.test(bodyText), 'Query tool names the clicked field bar (Rebar B3, with its rows)');
     report(b.consoleErrors.length === 0, `no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
   } finally {
     b.close();
@@ -3391,7 +3425,7 @@ With a production preview running:
 node scripts/perf/check_field.mjs --url http://127.0.0.1:5188 --only pick
 ```
 
-Expected: `RESULT: PASS` — four PASS lines for the clicks plus "no errors logged". If a click selects nothing, open the page with `?renderer=field&autotest=pick` in a normal browser, click a bar and read the console: the `[pick] ... field=<row>` line shows whether the field picker saw it.
+Expected: `RESULT: PASS` — eight PASS lines: four for the clicks (select, replace, Ctrl-add, clear), two for the double-click (selects, zooms the camera), one for the Query tool naming the clicked bar, and "no errors logged". If a click selects nothing, open the page with `?renderer=field&autotest=pick` in a normal browser, click a bar and read the console: the `[pick] ... field=<row>` line shows whether the field picker saw it.
 
 Manual check in the app (production or dev, `?renderer=field`): load a project, click bars, Ctrl-click to add, double-click to zoom to a bar, turn on the Query tool and click a bar, arm Lap picking and click two bars, hide a bar with its eye icon (it must disappear and no longer be clickable).
 

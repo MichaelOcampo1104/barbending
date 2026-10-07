@@ -14,6 +14,7 @@ import { sectionPlanes } from './sectionPlanes.js';
 import { stencilMats } from './stencilMats.js';
 import BarField from './barfield/BarField.jsx';
 import { isFieldRendererActive } from './barfield/rendererFlag.js';
+import { fieldRegistry } from './barfield/fieldRegistry.js';
 
 const noopStencilRaycast = () => null;
 const SNAP_PX = 14; // screen-space aperture for the snap magnet
@@ -316,10 +317,20 @@ function PickHandler() {
       const ny = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.current.setFromCamera(new THREE.Vector2(nx, ny), camera);
       const targets = collectPickTargets(scene);
-      const hits = raycaster.current.intersectObjects(targets, false);
+      const meshHits = raycaster.current.intersectObjects(targets, false);
+      // BarField bars are not meshes: pick them from the field data, then run the same click
+      // handlers a RebarMesh would. A field bar counts as the nearest hit when it is at least as
+      // close as any mesh, so the empty-space and IFC branches below behave as they did before.
+      const fh = fieldRegistry.current
+        ? fieldRegistry.current.pick(raycaster.current.ray, { fovRad: (camera.fov * Math.PI) / 180, viewportHeightPx: rect.height, ev })
+        : null;
+      if (fh) fieldBarClick(fh.row, ev);
+      const hits = fh && (!meshHits.length || fh.distance <= meshHits[0].distance)
+        ? [{ object: { userData: {} }, point: fh.point, distance: fh.distance, face: null }]
+        : meshHits;
       const ms = performance.now() - t0;
       // Always-on one-liner (remote diagnosis: slow raycast vs clean miss).
-      console.info(`[pick] targets=${targets.length} hits=${hits.length} raycast=${ms < 10 ? ms.toFixed(1) : Math.round(ms)}ms pick=${st.ifcPick}`);
+      console.info(`[pick] targets=${targets.length} hits=${meshHits.length} field=${fh ? fh.row : '-'} raycast=${ms < 10 ? ms.toFixed(1) : Math.round(ms)}ms pick=${st.ifcPick}`);
       if (!hits.length) {
         // Clicked empty space: drop the bar selection. Never while placing
         // (that would lose the bar being positioned) or lap-picking.
@@ -653,7 +664,18 @@ function QueryHandler() {
       ), camera);
       const targets = collectPickTargets(scene);
       const hits = raycaster.current.intersectObjects(targets, false);
-      console.info(`[query] targets=${targets.length} hits=${hits.length}`);
+      const fh = fieldRegistry.current
+        ? fieldRegistry.current.pick(raycaster.current.ray, { fovRad: (camera.fov * Math.PI) / 180, viewportHeightPx: rect.height, ev })
+        : null;
+      console.info(`[query] targets=${targets.length} hits=${hits.length} field=${fh ? fh.row : '-'}`);
+      if (fh && (!hits.length || fh.distance <= hits[0].distance)) {
+        // BarField bar nearer than any mesh: same panel as a RebarMesh hit.
+        const fp = fh.point;
+        const fieldPt = [fp.x * 1000, -fp.z * 1000, fp.y * 1000].map((v) => Math.round(v * 10) / 10);
+        const res = buildRebarQueryResult(st, fh.row, fieldPt);
+        if (res) st.setQueryResult({ ...res, at: Date.now() });
+        return;
+      }
       if (!hits.length) return; // miss keeps the last result (hint shows when empty)
       const h = hits[0];
       let root = h.object;
@@ -665,27 +687,8 @@ function QueryHandler() {
       let result = null;
       try {
       if (kind === 'rebar') {
-        const i = root.userData?.barIndex;
-        const b = Number.isInteger(i) ? st.bars[i] : null;
-        if (!b) { console.info('[query] rebar hit has no bar record — skipped'); return; }
-        const bb = barAppBox(b);
-        const en = enrichBar(b);
-        result = {
-          kind,
-          title: `Rebar ${b.Bar_mark || `#${i}`}`,
-          sub: `${b.Rebar_Type} · Ø${b.Dia}`,
-          point: appPt,
-          rows: [
-            ['Bar index', String(i)],
-            ['Position (app mm)', fmtPt([b.Pos_x || 0, b.Pos_y || 0, b.Pos_z || 0])],
-            ['Bbox min (app mm)', fmtPt([bb.minX, bb.minY, bb.minZ])],
-            ['Bbox max (app mm)', fmtPt([bb.maxX, bb.maxY, bb.maxZ])],
-            ['Bbox size (mm)', fmtPt([bb.maxX - bb.minX, bb.maxY - bb.minY, bb.maxZ - bb.minZ])],
-            ['Distribution', `${en._copies ?? distCount(b)} bars`],
-            ['Cut length', `${(en._cut || 0).toLocaleString('en-US')} mm`],
-            ['Click point (app mm)', fmtPt(appPt)],
-          ],
-        };
+        result = buildRebarQueryResult(st, root.userData?.barIndex, appPt);
+        if (!result) { console.info('[query] rebar hit has no bar record — skipped'); return; }
       } else if (kind === 'concrete') {
         const c = (st.concretes || []).find((k) => k.id === root.userData?.concreteId);
         if (!c) { console.info('[query] concrete hit has no member record — skipped'); return; }
@@ -1114,6 +1117,45 @@ function handleBarDoubleClick(i) {
   const st = useStore.getState();
   st.selectBar(i);
   st.requestFit('bar', i);
+}
+
+// A click on a BarField bar: same handlers as RebarMesh, and two clicks on the same bar within
+// 300 ms also fire the double-click action (select + zoom to the bar).
+let lastFieldClick = { row: -1, t: 0 };
+function fieldBarClick(row, ev) {
+  handleBarClick(row, ev);
+  const now = performance.now();
+  if (lastFieldClick.row === row && now - lastFieldClick.t < 300) {
+    handleBarDoubleClick(row);
+    lastFieldClick = { row: -1, t: 0 };
+  } else {
+    lastFieldClick = { row, t: now };
+  }
+}
+
+// Query-panel rows for bar index i (shared by the mesh hit path and the BarField pick path).
+function buildRebarQueryResult(st, i, appPt) {
+  const b = Number.isInteger(i) ? st.bars[i] : null;
+  if (!b) return null;
+  const fmt = (p) => p.map((v) => (+v).toFixed(1)).join(', ');
+  const bb = barAppBox(b);
+  const en = enrichBar(b);
+  return {
+    kind: 'rebar',
+    title: `Rebar ${b.Bar_mark || `#${i}`}`,
+    sub: `${b.Rebar_Type} · Ø${b.Dia}`,
+    point: appPt,
+    rows: [
+      ['Bar index', String(i)],
+      ['Position (app mm)', fmt([b.Pos_x || 0, b.Pos_y || 0, b.Pos_z || 0])],
+      ['Bbox min (app mm)', fmt([bb.minX, bb.minY, bb.minZ])],
+      ['Bbox max (app mm)', fmt([bb.maxX, bb.maxY, bb.maxZ])],
+      ['Bbox size (mm)', fmt([bb.maxX - bb.minX, bb.maxY - bb.minY, bb.maxZ - bb.minZ])],
+      ['Distribution', `${en._copies ?? distCount(b)} bars`],
+      ['Cut length', `${(en._cut || 0).toLocaleString('en-US')} mm`],
+      ['Click point (app mm)', fmt(appPt)],
+    ],
+  };
 }
 
 function RebarMesh({ bar, index, selected, onClick, onDoubleClick }) {
