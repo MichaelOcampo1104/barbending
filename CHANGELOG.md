@@ -2,6 +2,11 @@
 
 ## Unreleased (working tree → next push)
 
+- **Large-project performance: spike + BarField renderer design (docs only — no app code changed)**:
+  - Spike (2026-10-07; production build, headless Edge on the Intel UHD, 1600×900, synthetic projects up to 3M bars / 75k rows; throwaway rig, not committed): today's renderer draws every distribution copy as its own mesh + material — 10,163 bars → 8.9 fps (10,173 draw calls, 6.0M triangles/frame), 50k → 2.0 fps, 100k → 0.7 fps (57.7M triangles), 200k did not finish in 7 min; heap after one select/duplicate/undo 220 MB / 941 MB / 1,875 MB. CPU profile (10k bars, dev build): 69% three.js per-object work, 22% native GL submission, ≈ 0% React/app, so it is draw-call bound, not GPU bound (about 54M vs 600M triangles/s on the same chip).
+  - Other walls measured: the BBS table and bar dropdown render every row (25k rows: 17 s load, 1.2M DOM nodes, 1.1 s row select; 75k rows: 90 s load with a 60 s freeze); `snapPrimitives` rebuilds every copy per mouse move (747 ms at 1M bars); one undo snapshot is 22 MB with up to 50 kept; the project JSON (7.4 MB at 1M bars) exceeds the `localStorage` cap (about 5M characters, so Save fails above roughly 15k rows); the 27 MB IFC alone loads in 15 s and orbits at 20 fps (3,295 draw calls).
+  - Prototype (merged lines + spatial chunks + instanced six-sided tubes, same GPU): 1M bars 43 fps as one line buffer, 45 fps chunked LOD overview, 40 fps close-up, 25 fps all tubes with no LOD; 3M bars 15–16 fps; at 1.5× pixel density the 1M close-up fell to 16.5 fps, so adaptive quality is part of the design.
+  - Design: `docs/superpowers/specs/2026-10-07-barfield-renderer-design.md` on branch `feat/barfield-renderer` (approved section by section; the written spec is awaiting review). Sub-project A = worker-built, spatially chunked, instanced renderer with line/tube LOD, a per-row state texture (hide / overlay / tint), ray-vs-chunk picking, adaptive quality and a committed perf rig with budgets (1M bars ≥ 30 fps overview and ≥ 24 fps close-up, about 15 fps at 3M, viewport drawn in < 5 s, no IFC loaded). Scope: bars only; the IFC, the windowed BBS table / undo / save, and the snapping index are separate sub-projects (D, B, C).
 - **Set card grid, range-select order, type-switch grid, one-signature-one-mark (app)**:
   - Set card: Count/Spacing X·Y·Z (all) fields apply a full 2-/3-way grid to every member at once (e.g. wall ties at 200 × 200).
   - Type switch (`applyTypeDefaults`) keeps the whole distribution grid (qty/spacing/offset on every axis) and carries the drawn main length across convertible types (straight spine == link spine == crank run); the automatic link host refit on a switch is gone because it wiped the sketched Pos/grid — use the explicit Fit to host button.
@@ -352,3 +357,7 @@
   while `--profiles auto` now reads the drawn section Y as the elevation —
   decide whether the tag path should default to the drawn Y too (no sample
   DXF uses `PROFILE` tags, so there is no regression baseline yet).
+- Large-project performance: review the BarField spec, then write and run the
+  implementation plan for sub-project A (milestones 1–6; render-on-demand last).
+  Then B (window the BBS table and bar dropdown, undo as diffs, IndexedDB save),
+  C (spatial snapping index reusing A's chunks and picker) and D (IFC merge / LOD).
