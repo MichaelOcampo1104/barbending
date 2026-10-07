@@ -662,7 +662,10 @@ export async function launchBrowser({ dpr = 1, width = 1600, height = 900, instr
     else if (m.method === 'Runtime.exceptionThrown') {
       consoleErrors.push('EXC ' + String(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text).slice(0, 300));
     } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
-      consoleErrors.push('console.error ' + (m.params.args || []).map((a) => a.value ?? a.description ?? a.type).join(' ').slice(0, 300));
+      const text = (m.params.args || []).map((a) => a.value ?? a.description ?? a.type).join(' ').slice(0, 300);
+      // React's StrictMode warning about drei's <Html> label in the section box (dev server only, logged by
+      // the classic renderer too): not an app error, so it must not fail the checks.
+      if (!/synchronously unmount a root/.test(text)) consoleErrors.push('console.error ' + text);
     }
   };
   await new Promise((r) => { ws.onopen = r; });
