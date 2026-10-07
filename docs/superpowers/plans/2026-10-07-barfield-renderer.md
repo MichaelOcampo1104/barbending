@@ -4332,7 +4332,7 @@ Expected: PASS — every test file, 0 failures.
 Create `src/viewer/barfield/QualityController.jsx`:
 
 ```jsx
-import { useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import { createQualityController } from './quality.js';
@@ -4344,16 +4344,15 @@ import { qualityState } from './qualityState.js';
 export default function QualityController() {
   const camera = useThree((s) => s.camera);
   const setDpr = useThree((s) => s.setDpr);
-  const ctl = useRef(null);
+  const ctl = useMemo(() => createQualityController(), []);
   const prev = useRef({ pos: new THREE.Vector3(), quat: new THREE.Quaternion(), movedAt: -Infinity, init: false });
-  if (!ctl.current) ctl.current = createQualityController();
   useFrame((_, delta) => {
     const now = performance.now();
     const p = prev.current;
     if (!p.init) { p.pos.copy(camera.position); p.quat.copy(camera.quaternion); p.init = true; }
     const moved = p.pos.distanceToSquared(camera.position) > 1e-10 || p.quat.angleTo(camera.quaternion) > 1e-5;
     if (moved) { p.movedAt = now; p.pos.copy(camera.position); p.quat.copy(camera.quaternion); }
-    const r = ctl.current.update(Math.min(delta * 1000, 250), now - p.movedAt < 250, now);
+    const r = ctl.update(Math.min(delta * 1000, 250), now - p.movedAt < 250, now);
     if (r.changed) {
       qualityState.budgetTris = r.budgetTris;
       qualityState.level = r.level;

@@ -15,6 +15,7 @@ import { stencilMats } from './stencilMats.js';
 import BarField from './barfield/BarField.jsx';
 import { isFieldRendererActive } from './barfield/rendererFlag.js';
 import { fieldRegistry } from './barfield/fieldRegistry.js';
+import QualityController from './barfield/QualityController.jsx';
 
 const noopStencilRaycast = () => null;
 const SNAP_PX = 14; // screen-space aperture for the snap magnet
@@ -1745,8 +1746,9 @@ export default function Scene() {
       <ambientLight intensity={0.7} />
       <hemisphereLight args={['#ffffff', '#475569', 0.55]} />
       <directionalLight position={[8, 10, 6]} intensity={1.2} />
-      {/* Drops render resolution under load, restores when smooth (fill-bound GPUs) */}
-      <AdaptiveDpr />
+      {/* Drops render resolution under load, restores when smooth (fill-bound GPUs). The field
+          renderer also shrinks its tube budget while the camera moves. */}
+      {useField ? <QualityController /> : <AdaptiveDpr />}
       <Grid infiniteGrid sectionColor="#334155" cellColor="#1e293b" position={[0, -0.01, 0]} />
       <SectionBox />
       {showConcrete && concretes.filter((c) => c.visible !== false).map((c) => <ConcreteMesh key={c.id} c={c} />)}
