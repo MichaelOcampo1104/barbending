@@ -106,7 +106,14 @@
 #     --profiles auto skips tags entirely: every untagged open 3+-pt
 #     REBAR-H/LINK trace (dia from its layer, Plane XY unless --starter-plane,
 #     Z from --starter-z else 0) becomes a profile; tagged bars keep legacy
-#     straight-chord rows. 2-pt lines always stay straight bars.
+#     straight-chord rows. In plan (XY) 2-pt lines always stay straight bars.
+#     With --starter-plane XZ|YZ the DXF is a SECTION, like the drawn-circle
+#     starters (X = in-plane horizontal, Y = ELEVATION): Pos_z = the first
+#     vertex's DXF Y (--starter-z, when given, pins every bar instead), the
+#     out-of-plane coordinate comes from --starter-y (XZ) / --starter-x (YZ),
+#     and 2-pt lines become straight bars in that plane (rot = chord angle,
+#     stock-split along the slope) placed, hosted and distributed exactly
+#     like the profiles; marks PB<n> in drawing order.
 #     Distribution (copies start AT Pos, step signed one-sided): tag N= /
 #     SP= (signed) / AXIS= X|Y|Z, else --profile-n / --profile-spacing /
 #     --profile-axis; axis defaults out-of-plane (XZ->Y, YZ->X, XY->X).
@@ -1098,7 +1105,7 @@ def main():
             _ln = math.hypot(_dx, _dy)
             if _ln < 1e-6:
                 continue
-            _legs.append([round(_ln, 1), round(math.degrees(math.atan2(_dy, _dx)), 1)])
+            _legs.append([round(_ln, 1), round(math.degrees(math.atan2(_dy, _dx)) % 360, 1) % 360])
         if not _legs:
             print(f'WARN tag {_ptxt[:44]!r}: degenerate polyline — skipped')
             continue
@@ -1203,12 +1210,15 @@ def main():
     # as before.
     if str(a.profiles).lower() == 'auto':
         _auto_n = 0
+        _ppl = str(a.starter_plane).upper() if str(a.starter_plane).upper() in ('XY', 'XZ', 'YZ') else 'XY'
         for _e in msp.query('LWPOLYLINE'):
             if (_e.is_closed or id(_e) in stair_used or id(_e) in _prof_used
                     or not (_e.dxf.layer.startswith('REBAR-H') or _e.dxf.layer.startswith('REBAR-LINK'))):
                 continue
             _q = [(float(p[0]), float(p[1])) for p in _e.vertices()]
-            if len(_q) < 3:
+            # plan: 2-pt lines stay legacy straight chords; in a section plane
+            # (XZ/YZ) they are section bars placed exactly like the profiles
+            if len(_q) < (3 if _ppl == 'XY' else 2):
                 continue
             _tagged = False
             for _tx, _ps in texts:
@@ -1223,7 +1233,7 @@ def main():
                 _ln = math.hypot(_dx, _dy)
                 if _ln < 1e-6:
                     continue
-                _legs.append([round(_ln, 1), round(math.degrees(math.atan2(_dy, _dx)), 1)])
+                _legs.append([round(_ln, 1), round(math.degrees(math.atan2(_dy, _dx)) % 360, 1) % 360])
             if not _legs:
                 continue
             _tot = round(sum(l for l, _ in _legs), 1)
@@ -1231,7 +1241,6 @@ def main():
             _pdia = int(_lay.group(1)) if _lay else 16
             _pidx += 1
             _pmark = f'PB{_pidx}'
-            _ppl = str(a.starter_plane).upper() if str(a.starter_plane).upper() in ('XY', 'XZ', 'YZ') else 'XY'
             if _ppl == 'XY':
                 _ppx, _ppy = round(_q[0][0], 2), round(_q[0][1], 2)
                 if a.starter_x is not None:
@@ -1250,22 +1259,39 @@ def main():
                 _ppy = round(float(a.starter_y), 2) if a.starter_y is not None else 0.0
             if a.starter_z is not None:
                 _pz, _pzsrc = float(a.starter_z), 'default'
+            elif _ppl in ('XZ', 'YZ'):
+                # section drawing: DXF Y is the elevation (same rule as the
+                # drawn-circle starters), so the first vertex sets Pos_z
+                _pz, _pzsrc = round(_q[0][1], 1), 'section-Y'
             else:
                 _pz, _pzsrc = 0.0, 'default-0'
-            _pov = {'rtype': 'profile', 'plane': _ppl, 'rot': 0.0,
-                    'L': _tot, 'z': _pz, 'zsrc': _pzsrc,
-                    'tag': '', 'legs': _legs, 'nosplit': True,
-                    'host': (a.starter_host or '')}
             _pdist = _prof_dist(None, _ppl)
+            if len(_q) == 2:
+                # 2-pt section trace = straight bar along the drawn chord:
+                # rot is the chord angle in the section plane, `dir` steps
+                # stock-split pieces along it (App X/Z on XZ, Y/Z on YZ)
+                _th = math.atan2(_q[1][1]-_q[0][1], _q[1][0]-_q[0][0])
+                _pov = {'rtype': 'straight', 'plane': _ppl, 'rot': _legs[0][1],
+                        'L': _tot, 'z': _pz, 'zsrc': _pzsrc, 'tag': '',
+                        'dir': ((math.cos(_th), 0.0, math.sin(_th)) if _ppl == 'XZ'
+                                else (0.0, math.cos(_th), math.sin(_th))),
+                        'host': (a.starter_host or '')}
+                _pcdia, _pkind, _pdesc = f'REBAR-H{_pdia}', 'auto-straight', 'chord'
+            else:
+                _pov = {'rtype': 'profile', 'plane': _ppl, 'rot': 0.0,
+                        'L': _tot, 'z': _pz, 'zsrc': _pzsrc,
+                        'tag': '', 'legs': _legs, 'nosplit': True,
+                        'host': (a.starter_host or '')}
+                _pcdia, _pkind, _pdesc = f'PROFILE-H{_pdia}', 'auto-profile', f'{len(_legs)} legs'
+                if _tot > a.stock:
+                    print(f'NOTE {_pmark}: profile {round(_tot)} over stock — single piece, split manually in app')
             for _gk, _gv in _pdist.items():
                 if _gk != 'dist_note':
                     _pov[_gk] = _gv
-            if _tot > a.stock:
-                print(f'NOTE {_pmark}: profile {round(_tot)} over stock — single piece, split manually in app')
             _prof_used.add(id(_e))
-            bars.append(_CBar(f'PROFILE-H{_pdia}', _ppx, _ppy, _pmark, dict(_pov)))
+            bars.append(_CBar(_pcdia, _ppx, _ppy, _pmark, dict(_pov)))
             _auto_n += 1
-            print(f'{_pmark}: auto-profile H{_pdia} {len(_legs)} legs L={_tot} -> {_ppl} @ ({_ppx:.1f},{_ppy:.1f},{_pz}) {_pdist["dist_note"]}')
+            print(f'{_pmark}: {_pkind} H{_pdia} {_pdesc} L={_tot} -> {_ppl} @ ({_ppx:.1f},{_ppy:.1f},{_pz}) {_pdist["dist_note"]}')
         if _auto_n:
             print(f'{_auto_n} untagged traces auto-profiled (tagged bars keep legacy rows)')
     if _prof_used:
@@ -1277,10 +1303,12 @@ def main():
         print(f'WARN {_flagign[1]} bars: --starter-y given but unused (XZ plane needs Y; YZ/XY ignore it)')
 
     rows = []; tag = 0
+    bar_n = 0  # auto B-numbers count bars, not rows — stock-split pieces
     odir = []  # (mark, rtype, ang, len, slabId) for the parity-orientation check
     for b in bars:
         if id(b) in stair_used:
             continue  # drawn stair-starter profile: consumed by its SSB/SST tag
+        bar_n += 1
         pts = list(b.vertices()); (x1,y1),(x2,y2) = pts[0][:2], pts[1][:2]
         L = math.hypot(x2-x1, y2-y1)
         ang = round(math.degrees(math.atan2(y2-y1, x2-x1)), 1)
@@ -1351,7 +1379,11 @@ def main():
                       f'move the tag closer to its bar end')
         raw = best[0] if best else ''
         m = TAG.search(raw) if best else None
-        mark = (m.group(1) if m and m.group(1) else f'B{len(rows)+1}')
+        # odd/even main/dist parity (below) is a property of the user's tag
+        # scheme — auto B-numbers carry no layer meaning, so they must not
+        # feed it (else every 2nd untagged bar warns as mislabeled DIST steel).
+        tag_mark = bool(m and m.group(1))
+        mark = (m.group(1) if tag_mark else f'B{bar_n}')
         if getattr(b, '_circ', False):
             # drawn-circle starter: own mark + spec tag (generic pairing
             # above is skipped so nearby unrelated tags never leak in)
@@ -1491,6 +1523,10 @@ def main():
             # length compass (world dir is (cos aim, sin aim) on both planes)
             _th = math.radians(float(ov.get('aim', 0.0)))
             ux, uy, uz = round(math.cos(_th), 4), round(math.sin(_th), 4), 0.0
+        if ov and ov.get('dir'):
+            # section bar (auto-profiled 2-pt trace): stock splits step along
+            # the drawn chord inside the section plane, not along plan X/Y
+            ux, uy, uz = ov['dir']
         if ov and 'L' in ov:
             L, Lsrc = ov['L'], 'starter'
         tie_h = 0.0
@@ -1534,7 +1570,7 @@ def main():
             role = 'main' if mrole.group(1).upper().startswith('MAIN') else 'dist'
         elif vert:
             role = 'vert'
-        elif num is not None:
+        elif num is not None and tag_mark:
             role = 'dist' if num % 2 == 0 else 'main'
         else:
             role = 'main'
@@ -1765,15 +1801,17 @@ def main():
             width_txt = ext_txt
         if rtype in ('c_link', 'c_link_with_hook', 'tie') and L <= 0:
             L, Lsrc = 110.0, 'default'
-        lap = 0 if rtype in ('c_link', 'c_link_with_hook', 'tie', 'profile') else (lap_len(dia, bond_bar) if L > a.stock else 0)
+        lap = 0 if rtype in ('c_link', 'c_link_with_hook', 'tie', 'profile') else \
+            (lap_len(dia, bond_bar) if L > a.stock + 1e-6 else 0)
 
         # split > stock into lapped pieces (verticals split upward in Z);
         # drawn profiles never split (a lap mid-crank is meaningless — NOTE
-        # when over stock and emit one piece)
+        # when over stock and emit one piece). The 1e-6 guards exact-stock
+        # bars whose float length lands a hair over (e.g. 12000.000000000005).
         segs = []; s = 0.0
-        if (ov and ov.get('nosplit')) or L <= a.stock: segs = [(0.0, L, 0)]
+        if (ov and ov.get('nosplit')) or L <= a.stock + 1e-6: segs = [(0.0, L, 0)]
         else:
-            while L - s > a.stock:
+            while L - s > a.stock + 1e-6:
                 segs.append((s, a.stock, lap)); s += a.stock - lap
             segs.append((s, L - s, lap))
 

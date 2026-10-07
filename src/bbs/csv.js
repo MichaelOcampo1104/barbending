@@ -3,7 +3,7 @@
 // and dispatches to place_*_from_csv. We export the union header so the
 // file can be consumed directly, and accept any of the gen_* templates.
 
-import { genBarPoints, distCount, getBentDefaults, resolveBarHost, meshVolumeM3 } from './shapes.js';
+import { genBarPoints, distCount, getBentDefaults, resolveBarHost, meshVolumeM3, parseLegs } from './shapes.js';
 import { barWeightKg, normalizeBond, inferBondFromMark } from './calc.js';
 
 export const SHAPE_CODES = {
@@ -365,38 +365,63 @@ export function getBarShapeKey(bar, matchHost = false) {
   const extra = [];
   if (type === 'bent') extra.push(String(bar.bent_up_down || 'up').toLowerCase());
   if (type === 'bent') extra.push('hook:' + String(bar.hook_start || 'no').toLowerCase());
-  if (type === 'profile') extra.push('legs:' + JSON.stringify(bar.legs ?? ''));
+  if (type === 'profile') {
+    // Normalize headings to [0, 360) at 1-decimal (importer) precision so
+    // older rows (e.g. -150.3) unify with fresh imports (209.7) of the same
+    // geometry instead of splitting into different marks.
+    const legs = parseLegs(bar);
+    const norm = legs
+      ? legs.map(([l, a]) => [l, Math.round((((Number(a) % 360) + 360) % 360) * 10) / 10])
+      : (bar.legs ?? '');
+    extra.push('legs:' + JSON.stringify(norm));
+  }
   if (type === 'c_link_with_hook') extra.push(String(bar.double_hook || 'no').toLowerCase());
 
   const hostPart = matchHost && bar.host ? `host:${bar.host}|` : '';
   return `${hostPart}type:${type}|dia:${dia}|sc:${shapeCode}|A:${A}|B:${B}|C:${C}|D:${D}|E:${E}|cut:${cut}|${extra.join('|')}`;
 }
 
-// Auto-assign / consolidate bar marks across a list of bars based on identical shape, diameter, and length
+// Auto-assign / consolidate bar marks across a list of bars based on identical shape, diameter, and length.
+// Rule: one signature = one mark. The first-seen existing mark claims its
+// signature; any other bar whose stored mark is blank OR already claimed by a
+// different signature (e.g. edited after marking, or a hand-typed duplicate)
+// gets the next free B-number. Generated numbers skip taken marks so they can
+// never collide with existing ones.
 export function autoAssignBarMarks(bars, { scopeByHost = false } = {}) {
-  const sigMap = new Map();
-  let globalSeq = 1;
-  const hostSeqMap = new Map();
+  const sigToMark = new Map();
+  const takenByScope = new Map(); // scope -> Set of claimed mark texts
+  const seqByScope = new Map();   // scope -> next B-number to try
+  const scopeOf = (b) => (scopeByHost && b.host ? b.host : 'all');
+  const claimed = (scope, mark) => takenByScope.get(scope)?.has(mark) ?? false;
+  const claim = (scope, mark) => {
+    let s = takenByScope.get(scope);
+    if (!s) { s = new Set(); takenByScope.set(scope, s); }
+    s.add(mark);
+  };
+  const fresh = (scope) => {
+    let n = seqByScope.get(scope) || 1;
+    while (claimed(scope, `B${n}`)) n += 1;
+    seqByScope.set(scope, n + 1);
+    const mark = `B${n}`;
+    claim(scope, mark);
+    return mark;
+  };
 
   return bars.map((b) => {
-    const hostKey = scopeByHost && b.host ? b.host : 'all';
+    const scope = scopeOf(b);
     const sig = getBarShapeKey(b, scopeByHost);
 
-    if (sigMap.has(sig)) {
-      return { ...b, Bar_mark: sigMap.get(sig) };
+    if (sigToMark.has(sig)) {
+      return { ...b, Bar_mark: sigToMark.get(sig) };
     }
 
     let mark = b.Bar_mark;
-    if (!mark) {
-      if (scopeByHost && b.host) {
-        let seq = hostSeqMap.get(hostKey) || 1;
-        hostSeqMap.set(hostKey, seq + 1);
-        mark = `B${seq}`;
-      } else {
-        mark = `B${globalSeq++}`;
-      }
+    if (!mark || claimed(scope, mark)) {
+      mark = fresh(scope);
+    } else {
+      claim(scope, mark);
     }
-    sigMap.set(sig, mark);
+    sigToMark.set(sig, mark);
     return { ...b, Bar_mark: mark };
   });
 }

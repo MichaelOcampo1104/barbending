@@ -157,6 +157,27 @@ function SetCard({ setId, count, dia, type, dimFields, dimBar, onDim, gridSp, se
         </div>
       )}
       <div className="grid3">
+        <label className="fld"><span>Count X (all)</span>
+          <input type="number" value={dimBar.qty_x ?? 1} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onDim('qty_x', n); }} title="Copies along X for every member" />
+        </label>
+        <label className="fld"><span>Spacing X (all)</span>
+          <input type="number" value={dimBar.spacing_x ?? 0} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onDim('spacing_x', n); }} title="X spacing (mm) for every member" />
+        </label>
+        <label className="fld"><span>Count Y (all)</span>
+          <input type="number" value={dimBar.qty_y ?? 1} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onDim('qty_y', n); }} title="Copies along Y for every member" />
+        </label>
+        <label className="fld"><span>Spacing Y (all)</span>
+          <input type="number" value={dimBar.spacing_y ?? 0} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onDim('spacing_y', n); }} title="Y spacing (mm) for every member" />
+        </label>
+        <label className="fld"><span>Count Z (all)</span>
+          <input type="number" value={dimBar.qty_z ?? 1} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onDim('qty_z', n); }} title="Copies along Z for every member" />
+        </label>
+        <label className="fld"><span>Spacing Z (all)</span>
+          <input type="number" value={dimBar.spacing_z ?? 0} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onDim('spacing_z', n); }} title="Z spacing (mm) for every member" />
+        </label>
+      </div>
+      <div className="distnote" style={{ margin: '4px 0' }}>2-way link grids: set counts + spacings on both in-face axes (e.g. wall ties at 200 × 200) — every member multiplies into the grid.</div>
+      <div className="grid3">
         <label className="fld"><span>Lengths</span>
           <div style={{ display: 'flex', gap: 4 }}>
             <select value={lenMode} onChange={(e) => setLenMode(e.target.value)} title="uniform: one length for all · taper: linear first-to-last">
@@ -1563,6 +1584,17 @@ function BbsStrip() {
       .filter((g) => g.rows.length > 0 || (!joinMode && elemFilter !== 'all' && g.id === elemFilter));
   }, [concretes, sortedRows, elemFilter, concMap, joinMode, joinedSet]);
 
+  // Display order of bar indices as currently rendered (grouped sections in
+  // order, else the sorted flat list). Shift-click ranges span THIS order —
+  // never the raw model index range, which diverges as soon as sorting or
+  // element grouping reorders the rows.
+  const groupedView = joinMode || (elemFilter === 'all' && groupByElem);
+  const visibleOrder = useMemo(() => (
+    groupedView
+      ? groups.flatMap((g) => g.rows.map((r) => r._origIdx))
+      : sortedRows.map((r) => r._origIdx)
+  ), [groupedView, groups, sortedRows]);
+
   const toggleCollapse = (gid) => setCollapsed((c) => ({ ...c, [gid]: !c[gid] }));
 
   // Delete mode: Esc disarms (skipped while typing in a field).
@@ -1626,12 +1658,19 @@ function BbsStrip() {
         onClick={(e) => {
           if (deleteArmed) { removeBar(i); return; }
           if (e.shiftKey && multiSel.length) {
-            // Range select from the active bar to the clicked row.
-            const anchor = selectedBarIdx ?? multiSel[multiSel.length - 1];
-            const [lo, hi] = anchor < i ? [anchor, i] : [i, anchor];
-            const range = [];
-            for (let k = lo; k <= hi; k += 1) range.push(k);
-            setSelectedBars([...new Set([...multiSel, ...range])]);
+            // Range select over the DISPLAY order: every visible row from the
+            // anchor (active bar, else last selected) to the clicked row.
+            const anchor = visibleOrder.includes(selectedBarIdx)
+              ? selectedBarIdx
+              : multiSel[multiSel.length - 1];
+            const a = visibleOrder.indexOf(anchor);
+            const b = visibleOrder.indexOf(i);
+            if (a !== -1 && b !== -1) {
+              const [lo, hi] = a < b ? [a, b] : [b, a];
+              setSelectedBars([...new Set([...multiSel, ...visibleOrder.slice(lo, hi + 1)])]);
+            } else {
+              toggleBarSelected(i);
+            }
           }
           else if (e.ctrlKey || e.metaKey || e.shiftKey) toggleBarSelected(i);
           else selectBar(i);
@@ -1855,7 +1894,7 @@ function BbsStrip() {
         <table>
           <thead><tr><th></th><th>#</th><th onClick={() => toggleSort('Bar_mark')} title="Sort by bar mark (natural order)" style={{ cursor: 'pointer' }}>Mark{sortArrow('Bar_mark')}</th><th onClick={() => toggleSort('Rebar_Type')} title="Sort by type" style={{ cursor: 'pointer' }}>Type{sortArrow('Rebar_Type')}</th><th>Shape</th><th onClick={() => toggleSort('Dia')} title="Sort by diameter" style={{ cursor: 'pointer' }}>Ø{sortArrow('Dia')}</th><th onClick={() => toggleSort('_copies')} title="Sort by bar count" style={{ cursor: 'pointer' }}>Bars{sortArrow('_copies')}</th><th onClick={() => toggleSort('_cut')} title="Sort by cut length" style={{ cursor: 'pointer' }}>Cut (mm){sortArrow('_cut')}</th><th onClick={() => toggleSort('Weight_kg')} title="Sort by weight" style={{ cursor: 'pointer' }}>Wt (kg){sortArrow('Weight_kg')}</th><th>Bond</th><th onClick={() => toggleSort('setId')} title="Sort by group" style={{ cursor: 'pointer' }}>Set{sortArrow('setId')}</th></tr></thead>
           <tbody>
-            {(joinMode || (elemFilter === 'all' && groupByElem)) ? (
+            {groupedView ? (
               groups.map((g) => {
                 const isCollapsed = !!collapsed[g.id];
                 return (

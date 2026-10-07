@@ -164,8 +164,22 @@ py scripts/dxf_to_bbs.py inputs/additional_bar_shapes.dxf
 - Plan cranks with no tags: `--profiles auto` converts every untagged
   open 3+-pt `REBAR-H/LINK` trace (dia from layer, XY unless
   `--starter-plane`, Z from `--starter-z` else 0); tagged bars keep
-  their legacy straight-chord rows, 2-pt lines always stay straight:
-  `py scripts/dxf_to_bbs.py inputs/Drawn_rebar.dxf --profiles auto`.
+  their legacy straight-chord rows, and in plan 2-pt lines always stay
+  straight: `py scripts/dxf_to_bbs.py inputs/Drawn_rebar.dxf --profiles auto`.
+- Section drawings (`--profiles auto --starter-plane XZ|YZ`): the DXF is a
+  section like the drawn-circle starters — X = in-plane horizontal, Y =
+  **elevation**. Each trace's first vertex sets `Pos_z` (`--starter-z`
+  pins every bar to one level instead), the out-of-plane coordinate comes
+  from `--starter-y` (XZ) / `--starter-x` (YZ), and untagged 2-pt lines
+  become straight bars in that plane (rot = chord angle, stock-split along
+  the slope) that share the profiles' position, host and distribution.
+  Diameters come from the layers (`REBAR-H20`, `REBAR-H25`), the host from
+  `--starter-host`:
+  ```powershell
+  py scripts/dxf_to_bbs.py inputs/Drawn_rebar.dxf --profiles auto `
+    --starter-plane XZ --starter-y 6600 --profile-n 20 `
+    --profile-spacing -150 --profile-axis Y --starter-host "<concrete name>"
+  ```
 - Plane + position + distribution: `PLANE XZ` lays the section along X at
   fixed `Y=` (signed — either side), `PLANE YZ` along Y at fixed `X=`;
   copies distribute one-sided from `Pos` via tag `N=` + signed `SP=` +

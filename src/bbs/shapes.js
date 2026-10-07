@@ -515,22 +515,34 @@ export const DIM_FIELDS_BY_TYPE = {
 
 const ALL_DIM_FIELDS = [...new Set(Object.values(DIM_FIELDS_BY_TYPE).flat())];
 
-// Switch a bar to a new shape type: keep identity/position/distribution,
-// drop the old shape's dimensions, fill the new shape's defaults.
+// Main run-length fields across the linear/link types: a face-sketched bar
+// keeps its drawn length when it is re-typed (straight spine == link spine
+// == crank run, all along local X).
+const MAIN_LEN_FIELDS = ['Length of Bar', 'length', 'Long_length'];
+
+// Switch a bar to a new shape type: keep identity/position/orientation and
+// the whole distribution grid (qty/spacing/offset on every axis), drop the
+// old shape's dimensions, fill the new shape's defaults. The drawn main
+// length carries across convertible types so a face-sketched straight bar
+// re-typed to c_link keeps its length as the link spine (and vice versa).
+// NOTE: no host refit here — refitting would wipe the sketched Pos/grid.
+// Use the explicit "Fit to host" button for that.
 export function applyTypeDefaults(bar, type, host = null, cover = 30) {
   const next = { ...bar, Rebar_Type: type };
+  const srcLen = (() => {
+    for (const f of MAIN_LEN_FIELDS) {
+      const v = Number(bar?.[f]);
+      if (Number.isFinite(v) && v > 0) return v;
+    }
+    return null;
+  })();
   for (const f of ALL_DIM_FIELDS) delete next[f];
   const fresh = host ? defaultBarForHost(type, bar.Rebar_tag, host, cover) : defaultBar(type, bar.Rebar_tag);
   for (const f of DIM_FIELDS_BY_TYPE[type] || []) next[f] = fresh[f];
-  if (host && (type === 'c_link' || type === 'c_link_with_hook')) {
-    next.Plane = fresh.Plane;
-    next.Pos_x = fresh.Pos_x;
-    next.Pos_y = fresh.Pos_y;
-    next.Pos_z = fresh.Pos_z;
-    next.qty_x = fresh.qty_x;
-    next.spacing_x = fresh.spacing_x;
-    next.qty_y = fresh.qty_y;
-    next.spacing_y = fresh.spacing_y;
+  if (srcLen != null) {
+    for (const f of MAIN_LEN_FIELDS) {
+      if ((DIM_FIELDS_BY_TYPE[type] || []).includes(f)) { next[f] = srcLen; break; }
+    }
   }
   return next;
 }
