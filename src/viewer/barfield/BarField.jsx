@@ -1,5 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { useFrame, useThree } from '@react-three/fiber';
+import { chooseTubeChunks } from './lod.js';
+import { qualityState } from './qualityState.js';
 import { useStore } from '../../store.js';
 import { FieldBuilder } from './fieldClient.js';
 import { FieldView } from './fieldObjects.js';
@@ -74,6 +77,46 @@ export default function BarField({ renderOverlayBar }) {
     if (view) timed(() => view.setStates(rowStates.states));
   }, [rowStates, version]);
   const overlay = rowStates.overlay;
+
+  // Level of detail: at most every 100 ms (and only when something changed) decide which chunks
+  // draw as tubes; the rest stay lines. Chunks outside the frustum never spend triangle budget.
+  const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+  const frustum = useMemo(() => new THREE.Frustum(), []);
+  const projView = useMemo(() => new THREE.Matrix4(), []);
+  const lod = useRef({ last: 0, prev: new Set(), cam: new THREE.Matrix4(), detail: '', budget: 0, view: null });
+  useFrame(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const st = lod.current;
+    const detail = useStore.getState().barDetail || 'auto';
+    camera.updateMatrixWorld();
+    const unchanged = st.view === view && detail === st.detail && qualityState.budgetTris === st.budget && st.cam.equals(camera.matrixWorld);
+    const now = performance.now();
+    if (unchanged || now - st.last < 100) return;
+    if (st.view !== view) st.prev = new Set();
+    st.last = now;
+    st.view = view;
+    st.detail = detail;
+    st.budget = qualityState.budgetTris;
+    st.cam.copy(camera.matrixWorld);
+    timed(() => {
+      projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      frustum.setFromProjectionMatrix(projView);
+      const tubes = chooseTubeChunks({
+        chunks: view.items.map((it) => it.chunk),
+        cameraPos: [camera.position.x, camera.position.y, camera.position.z],
+        fovRad: (camera.fov * Math.PI) / 180,
+        viewportHeightPx: gl.domElement.clientHeight || 800,
+        budgetTris: qualityState.budgetTris,
+        prevTubes: st.prev,
+        detail,
+        isVisible: (i) => frustum.intersectsSphere(view.items[i].sphere),
+      });
+      view.applyTubeSet(tubes);
+      st.prev = tubes;
+    });
+  });
 
   return (
     <>

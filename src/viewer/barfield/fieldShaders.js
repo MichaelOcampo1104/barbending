@@ -6,8 +6,9 @@ import { ROW_TEX_WIDTH } from './rowState.js';
 
 // Slot order = DIA_PALETTE (10, 12, 16, 20, 25, 32, 40) + default; same colours as Scene.jsx DIA_COLORS.
 export const PALETTE_HEX = ['#22c55e', '#84cc16', '#f59e0b', '#ef4444', '#a855f7', '#3b82f6', '#e11d48', '#f59e0b'];
-// Tubes use simple lighting tuned against the scene lights (Scene.jsx: ambient + hemisphere + directional).
-export const LIGHT = Object.freeze({ ambient: 0.45, hemi: 0.25, key: 0.45 });
+// Tubes use simple lighting calibrated against the classic RebarMesh (MeshStandardMaterial under the
+// scene's ambient + hemisphere + directional lights): mean tube colour within a few percent in a close-up.
+export const LIGHT = Object.freeze({ ambient: 0.33, hemi: 0.18, key: 0.33 });
 
 // Raw sRGB components: the shaders write them straight to the sRGB framebuffer.
 const hexToVec3 = (hex) => new THREE.Vector3(

@@ -3,6 +3,7 @@
 // parity : the same small project drawn by ?renderer=legacy and ?renderer=field, with and without
 //          the section box (?autotest=section cuts it to the central third). The amber pixels must
 //          occupy the same screen box (placement + clipping), and the field must draw something.
+// tubes  : Detail = Tubes draws instanced tubes with the same extent as the legacy renderer.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -117,8 +118,40 @@ async function parity() {
   }
 }
 
+// tubes : with Detail = Tubes every chunk draws as instanced tubes: the extent still matches the
+//         legacy renderer (tubes have the same 8 mm minimum radius) and the census shows tube objects.
+async function tubes() {
+  const projectFile = path.join(outDir, 'check_clip.json');
+  fs.writeFileSync(projectFile, JSON.stringify(makeCheckProject()));
+  const b = await launchBrowser({ instrument: INSTR });
+  try {
+    await b.send('Page.navigate', { url: `${base}/?renderer=legacy&autotest=parity` });
+    await sleep(1500);
+    await openProject(b, 'renderer=legacy&autotest=parity', projectFile);
+    const L = await b.ev(PIXEL_STATS);
+    await b.ev("localStorage.setItem('barbending.barDetail', 'tubes')");
+    b.consoleErrors.length = 0;
+    await openProject(b, 'renderer=field&autotest=parity', projectFile);
+    await sleep(1500);
+    const F = await b.ev(PIXEL_STATS);
+    const census = await b.ev("(() => { const el = document.getElementById('autotest-dump'); return el ? JSON.parse(el.textContent).field : null; })()");
+    const shot = await b.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(outDir, 'check-field-tubes.png'), Buffer.from(shot.data, 'base64'));
+    console.log(`      tubes: legacy n=${L.n} bbox=[${L.x0},${L.y0},${L.x1},${L.y1}]  field n=${F.n} bbox=[${F.x0},${F.y0},${F.x1},${F.y1}]  census=${JSON.stringify(census)}`);
+    report(b.consoleErrors.length === 0, `tubes: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+    report(!!census && census.tubes > 0 && census.visible > 0, 'tubes: tube objects were created and are drawn');
+    report(F.n > 0.3 * L.n, `tubes: field drew comparable amber area (${F.n} vs ${L.n} px)`);
+    const tol = 14;
+    report(Math.abs(L.x0 - F.x0) <= tol && Math.abs(L.x1 - F.x1) <= tol && Math.abs(L.y0 - F.y0) <= tol && Math.abs(L.y1 - F.y1) <= tol, `tubes: same screen extent within ${tol}px`);
+    await b.ev("localStorage.removeItem('barbending.barDetail')");
+  } finally {
+    b.close();
+  }
+}
+
 try {
   if (!only || only === 'parity') await parity();
+  if (!only || only === 'tubes') await tubes();
 } catch (e) {
   console.error('ERROR', e.message);
   failures += 1;

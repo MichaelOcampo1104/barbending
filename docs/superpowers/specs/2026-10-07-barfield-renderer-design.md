@@ -107,7 +107,8 @@ Changes to existing files:
   fallback; keep `collectPickTargets` working (field objects are not pick roots).
 - `src/store.js`: one persisted view setting `barDetail` (`'auto' | 'lines' | 'tubes'`,
   default `'auto'`, saved in `localStorage` under `barbending.barDetail`, like the layout sizes).
-- `src/App.jsx`: a **Detail** selector in the viewport bar.
+- `src/App.jsx`: a **Detail** selector in the status bar, next to the fps readout (the viewport bar
+  is already full at common window widths).
 - `AutotestDump` (test hook): count field draw objects in its census and expose `window.__store`.
   The field publishes `window.__barfield` stats for the perf rig, and `?fieldfail=1` forces a
   build failure to exercise the fallback.

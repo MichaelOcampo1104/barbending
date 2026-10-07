@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useMemo, Fragment } from 'react';
 import Scene from './viewer/Scene.jsx';
 import FieldBadge from './viewer/barfield/FieldBadge.jsx';
+import { isFieldRendererActive } from './viewer/barfield/rendererFlag.js';
 import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
 import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost, memberKind, slabLinkSpine, getBentDefaults, parseLegs } from './bbs/shapes.js';
@@ -1942,10 +1943,30 @@ function StatusBar() {
   const dist = perf.dist >= 1
     ? `${perf.dist.toFixed(1)} m`
     : `${Math.round(perf.dist * 1000).toLocaleString('en-US')} mm`;
+  // Bar detail of the new renderer lives here, next to the fps readout, because the viewport bar is
+  // already full at common window widths.
+  const barDetail = useStore((s) => s.barDetail);
+  const setBarDetail = useStore((s) => s.setBarDetail);
+  const fieldOn = isFieldRendererActive();
   return (
     <footer className="statusbar">
       <span>{navMode === 'orbit' ? 'LMB orbit' : 'LMB select'} · MMB orbit · RMB pan · wheel zoom-to-cursor · Esc deselect</span>
-      <span>{perf.fps} fps · cam {dist} · {totalBars} bars · {totalW.toFixed(1)} kg</span>
+      <span>
+        {fieldOn && (
+          <>
+            <label title="Bar detail (new bar renderer): Auto draws lines far away and real tubes as you zoom in · Lines never draws tubes (fastest) · Tubes always draws tubes (slowest on very large projects)">
+              detail{' '}
+              <select value={barDetail} onChange={(e) => setBarDetail(e.target.value)}>
+                <option value="auto">Auto</option>
+                <option value="lines">Lines</option>
+                <option value="tubes">Tubes</option>
+              </select>
+            </label>
+            {' · '}
+          </>
+        )}
+        {perf.fps} fps · cam {dist} · {totalBars} bars · {totalW.toFixed(1)} kg
+      </span>
     </footer>
   );
 }

@@ -653,9 +653,11 @@ export async function launchBrowser({ dpr = 1, width = 1600, height = 900, instr
   let crashed = false;
   const pend = new Map();
   const consoleErrors = [];
+  const handlers = new Map(); // CDP event name -> listener, see on()
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data.toString());
     if (m.id && pend.has(m.id)) { pend.get(m.id)(m); pend.delete(m.id); return; }
+    if (m.method && handlers.has(m.method)) handlers.get(m.method)(m.params);
     if (m.method === 'Inspector.targetCrashed') crashed = true;
     else if (m.method === 'Runtime.exceptionThrown') {
       consoleErrors.push('EXC ' + String(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text).slice(0, 300));
@@ -686,7 +688,8 @@ export async function launchBrowser({ dpr = 1, width = 1600, height = 900, instr
     try { spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { stdio: 'ignore' }); } catch { /* gone */ }
     setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* busy */ } }, 1500);
   };
-  return { send, ev, close, sleep, isCrashed: () => crashed, consoleErrors };
+  const on = (method, fn) => handlers.set(method, fn);
+  return { send, ev, on, close, sleep, isCrashed: () => crashed, consoleErrors };
 }
 ```
 
@@ -730,7 +733,9 @@ export const INSTR = `(() => {
   };
   window.__gpuInfo = () => { const c = document.createElement('canvas'); const gl = c.getContext('webgl2') || c.getContext('webgl'); if (!gl) return 'no webgl'; const e = gl.getExtension('WEBGL_debug_renderer_info'); return e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER); };
   window.__status = () => {
-    const el = Array.from(document.querySelectorAll('span')).find((e) => e.children.length === 0 && /\\d+\\s*fps\\s*·\\s*cam/.test(e.textContent));
+    // Read the status bar text ("… 60 fps · cam 11.4 m · 53 bars · 441.5 kg"); the span may also hold
+    // controls (the Detail selector), so match on its text rather than on being a leaf element.
+    const el = Array.from(document.querySelectorAll('.statusbar span')).find((e) => /\\d+\\s*fps\\s*·\\s*cam/.test(e.textContent));
     const m = el && el.textContent.match(/(\\d+)\\s*fps\\s*·\\s*cam\\s*([^·]+)·\\s*(\\d+)\\s*bars/);
     return { bars: m ? Number(m[3]) : -1, appFps: m ? Number(m[1]) : -1, t: performance.now() };
   };
@@ -831,7 +836,7 @@ Create `scripts/perf/cdp_bench.mjs`:
 ```js
 // Headless-Edge (GPU on) benchmark of the barbending app against a synthetic project.
 // usage: node scripts/perf/cdp_bench.mjs --url <app url> [--project <file>] [--label x] [--dpr 1]
-//        [--expect <physical bars>] [--budget <key in budgets.json>] [--enforce]
+//        [--expect <physical bars>] [--budget <key in budgets.json>] [--enforce] [--detail auto|lines|tubes]
 // Loads the project through the real "⤒ Project" file input, then measures load, memory, DOM size,
 // draw calls, fps idle / orbit / zoom / close-up, and select / edit / undo latency.
 // PROFILE=1 adds a CPU profile of the idle phase (use against the dev server for readable names).
@@ -858,9 +863,13 @@ const label = arg('label', 'run');
 const dpr = Number(arg('dpr', '1'));
 const expected = Number(arg('expect', '0'));
 const budgetKey = arg('budget', '');
+const detail = arg('detail', ''); // bar detail preference to run with (field renderer)
 const enforce = process.argv.includes('--enforce');
 
-const R = { label, url, dpr };
+const R = { label, url, dpr, detail: detail || 'default' };
+const tBench = Date.now();
+// Progress goes to stderr so a stalled run is visible; the RESULT line on stdout is unchanged.
+const phase = (name) => console.error(`[bench +${((Date.now() - tBench) / 1000).toFixed(1)}s] ${name}`);
 const timeout = setTimeout(() => { R.status = 'GLOBAL-TIMEOUT'; finish(1); }, 12 * 60 * 1000);
 let b = null;
 let finished = false;
@@ -899,14 +908,24 @@ function checkBudget() {
 try {
   b = await launchBrowser({ dpr, instrument: INSTR });
   const { send, ev } = b;
+  const waitReady = async () => {
+    for (let i = 0; i < 100; i++) {
+      await sleep(300);
+      try { if (await ev('!window.__old && !!document.querySelector("canvas") && !!window.__status', 5000)) return true; } catch { /* retry */ }
+    }
+    return false;
+  };
   await send('Page.navigate', { url });
-  let ready = false;
-  for (let i = 0; i < 100 && !ready; i++) {
-    await sleep(300);
-    try { ready = await ev('!!document.querySelector("canvas") && !!window.__status', 5000); } catch { /* retry */ }
+  let ready = await waitReady();
+  if (ready && detail) {
+    // Bar detail is a persisted preference: store it, then load the app again so the store reads it.
+    await ev(`window.__old = true; localStorage.setItem('barbending.barDetail', ${JSON.stringify(detail)})`);
+    await send('Page.navigate', { url });
+    ready = await waitReady();
   }
   if (!ready) { R.status = 'APP-NOT-READY'; finish(1); }
   R.gpu = await ev('window.__gpuInfo()');
+  phase('app ready');
   await sleep(1500);
   const metric = async () => {
     const o = {};
@@ -914,6 +933,7 @@ try {
     return { jsHeapMB: Math.round(o.JSHeapUsedSize / 1048576), domNodes: o.Nodes, layoutCount: o.LayoutCount, scriptSec: +o.ScriptDuration.toFixed(2) };
   };
   R.baseline = { ...(await metric()) };
+  phase('measuring baseline');
   await ev('window.__startRec()'); await sleep(2000); R.baseline.idle = await ev('window.__stopRec()');
 
   if (projPath !== '-') {
@@ -922,6 +942,7 @@ try {
     const lt0 = await ev('window.__lt.length');
     const v0 = await ev('(window.__barfield && window.__barfield.version) || 0');
     const bars0 = (await ev('window.__status()')).bars; // read before the import starts
+    phase('importing project');
     const tStart = Date.now();
     await send('DOM.setFileInputFiles', { files: [path.resolve(projPath)], nodeId: q.nodeIds[0] });
     // Poll; each evaluate only answers once the main thread is free again.
@@ -945,6 +966,7 @@ try {
       await sleep(80);
     }
     R.load = { ms: Date.now() - tStart, loaded, barsShown: last && last.bars };
+    phase(`page responsive again after ${R.load.ms} ms (loaded=${loaded})`);
     if (!loaded) { R.status = b.isCrashed() ? 'CRASHED' : (R.loadError ? 'HUNG' : 'LOAD-INCOMPLETE'); finish(1); }
     // The field is drawn a little after the page is responsive again (build + install): keep waiting.
     if (readyAt === null && await ev('!!window.__barfield').catch(() => false)) {
@@ -957,6 +979,7 @@ try {
     // viewportWallMs: from the import until the bars are drawn, BBS table included (reported only).
     R.viewportMs = readyAt !== null && tFree !== null ? Math.max(0, readyAt - tFree) : null;
     R.viewportWallMs = readyAt !== null ? readyAt - tStart : null;
+    phase(`bars drawn: viewportMs=${R.viewportMs} wall=${R.viewportWallMs}`);
     const lts = await ev(`window.__lt.slice(${lt0}).map(x => x[1])`);
     R.load.longTasks = lts.length;
     R.load.blockedMs = Math.round(lts.reduce((s, v) => s + v, 0));
@@ -969,7 +992,9 @@ try {
   await sleep(2500);
   const prof = !!process.env.PROFILE;
   if (prof) { await send('Profiler.enable'); await send('Profiler.setSamplingInterval', { interval: 500 }); await send('Profiler.start'); }
+  phase('idle (whole model framed)');
   await ev('window.__startRec()'); await sleep(prof ? 6000 : 3000); R.idle = await ev('window.__stopRec()');
+  phase(`idle ${R.idle.fps} fps`);
   if (prof) {
     const { profile } = await send('Profiler.stop', {}, 120000);
     const self = new Map();
@@ -1002,6 +1027,7 @@ try {
 
   const [cx, cy] = await ev('(() => { const r = document.querySelector("canvas").getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()');
   // Orbit: a real trusted middle-button drag in a circle.
+  phase('orbit');
   await ev('window.__startRec()');
   await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'middle', buttons: 4, clickCount: 1 });
   const tO = Date.now();
@@ -1013,25 +1039,32 @@ try {
   }
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'middle', buttons: 0, clickCount: 1 });
   R.orbit = await ev('window.__stopRec()');
+  phase(`orbit ${R.orbit.fps} fps`);
   await sleep(600);
   // Zoom: wheel in then out.
+  phase('zoom');
   await ev('window.__startRec()');
   for (let i = 0; i < 25; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: -100 }); await sleep(30); }
   for (let i = 0; i < 25; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: 100 }); await sleep(30); }
   R.zoom = await ev('window.__stopRec()');
+  phase(`zoom ${R.zoom.fps} fps`);
   await sleep(500);
   // Close-up: dive into the model along the cursor ray, then measure the steady state there.
+  phase('close-up');
   for (let i = 0; i < 60; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: -100 }); await sleep(30); }
   await sleep(1500);
   await ev('window.__startRec()'); await sleep(3000); R.closeup = await ev('window.__stopRec()');
+  phase(`close-up ${R.closeup.fps} fps`);
 
   // Interaction latencies (click -> two frames later).
+  phase('latencies');
   R.latency = {};
   const lat = async (key, expr) => { try { R.latency[key] = await ev(expr, 90000); } catch (e) { R.latency[key] = 'ERR ' + e.message.slice(0, 40); } };
   await lat('selectRow_ms', 'window.__lat(() => { const tr = document.querySelectorAll("table tbody tr")[1]; if (tr) tr.click(); })');
   await lat('editDuplicate_ms', 'window.__lat(() => { const x = document.querySelector(\'button[title^="Copy"]\'); if (x) x.click(); })');
   await lat('undo_ms', 'window.__lat(() => { const x = document.querySelector(\'button[title^="Undo"]\'); if (x && !x.disabled) x.click(); })');
   R.afterEdit = await metric();
+  phase('done');
   R.field = await ev('window.__barfield ? JSON.parse(JSON.stringify(window.__barfield)) : null');
   R.status = 'OK';
 } catch (e) {
@@ -1618,8 +1651,9 @@ import { ROW_TEX_WIDTH } from './rowState.js';
 
 // Slot order = DIA_PALETTE (10, 12, 16, 20, 25, 32, 40) + default; same colours as Scene.jsx DIA_COLORS.
 export const PALETTE_HEX = ['#22c55e', '#84cc16', '#f59e0b', '#ef4444', '#a855f7', '#3b82f6', '#e11d48', '#f59e0b'];
-// Tubes use simple lighting tuned against the scene lights (Scene.jsx: ambient + hemisphere + directional).
-export const LIGHT = Object.freeze({ ambient: 0.45, hemi: 0.25, key: 0.45 });
+// Tubes use simple lighting calibrated against the classic RebarMesh (MeshStandardMaterial under the
+// scene's ambient + hemisphere + directional lights): mean tube colour within a few percent in a close-up.
+export const LIGHT = Object.freeze({ ambient: 0.33, hemi: 0.18, key: 0.33 });
 
 // Raw sRGB components: the shaders write them straight to the sRGB framebuffer.
 const hexToVec3 = (hex) => new THREE.Vector3(
@@ -2456,7 +2490,8 @@ git commit -m "feat(barfield): chunked line renderer behind ?renderer=field with
 - Create: `tests/barfield/barDetail.test.mjs`
 - Modify: `src/viewer/barfield/BarField.jsx` (LOD loop)
 - Modify: `src/store.js` (`barDetail`, persisted)
-- Modify: `src/App.jsx` (Detail selector)
+- Modify: `src/App.jsx` (Detail selector in the status bar)
+- Modify: `src/App.css` (compact select in the status bar)
 - Modify: `scripts/perf/check_field.mjs` (tubes check)
 
 **Interfaces:**
@@ -2700,7 +2735,11 @@ and directly above the final `  return (\n    <>\n      <primitive object={root}
 
 ```
 
-- [ ] **Step 7: Add the Detail selector to the viewport bar**
+- [ ] **Step 7: Add the Detail selector to the status bar**
+
+The viewport bar is already full at common window widths: one more control there wraps "Zoom Sel [F]"
+onto the second row and pushes the bar count under the orientation gizmo. The status bar has room and
+already carries the fps readout, so the selector lives there.
 
 In `src/App.jsx`: after the line `import FieldBadge from './viewer/barfield/FieldBadge.jsx';` add:
 
@@ -2708,42 +2747,54 @@ In `src/App.jsx`: after the line `import FieldBadge from './viewer/barfield/Fiel
 import { isFieldRendererActive } from './viewer/barfield/rendererFlag.js';
 ```
 
-In `function ViewportBar() {`, replace the end of its hook list (this three-line context exists only there; `const requestFit = ...` appears four times in the file, so do not anchor on it):
+In `function StatusBar() {`, replace:
 
-```js
-  const selectedBars = useStore((s) => s.selectedBars);
-
+```jsx
+    : `${Math.round(perf.dist * 1000).toLocaleString('en-US')} mm`;
   return (
-    <>
-      <div className="vptools">
+    <footer className="statusbar">
+      <span>{navMode === 'orbit' ? 'LMB orbit' : 'LMB select'} · MMB orbit · RMB pan · wheel zoom-to-cursor · Esc deselect</span>
+      <span>{perf.fps} fps · cam {dist} · {totalBars} bars · {totalW.toFixed(1)} kg</span>
+    </footer>
+  );
 ```
 
 with:
 
-```js
-  const selectedBars = useStore((s) => s.selectedBars);
+```jsx
+    : `${Math.round(perf.dist * 1000).toLocaleString('en-US')} mm`;
+  // Bar detail of the new renderer lives here, next to the fps readout, because the viewport bar is
+  // already full at common window widths.
   const barDetail = useStore((s) => s.barDetail);
   const setBarDetail = useStore((s) => s.setBarDetail);
   const fieldOn = isFieldRendererActive();
-
   return (
-    <>
-      <div className="vptools">
+    <footer className="statusbar">
+      <span>{navMode === 'orbit' ? 'LMB orbit' : 'LMB select'} · MMB orbit · RMB pan · wheel zoom-to-cursor · Esc deselect</span>
+      <span>
+        {fieldOn && (
+          <>
+            <label title="Bar detail (new bar renderer): Auto draws lines far away and real tubes as you zoom in · Lines never draws tubes (fastest) · Tubes always draws tubes (slowest on very large projects)">
+              detail{' '}
+              <select value={barDetail} onChange={(e) => setBarDetail(e.target.value)}>
+                <option value="auto">Auto</option>
+                <option value="lines">Lines</option>
+                <option value="tubes">Tubes</option>
+              </select>
+            </label>
+            {' · '}
+          </>
+        )}
+        {perf.fps} fps · cam {dist} · {totalBars} bars · {totalW.toFixed(1)} kg
+      </span>
+    </footer>
+  );
 ```
 
-and directly above the line `        <button onClick={() => requestFit('auto')} title="Zoom camera to selected rebar or beam (Hotkey: F)">🎯 Zoom Sel [F]</button>` insert:
+In `src/App.css`, directly above the line `.sidebody { overflow-y: auto; padding: 8px; flex: 1; }` add (a compact select that does not make the footer taller):
 
-```jsx
-        {fieldOn && (
-          <label className="cover" title="Bar detail (new bar renderer): Auto draws lines far away and real tubes as you zoom in · Lines never draws tubes (fastest) · Tubes always draws tubes (slowest on very large projects)">
-            detail
-            <select value={barDetail} onChange={(e) => setBarDetail(e.target.value)}>
-              <option value="auto">Auto</option>
-              <option value="lines">Lines</option>
-              <option value="tubes">Tubes</option>
-            </select>
-          </label>
-        )}
+```css
+.statusbar select { background: #0b1528; color: #e2e8f0; border: 1px solid #2b3d63; border-radius: 4px; padding: 0 3px; font-size: 11px; height: 15px; vertical-align: middle; }
 ```
 
 - [ ] **Step 8: Add the tubes check**
@@ -4225,7 +4276,7 @@ Expected:
 Open the app normally (`npm run dev`, no flag) and load `scripts/perf/out/p1m.json` through `⤒ Project`; also load a real sample such as `inputs/stair_sample_auto_bbs.json`. Confirm each item still behaves as before:
 
 - Click select; Ctrl/Cmd/Shift-click toggle; double-click zooms to the bar; lap picking (anchor, second bar); Query tool on a bar; hide / show a bar; hide a host member; box select (Shift+B); Fit All and view presets; section box (cut, uncut, drag a face) with bars clipping correctly; colour by diameter; the selected bar's white highlight; CSV and project export / import unchanged.
-- Orbit and zoom stay smooth on the 1M-bar project; the **detail** selector in the viewport bar switches between Auto, Lines and Tubes.
+- Orbit and zoom stay smooth on the 1M-bar project; the **detail** selector in the status bar (next to the fps readout) switches between Auto, Lines and Tubes.
 - `http://localhost:5173/?renderer=legacy` still gives the old behaviour.
 
 - [ ] **Step 4: Document the renderer and the rig**
@@ -4239,7 +4290,7 @@ Projects with hundreds of thousands to millions of physical bars stay interactiv
 spatial chunks as merged lines when far away and as instanced tubes near the camera, selected and
 just-edited bars use the classic tube look, and the pixel ratio drops while the camera moves.
 
-- **Detail** (viewport bar): *Auto* (default, lines far / tubes near), *Lines* (fastest), *Tubes* (always
+- **Detail** (status bar, next to the fps readout): *Auto* (default, lines far / tubes near), *Lines* (fastest), *Tubes* (always
   tubes; slow on very large projects). Saved in the browser.
 - `?renderer=legacy` forces the old one-mesh-per-bar renderer (also used automatically without WebGL2).
 - If the new renderer cannot be built, the classic renderer shows the first 20,000 bars and a notice.

@@ -33,7 +33,9 @@ export const INSTR = `(() => {
   };
   window.__gpuInfo = () => { const c = document.createElement('canvas'); const gl = c.getContext('webgl2') || c.getContext('webgl'); if (!gl) return 'no webgl'; const e = gl.getExtension('WEBGL_debug_renderer_info'); return e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER); };
   window.__status = () => {
-    const el = Array.from(document.querySelectorAll('span')).find((e) => e.children.length === 0 && /\\d+\\s*fps\\s*·\\s*cam/.test(e.textContent));
+    // Read the status bar text ("… 60 fps · cam 11.4 m · 53 bars · 441.5 kg"); the span may also hold
+    // controls (the Detail selector), so match on its text rather than on being a leaf element.
+    const el = Array.from(document.querySelectorAll('.statusbar span')).find((e) => /\\d+\\s*fps\\s*·\\s*cam/.test(e.textContent));
     const m = el && el.textContent.match(/(\\d+)\\s*fps\\s*·\\s*cam\\s*([^·]+)·\\s*(\\d+)\\s*bars/);
     return { bars: m ? Number(m[3]) : -1, appFps: m ? Number(m[1]) : -1, t: performance.now() };
   };

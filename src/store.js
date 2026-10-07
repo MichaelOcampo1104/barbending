@@ -6,6 +6,13 @@ import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
 let tagSeq = 1;
 
 const SAVE_KEY = 'barbending.save.v1';
+const DETAIL_KEY = 'barbending.barDetail';
+const readBarDetail = () => {
+  try {
+    const v = localStorage.getItem(DETAIL_KEY);
+    return v === 'lines' || v === 'tubes' ? v : 'auto';
+  } catch { return 'auto'; }
+};
 const HIST_MAX = 50;
 
 // Undo snapshot: the model (view-only flags ride along on their objects).
@@ -786,6 +793,14 @@ export const useStore = create((set, get) => ({
   // Concrete rendering options: 'ghost' | 'solid' | 'blueprint' | 'textured'
   concreteStyle: 'ghost',
   setConcreteStyle: (v) => set({ concreteStyle: v }),
+  // Bar detail for the BarField renderer: 'auto' (lines far, tubes near) | 'lines' | 'tubes'.
+  // Persisted like the layout preferences.
+  barDetail: readBarDetail(),
+  setBarDetail: (v) => {
+    const next = v === 'lines' || v === 'tubes' ? v : 'auto';
+    try { localStorage.setItem(DETAIL_KEY, next); } catch { /* storage unavailable */ }
+    set({ barDetail: next });
+  },
   concreteOpacity: 0.25,
   setConcreteOpacity: (v) => set({ concreteOpacity: v }),
   concreteColor: '#94a3b8',

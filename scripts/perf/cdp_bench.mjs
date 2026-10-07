@@ -1,6 +1,6 @@
 // Headless-Edge (GPU on) benchmark of the barbending app against a synthetic project.
 // usage: node scripts/perf/cdp_bench.mjs --url <app url> [--project <file>] [--label x] [--dpr 1]
-//        [--expect <physical bars>] [--budget <key in budgets.json>] [--enforce]
+//        [--expect <physical bars>] [--budget <key in budgets.json>] [--enforce] [--detail auto|lines|tubes]
 // Loads the project through the real "⤒ Project" file input, then measures load, memory, DOM size,
 // draw calls, fps idle / orbit / zoom / close-up, and select / edit / undo latency.
 // PROFILE=1 adds a CPU profile of the idle phase (use against the dev server for readable names).
@@ -27,9 +27,13 @@ const label = arg('label', 'run');
 const dpr = Number(arg('dpr', '1'));
 const expected = Number(arg('expect', '0'));
 const budgetKey = arg('budget', '');
+const detail = arg('detail', ''); // bar detail preference to run with (field renderer)
 const enforce = process.argv.includes('--enforce');
 
-const R = { label, url, dpr };
+const R = { label, url, dpr, detail: detail || 'default' };
+const tBench = Date.now();
+// Progress goes to stderr so a stalled run is visible; the RESULT line on stdout is unchanged.
+const phase = (name) => console.error(`[bench +${((Date.now() - tBench) / 1000).toFixed(1)}s] ${name}`);
 const timeout = setTimeout(() => { R.status = 'GLOBAL-TIMEOUT'; finish(1); }, 12 * 60 * 1000);
 let b = null;
 let finished = false;
@@ -68,14 +72,24 @@ function checkBudget() {
 try {
   b = await launchBrowser({ dpr, instrument: INSTR });
   const { send, ev } = b;
+  const waitReady = async () => {
+    for (let i = 0; i < 100; i++) {
+      await sleep(300);
+      try { if (await ev('!window.__old && !!document.querySelector("canvas") && !!window.__status', 5000)) return true; } catch { /* retry */ }
+    }
+    return false;
+  };
   await send('Page.navigate', { url });
-  let ready = false;
-  for (let i = 0; i < 100 && !ready; i++) {
-    await sleep(300);
-    try { ready = await ev('!!document.querySelector("canvas") && !!window.__status', 5000); } catch { /* retry */ }
+  let ready = await waitReady();
+  if (ready && detail) {
+    // Bar detail is a persisted preference: store it, then load the app again so the store reads it.
+    await ev(`window.__old = true; localStorage.setItem('barbending.barDetail', ${JSON.stringify(detail)})`);
+    await send('Page.navigate', { url });
+    ready = await waitReady();
   }
   if (!ready) { R.status = 'APP-NOT-READY'; finish(1); }
   R.gpu = await ev('window.__gpuInfo()');
+  phase('app ready');
   await sleep(1500);
   const metric = async () => {
     const o = {};
@@ -83,6 +97,7 @@ try {
     return { jsHeapMB: Math.round(o.JSHeapUsedSize / 1048576), domNodes: o.Nodes, layoutCount: o.LayoutCount, scriptSec: +o.ScriptDuration.toFixed(2) };
   };
   R.baseline = { ...(await metric()) };
+  phase('measuring baseline');
   await ev('window.__startRec()'); await sleep(2000); R.baseline.idle = await ev('window.__stopRec()');
 
   if (projPath !== '-') {
@@ -91,6 +106,7 @@ try {
     const lt0 = await ev('window.__lt.length');
     const v0 = await ev('(window.__barfield && window.__barfield.version) || 0');
     const bars0 = (await ev('window.__status()')).bars; // read before the import starts
+    phase('importing project');
     const tStart = Date.now();
     await send('DOM.setFileInputFiles', { files: [path.resolve(projPath)], nodeId: q.nodeIds[0] });
     // Poll; each evaluate only answers once the main thread is free again.
@@ -114,6 +130,7 @@ try {
       await sleep(80);
     }
     R.load = { ms: Date.now() - tStart, loaded, barsShown: last && last.bars };
+    phase(`page responsive again after ${R.load.ms} ms (loaded=${loaded})`);
     if (!loaded) { R.status = b.isCrashed() ? 'CRASHED' : (R.loadError ? 'HUNG' : 'LOAD-INCOMPLETE'); finish(1); }
     // The field is drawn a little after the page is responsive again (build + install): keep waiting.
     if (readyAt === null && await ev('!!window.__barfield').catch(() => false)) {
@@ -126,6 +143,7 @@ try {
     // viewportWallMs: from the import until the bars are drawn, BBS table included (reported only).
     R.viewportMs = readyAt !== null && tFree !== null ? Math.max(0, readyAt - tFree) : null;
     R.viewportWallMs = readyAt !== null ? readyAt - tStart : null;
+    phase(`bars drawn: viewportMs=${R.viewportMs} wall=${R.viewportWallMs}`);
     const lts = await ev(`window.__lt.slice(${lt0}).map(x => x[1])`);
     R.load.longTasks = lts.length;
     R.load.blockedMs = Math.round(lts.reduce((s, v) => s + v, 0));
@@ -138,7 +156,9 @@ try {
   await sleep(2500);
   const prof = !!process.env.PROFILE;
   if (prof) { await send('Profiler.enable'); await send('Profiler.setSamplingInterval', { interval: 500 }); await send('Profiler.start'); }
+  phase('idle (whole model framed)');
   await ev('window.__startRec()'); await sleep(prof ? 6000 : 3000); R.idle = await ev('window.__stopRec()');
+  phase(`idle ${R.idle.fps} fps`);
   if (prof) {
     const { profile } = await send('Profiler.stop', {}, 120000);
     const self = new Map();
@@ -171,6 +191,7 @@ try {
 
   const [cx, cy] = await ev('(() => { const r = document.querySelector("canvas").getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()');
   // Orbit: a real trusted middle-button drag in a circle.
+  phase('orbit');
   await ev('window.__startRec()');
   await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'middle', buttons: 4, clickCount: 1 });
   const tO = Date.now();
@@ -182,25 +203,32 @@ try {
   }
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'middle', buttons: 0, clickCount: 1 });
   R.orbit = await ev('window.__stopRec()');
+  phase(`orbit ${R.orbit.fps} fps`);
   await sleep(600);
   // Zoom: wheel in then out.
+  phase('zoom');
   await ev('window.__startRec()');
   for (let i = 0; i < 25; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: -100 }); await sleep(30); }
   for (let i = 0; i < 25; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: 100 }); await sleep(30); }
   R.zoom = await ev('window.__stopRec()');
+  phase(`zoom ${R.zoom.fps} fps`);
   await sleep(500);
   // Close-up: dive into the model along the cursor ray, then measure the steady state there.
+  phase('close-up');
   for (let i = 0; i < 60; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: -100 }); await sleep(30); }
   await sleep(1500);
   await ev('window.__startRec()'); await sleep(3000); R.closeup = await ev('window.__stopRec()');
+  phase(`close-up ${R.closeup.fps} fps`);
 
   // Interaction latencies (click -> two frames later).
+  phase('latencies');
   R.latency = {};
   const lat = async (key, expr) => { try { R.latency[key] = await ev(expr, 90000); } catch (e) { R.latency[key] = 'ERR ' + e.message.slice(0, 40); } };
   await lat('selectRow_ms', 'window.__lat(() => { const tr = document.querySelectorAll("table tbody tr")[1]; if (tr) tr.click(); })');
   await lat('editDuplicate_ms', 'window.__lat(() => { const x = document.querySelector(\'button[title^="Copy"]\'); if (x) x.click(); })');
   await lat('undo_ms', 'window.__lat(() => { const x = document.querySelector(\'button[title^="Undo"]\'); if (x && !x.disabled) x.click(); })');
   R.afterEdit = await metric();
+  phase('done');
   R.field = await ev('window.__barfield ? JSON.parse(JSON.stringify(window.__barfield)) : null');
   R.status = 'OK';
 } catch (e) {

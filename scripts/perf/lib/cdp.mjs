@@ -34,9 +34,11 @@ export async function launchBrowser({ dpr = 1, width = 1600, height = 900, instr
   let crashed = false;
   const pend = new Map();
   const consoleErrors = [];
+  const handlers = new Map(); // CDP event name -> listener, see on()
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data.toString());
     if (m.id && pend.has(m.id)) { pend.get(m.id)(m); pend.delete(m.id); return; }
+    if (m.method && handlers.has(m.method)) handlers.get(m.method)(m.params);
     if (m.method === 'Inspector.targetCrashed') crashed = true;
     else if (m.method === 'Runtime.exceptionThrown') {
       consoleErrors.push('EXC ' + String(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text).slice(0, 300));
@@ -67,5 +69,6 @@ export async function launchBrowser({ dpr = 1, width = 1600, height = 900, instr
     try { spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { stdio: 'ignore' }); } catch { /* gone */ }
     setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* busy */ } }, 1500);
   };
-  return { send, ev, close, sleep, isCrashed: () => crashed, consoleErrors };
+  const on = (method, fn) => handlers.set(method, fn);
+  return { send, ev, on, close, sleep, isCrashed: () => crashed, consoleErrors };
 }
