@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  STATE, ROW_TEX_WIDTH, SELECTION_OVERLAY_LIMIT, rowTexDims, createRowTexelData,
+  STATE, ROW_TEX_WIDTH, SELECTION_OVERLAY_LIMIT, OVERLAY_COPY_BUDGET, rowTexDims, createRowTexelData,
   writeRowAttributes, writeRowState, computeHiddenMask, composeRowStates,
 } from '../../src/viewer/barfield/rowState.js';
 import { straightRow } from './helpers.mjs';
@@ -62,6 +62,32 @@ test('more than the limit selected rows are tinted in place, not overlaid', () =
   assert.ok(states.every((s) => s === STATE.TINT));
   const small = composeRowStates({ hiddenMask, selectedBars: selectedBars.slice(0, SELECTION_OVERLAY_LIMIT) });
   assert.equal(small.overlay.length, SELECTION_OVERLAY_LIMIT, 'exactly the limit still overlays');
+});
+
+test('a selection within the copy budget overlays, a heavier one is tinted in place', () => {
+  const hiddenMask = new Uint8Array(10);
+  const weightOf = () => 40; // 40 bar copies per row
+  const light = composeRowStates({ hiddenMask, selectedBars: [0, 1, 2], weightOf }); // 120 copies
+  assert.deepEqual(light.overlay, [0, 1, 2]);
+  assert.equal(light.states[0], STATE.OVERLAY);
+  const heavy = composeRowStates({ hiddenMask, selectedBars: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], weightOf }); // 400 copies: still fits
+  assert.equal(heavy.overlay.length, 10);
+  assert.ok(OVERLAY_COPY_BUDGET >= 400);
+  const over = composeRowStates({ hiddenMask, selectedBars: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], weightOf: () => 41 }); // 410 copies
+  assert.equal(over.overlay.length, 0);
+  assert.ok(over.states.every((s) => s === STATE.TINT));
+});
+
+test('one very heavy row is tinted instead of mounting thousands of meshes', () => {
+  const { states, overlay } = composeRowStates({ hiddenMask: new Uint8Array(3), selectedBars: [1], weightOf: () => 4900 });
+  assert.deepEqual(overlay, []);
+  assert.deepEqual([...states], [STATE.NORMAL, STATE.TINT, STATE.NORMAL]);
+});
+
+test('hidden selected rows do not count towards the copy budget', () => {
+  const hiddenMask = Uint8Array.from([1, 0, 0]);
+  const { overlay } = composeRowStates({ hiddenMask, selectedBars: [0, 1], weightOf: (i) => (i === 0 ? 100000 : 5) });
+  assert.deepEqual(overlay, [1]);
 });
 
 test('forceOverlay rows become overlay even when not selected', () => {

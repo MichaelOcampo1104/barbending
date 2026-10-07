@@ -237,11 +237,17 @@ Recomputed at most every 100 ms or when the camera or quality changes.
 
 ### 6.4 Selection, overlay and hiding
 
-- **Selection of up to 300 rows:** overlay rows, drawn by the existing `RebarMesh`
-  (white emissive, on top, no depth test), exactly as today. The field hides their
-  copies via row state. Overlay rows keep today's 5,000-copy cap and marker.
-- **Selection of more than 300 rows** (for example "All"): no overlay; rows are tinted
-  in place in the field (state 3). They are not forced on top.
+- **A selection that fits the overlay budget** (at most 300 rows and 400 bar copies in
+  total): overlay rows, drawn by the existing `RebarMesh` (white emissive, on top, no depth
+  test), exactly as today. The field hides their copies via row state. Overlay rows keep
+  today's 5,000-copy cap and marker. The budget is counted in copies because the classic
+  renderer costs one mesh per copy: measured at 1M bars on the reference machine, about 200
+  overlay meshes cost +2 ms per frame, about 430 cost +5 ms, about 980 cost +18 ms and about
+  2,000 cost +90 ms (8.6 fps), so 300 rows of 40 copies would have run at 2 fps.
+- **Any heavier selection** (for example "All", or a single row with thousands of copies): no
+  overlay; rows are tinted in place in the field (state 3). They are not forced on top.
+- Edited rows waiting for their delta flush, and rows added since the field was built, follow
+  the same budget; a bulk edit flushes its delta chunk at once instead of overlaying.
 - **Hidden rows** (`bar.hidden`, host hidden, spatially inside a hidden member): state 1,
   recomputed in O(rows) when hidden state changes.
 - Lap-anchor markers, reference lines, concrete and IFC rendering are unchanged.

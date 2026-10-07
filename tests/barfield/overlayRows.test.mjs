@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { forcedOverlayRows } from '../../src/viewer/barfield/overlayRows.js';
-import { SELECTION_OVERLAY_LIMIT } from '../../src/viewer/barfield/rowState.js';
+import { forcedOverlayRows, fitsOverlay } from '../../src/viewer/barfield/overlayRows.js';
+import { SELECTION_OVERLAY_LIMIT, OVERLAY_COPY_BUDGET } from '../../src/viewer/barfield/rowState.js';
 
 const range = (a, b) => Array.from({ length: b - a }, (_, i) => a + i);
 
@@ -30,6 +30,24 @@ test('thousands of rows added since the build (an import) are not overlaid', () 
 
 test('fewer rows than the build (deleted bars) add nothing', () => {
   assert.equal(forcedOverlayRows({ pending: new Set(), builtRowCount: 100, barCount: 90 }).size, 0);
+});
+
+test('fitsOverlay: at most `limit` rows and `budget` bar copies', () => {
+  assert.equal(fitsOverlay([1, 2, 3]), true);
+  assert.equal(fitsOverlay(range(0, SELECTION_OVERLAY_LIMIT)), true);
+  assert.equal(fitsOverlay(range(0, SELECTION_OVERLAY_LIMIT + 1)), false);
+  assert.equal(fitsOverlay([0, 1], { weightOf: () => OVERLAY_COPY_BUDGET / 2 }), true);
+  assert.equal(fitsOverlay([0, 1], { weightOf: () => OVERLAY_COPY_BUDGET / 2 + 1 }), false);
+  assert.equal(fitsOverlay([0], { weightOf: () => 4900 }), false, 'one very heavy row');
+  assert.equal(fitsOverlay([]), true);
+});
+
+test('heavy pending or added rows (many copies each) are not overlaid even when there are few of them', () => {
+  const weightOf = () => 500;
+  assert.equal(forcedOverlayRows({ pending: new Set([1, 2]), builtRowCount: 10, barCount: 10, weightOf }).size, 0);
+  assert.equal(forcedOverlayRows({ pending: new Set(), builtRowCount: 10, barCount: 12, weightOf }).size, 0);
+  const light = () => 20;
+  assert.equal(forcedOverlayRows({ pending: new Set([1, 2]), builtRowCount: 10, barCount: 12, weightOf: light }).size, 4);
 });
 
 test('pending and added rows combine, each group judged on its own', () => {

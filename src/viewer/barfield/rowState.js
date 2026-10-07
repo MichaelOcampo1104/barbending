@@ -5,6 +5,10 @@ import { barOverlapsBoxes } from '../../bbs/shapes.js';
 export const STATE = Object.freeze({ NORMAL: 0, HIDDEN: 1, OVERLAY: 2, TINT: 3 });
 export const ROW_TEX_WIDTH = 2048;
 export const SELECTION_OVERLAY_LIMIT = 300;
+// Overlay rows are classic meshes, one per bar copy, and cost real frame time (measured on the reference
+// machine at 1M bars: +2 ms at ~200 copies, +5 ms at ~430, +18 ms at ~980, +90 ms at ~2,000). Staying
+// under ~400 copies keeps the frame rate above 30 fps; a heavier selection is tinted in place instead.
+export const OVERLAY_COPY_BUDGET = 400;
 
 export function rowTexDims(texelCount) {
   return { width: ROW_TEX_WIDTH, height: Math.max(1, Math.ceil(texelCount / ROW_TEX_WIDTH)) };
@@ -42,13 +46,24 @@ export function computeHiddenMask({ bars, concretes }) {
 
 // The cheap part, rerun on every selection change: combine the hidden mask with the selection and
 // with rows forced to overlay (for example rows edited but not yet rebuilt).
-export function composeRowStates({ hiddenMask, selectedBars, forceOverlay, selectionOverlayLimit = SELECTION_OVERLAY_LIMIT }) {
+// `weightOf(row)` (optional) is the number of bar copies a row would draw as classic meshes; a selection
+// heavier than `overlayBudget` copies in total, or longer than `selectionOverlayLimit` rows, is tinted.
+export function composeRowStates({
+  hiddenMask, selectedBars, forceOverlay, selectionOverlayLimit = SELECTION_OVERLAY_LIMIT, weightOf = null, overlayBudget = OVERLAY_COPY_BUDGET,
+}) {
   const n = hiddenMask.length;
   const states = new Uint8Array(n);
   const overlay = [];
   const sel = Array.isArray(selectedBars) ? selectedBars : [];
   const selSet = new Set(sel);
-  const tint = sel.length > selectionOverlayLimit;
+  let tint = sel.length > selectionOverlayLimit;
+  if (!tint && weightOf) {
+    let weight = 0;
+    for (const i of selSet) {
+      if (i >= 0 && i < n && !hiddenMask[i]) weight += weightOf(i);
+      if (weight > overlayBudget) { tint = true; break; }
+    }
+  }
   for (let i = 0; i < n; i++) {
     if (hiddenMask[i]) { states[i] = STATE.HIDDEN; continue; }
     if (selSet.has(i)) {

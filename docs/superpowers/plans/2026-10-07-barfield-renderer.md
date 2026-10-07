@@ -1445,7 +1445,7 @@ Create `tests/barfield/rowState.test.mjs`:
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  STATE, ROW_TEX_WIDTH, SELECTION_OVERLAY_LIMIT, rowTexDims, createRowTexelData,
+  STATE, ROW_TEX_WIDTH, SELECTION_OVERLAY_LIMIT, OVERLAY_COPY_BUDGET, rowTexDims, createRowTexelData,
   writeRowAttributes, writeRowState, computeHiddenMask, composeRowStates,
 } from '../../src/viewer/barfield/rowState.js';
 import { straightRow } from './helpers.mjs';
@@ -1508,6 +1508,32 @@ test('more than the limit selected rows are tinted in place, not overlaid', () =
   assert.equal(small.overlay.length, SELECTION_OVERLAY_LIMIT, 'exactly the limit still overlays');
 });
 
+test('a selection within the copy budget overlays, a heavier one is tinted in place', () => {
+  const hiddenMask = new Uint8Array(10);
+  const weightOf = () => 40; // 40 bar copies per row
+  const light = composeRowStates({ hiddenMask, selectedBars: [0, 1, 2], weightOf }); // 120 copies
+  assert.deepEqual(light.overlay, [0, 1, 2]);
+  assert.equal(light.states[0], STATE.OVERLAY);
+  const heavy = composeRowStates({ hiddenMask, selectedBars: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], weightOf }); // 400 copies: still fits
+  assert.equal(heavy.overlay.length, 10);
+  assert.ok(OVERLAY_COPY_BUDGET >= 400);
+  const over = composeRowStates({ hiddenMask, selectedBars: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], weightOf: () => 41 }); // 410 copies
+  assert.equal(over.overlay.length, 0);
+  assert.ok(over.states.every((s) => s === STATE.TINT));
+});
+
+test('one very heavy row is tinted instead of mounting thousands of meshes', () => {
+  const { states, overlay } = composeRowStates({ hiddenMask: new Uint8Array(3), selectedBars: [1], weightOf: () => 4900 });
+  assert.deepEqual(overlay, []);
+  assert.deepEqual([...states], [STATE.NORMAL, STATE.TINT, STATE.NORMAL]);
+});
+
+test('hidden selected rows do not count towards the copy budget', () => {
+  const hiddenMask = Uint8Array.from([1, 0, 0]);
+  const { overlay } = composeRowStates({ hiddenMask, selectedBars: [0, 1], weightOf: (i) => (i === 0 ? 100000 : 5) });
+  assert.deepEqual(overlay, [1]);
+});
+
 test('forceOverlay rows become overlay even when not selected', () => {
   const { states, overlay } = composeRowStates({ hiddenMask: new Uint8Array(4), selectedBars: [0], forceOverlay: new Set([3]) });
   assert.deepEqual([...states], [STATE.OVERLAY, STATE.NORMAL, STATE.NORMAL, STATE.OVERLAY]);
@@ -1538,6 +1564,10 @@ import { barOverlapsBoxes } from '../../bbs/shapes.js';
 export const STATE = Object.freeze({ NORMAL: 0, HIDDEN: 1, OVERLAY: 2, TINT: 3 });
 export const ROW_TEX_WIDTH = 2048;
 export const SELECTION_OVERLAY_LIMIT = 300;
+// Overlay rows are classic meshes, one per bar copy, and cost real frame time (measured on the reference
+// machine at 1M bars: +2 ms at ~200 copies, +5 ms at ~430, +18 ms at ~980, +90 ms at ~2,000). Staying
+// under ~400 copies keeps the frame rate above 30 fps; a heavier selection is tinted in place instead.
+export const OVERLAY_COPY_BUDGET = 400;
 
 export function rowTexDims(texelCount) {
   return { width: ROW_TEX_WIDTH, height: Math.max(1, Math.ceil(texelCount / ROW_TEX_WIDTH)) };
@@ -1575,13 +1605,24 @@ export function computeHiddenMask({ bars, concretes }) {
 
 // The cheap part, rerun on every selection change: combine the hidden mask with the selection and
 // with rows forced to overlay (for example rows edited but not yet rebuilt).
-export function composeRowStates({ hiddenMask, selectedBars, forceOverlay, selectionOverlayLimit = SELECTION_OVERLAY_LIMIT }) {
+// `weightOf(row)` (optional) is the number of bar copies a row would draw as classic meshes; a selection
+// heavier than `overlayBudget` copies in total, or longer than `selectionOverlayLimit` rows, is tinted.
+export function composeRowStates({
+  hiddenMask, selectedBars, forceOverlay, selectionOverlayLimit = SELECTION_OVERLAY_LIMIT, weightOf = null, overlayBudget = OVERLAY_COPY_BUDGET,
+}) {
   const n = hiddenMask.length;
   const states = new Uint8Array(n);
   const overlay = [];
   const sel = Array.isArray(selectedBars) ? selectedBars : [];
   const selSet = new Set(sel);
-  const tint = sel.length > selectionOverlayLimit;
+  let tint = sel.length > selectionOverlayLimit;
+  if (!tint && weightOf) {
+    let weight = 0;
+    for (const i of selSet) {
+      if (i >= 0 && i < n && !hiddenMask[i]) weight += weightOf(i);
+      if (weight > overlayBudget) { tint = true; break; }
+    }
+  }
   for (let i = 0; i < n; i++) {
     if (hiddenMask[i]) { states[i] = STATE.HIDDEN; continue; }
     if (selSet.has(i)) {
@@ -3527,8 +3568,8 @@ Create `tests/barfield/overlayRows.test.mjs`:
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { forcedOverlayRows } from '../../src/viewer/barfield/overlayRows.js';
-import { SELECTION_OVERLAY_LIMIT } from '../../src/viewer/barfield/rowState.js';
+import { forcedOverlayRows, fitsOverlay } from '../../src/viewer/barfield/overlayRows.js';
+import { SELECTION_OVERLAY_LIMIT, OVERLAY_COPY_BUDGET } from '../../src/viewer/barfield/rowState.js';
 
 const range = (a, b) => Array.from({ length: b - a }, (_, i) => a + i);
 
@@ -3557,6 +3598,24 @@ test('thousands of rows added since the build (an import) are not overlaid', () 
 
 test('fewer rows than the build (deleted bars) add nothing', () => {
   assert.equal(forcedOverlayRows({ pending: new Set(), builtRowCount: 100, barCount: 90 }).size, 0);
+});
+
+test('fitsOverlay: at most `limit` rows and `budget` bar copies', () => {
+  assert.equal(fitsOverlay([1, 2, 3]), true);
+  assert.equal(fitsOverlay(range(0, SELECTION_OVERLAY_LIMIT)), true);
+  assert.equal(fitsOverlay(range(0, SELECTION_OVERLAY_LIMIT + 1)), false);
+  assert.equal(fitsOverlay([0, 1], { weightOf: () => OVERLAY_COPY_BUDGET / 2 }), true);
+  assert.equal(fitsOverlay([0, 1], { weightOf: () => OVERLAY_COPY_BUDGET / 2 + 1 }), false);
+  assert.equal(fitsOverlay([0], { weightOf: () => 4900 }), false, 'one very heavy row');
+  assert.equal(fitsOverlay([]), true);
+});
+
+test('heavy pending or added rows (many copies each) are not overlaid even when there are few of them', () => {
+  const weightOf = () => 500;
+  assert.equal(forcedOverlayRows({ pending: new Set([1, 2]), builtRowCount: 10, barCount: 10, weightOf }).size, 0);
+  assert.equal(forcedOverlayRows({ pending: new Set(), builtRowCount: 10, barCount: 12, weightOf }).size, 0);
+  const light = () => 20;
+  assert.equal(forcedOverlayRows({ pending: new Set([1, 2]), builtRowCount: 10, barCount: 12, weightOf: light }).size, 4);
 });
 
 test('pending and added rows combine, each group judged on its own', () => {
@@ -3610,16 +3669,37 @@ Create `src/viewer/barfield/overlayRows.js`:
 ```js
 // Pure: which UNSELECTED rows are drawn as classic overlay meshes. The classic renderer costs one mesh
 // per bar copy, so overlay rows must stay few (spec 6.4): edited rows wait in the overlay for their delta
-// flush, and rows added since the field was built show at once - each group only up to the overlay limit.
-// For more (a bulk edit, an import) the caller flushes the delta / waits for the rebuild instead of
-// mounting thousands of meshes.
-import { SELECTION_OVERLAY_LIMIT } from './rowState.js';
+// flush, and rows added since the field was built show at once - each group only while it fits the overlay
+// limits (rows and bar copies). For more (a bulk edit, an import) the caller flushes the delta / waits for
+// the rebuild instead of mounting thousands of meshes.
+import { SELECTION_OVERLAY_LIMIT, OVERLAY_COPY_BUDGET } from './rowState.js';
 
-export function forcedOverlayRows({ pending, builtRowCount, barCount, limit = SELECTION_OVERLAY_LIMIT }) {
+// True when drawing these rows as classic meshes stays affordable: at most `limit` rows and at most
+// `budget` bar copies in total (`weightOf(row)` = copies of a row, default 1).
+export function fitsOverlay(rows, { weightOf = null, limit = SELECTION_OVERLAY_LIMIT, budget = OVERLAY_COPY_BUDGET } = {}) {
+  let count = 0;
+  let weight = 0;
+  for (const i of rows) {
+    count += 1;
+    if (count > limit) return false;
+    weight += weightOf ? weightOf(i) : 1;
+    if (weight > budget) return false;
+  }
+  return true;
+}
+
+export function forcedOverlayRows({
+  pending, builtRowCount, barCount, weightOf = null, limit = SELECTION_OVERLAY_LIMIT, budget = OVERLAY_COPY_BUDGET,
+}) {
   const out = new Set();
-  if (pending.size <= limit) for (const i of pending) out.add(i);
+  const opts = { weightOf, limit, budget };
+  if (fitsOverlay(pending, opts)) for (const i of pending) out.add(i);
   const added = barCount - builtRowCount;
-  if (added > 0 && added <= limit) for (let i = builtRowCount; i < barCount; i++) out.add(i);
+  if (added > 0 && added <= limit) {
+    const rows = [];
+    for (let i = builtRowCount; i < barCount; i++) rows.push(i);
+    if (fitsOverlay(rows, opts)) for (const i of rows) out.add(i);
+  }
   return out;
 }
 ```
@@ -3642,9 +3722,9 @@ import { distCount } from '../../bbs/shapes.js';
 import { FieldBuilder } from './fieldClient.js';
 import { buildField } from './buildField.js';
 import { FieldView } from './fieldObjects.js';
-import { computeHiddenMask, composeRowStates, STATE, SELECTION_OVERLAY_LIMIT } from './rowState.js';
+import { computeHiddenMask, composeRowStates, STATE } from './rowState.js';
 import { diffRows } from './diffRows.js';
-import { forcedOverlayRows } from './overlayRows.js';
+import { forcedOverlayRows, fitsOverlay } from './overlayRows.js';
 import { chooseTubeChunks } from './lod.js';
 import { qualityState } from './qualityState.js';
 import { pickField } from './fieldPick.js';
@@ -3658,6 +3738,9 @@ const IDLE_REBUILD_MS = 10000; // a non-empty delta is folded into a full rebuil
 const DELTA_FRACTION = 0.05; // delta capacity = 5% of the rows (+64)
 const LEGACY_FALLBACK_ROWS = 20000;
 const DELTA_MAX_COPIES = 40000; // a flush with more distribution copies than this is rebuilt in the worker instead
+const MAX_OVERLAY_COPIES = 5000; // RebarMesh draws at most this many copies of one row
+// Bar copies a row costs when drawn by the classic renderer (one mesh each).
+const overlayWeight = (bars) => (i) => Math.min(distCount(bars[i]) || 1, MAX_OVERLAY_COPIES);
 
 // The overlay row list as a tiny external store: the effect that keeps the field in sync updates it from
 // store subscriptions without calling setState inside an effect, and equal lists never re-render.
@@ -3712,9 +3795,10 @@ export default function BarField({ renderOverlayBar }) {
       // Edited rows wait in the overlay for the quiet period and rows added since the build show as overlay at
       // once, each only up to the overlay limit (a bulk edit flushes its delta immediately instead, and after
       // an import the field is simply stale until the rebuild lands).
-      const force = view ? forcedOverlayRows({ pending, builtRowCount: view.rowCount, barCount: st.bars.length }) : new Set();
+      const weightOf = overlayWeight(st.bars);
+      const force = view ? forcedOverlayRows({ pending, builtRowCount: view.rowCount, barCount: st.bars.length, weightOf }) : new Set();
       const { states, overlay: list } = composeRowStates({
-        hiddenMask: hiddenMask(st.bars, st.concretes), selectedBars: st.selectedBars, forceOverlay: force,
+        hiddenMask: hiddenMask(st.bars, st.concretes), selectedBars: st.selectedBars, forceOverlay: force, weightOf,
       });
       if (view) {
         timed(() => {
@@ -3784,8 +3868,8 @@ export default function BarField({ renderOverlayBar }) {
         clearTimeout(timers.idle);
         timers.idle = setTimeout(() => scheduleRebuild(0), IDLE_REBUILD_MS);
         clearTimeout(timers.quiet);
-        // Too many edited rows for overlay meshes: flush the delta chunk at once instead of waiting.
-        if (pending.size > SELECTION_OVERLAY_LIMIT) flushDelta();
+        // Too many (or too heavy) edited rows for overlay meshes: flush the delta chunk at once instead of waiting.
+        if (!fitsOverlay(pending, { weightOf: overlayWeight(cur) })) flushDelta();
         else timers.quiet = setTimeout(flushDelta, EDIT_QUIET_MS);
       }
     };

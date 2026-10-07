@@ -6,9 +6,9 @@ import { distCount } from '../../bbs/shapes.js';
 import { FieldBuilder } from './fieldClient.js';
 import { buildField } from './buildField.js';
 import { FieldView } from './fieldObjects.js';
-import { computeHiddenMask, composeRowStates, STATE, SELECTION_OVERLAY_LIMIT } from './rowState.js';
+import { computeHiddenMask, composeRowStates, STATE } from './rowState.js';
 import { diffRows } from './diffRows.js';
-import { forcedOverlayRows } from './overlayRows.js';
+import { forcedOverlayRows, fitsOverlay } from './overlayRows.js';
 import { chooseTubeChunks } from './lod.js';
 import { qualityState } from './qualityState.js';
 import { pickField } from './fieldPick.js';
@@ -22,6 +22,9 @@ const IDLE_REBUILD_MS = 10000; // a non-empty delta is folded into a full rebuil
 const DELTA_FRACTION = 0.05; // delta capacity = 5% of the rows (+64)
 const LEGACY_FALLBACK_ROWS = 20000;
 const DELTA_MAX_COPIES = 40000; // a flush with more distribution copies than this is rebuilt in the worker instead
+const MAX_OVERLAY_COPIES = 5000; // RebarMesh draws at most this many copies of one row
+// Bar copies a row costs when drawn by the classic renderer (one mesh each).
+const overlayWeight = (bars) => (i) => Math.min(distCount(bars[i]) || 1, MAX_OVERLAY_COPIES);
 
 // The overlay row list as a tiny external store: the effect that keeps the field in sync updates it from
 // store subscriptions without calling setState inside an effect, and equal lists never re-render.
@@ -76,9 +79,10 @@ export default function BarField({ renderOverlayBar }) {
       // Edited rows wait in the overlay for the quiet period and rows added since the build show as overlay at
       // once, each only up to the overlay limit (a bulk edit flushes its delta immediately instead, and after
       // an import the field is simply stale until the rebuild lands).
-      const force = view ? forcedOverlayRows({ pending, builtRowCount: view.rowCount, barCount: st.bars.length }) : new Set();
+      const weightOf = overlayWeight(st.bars);
+      const force = view ? forcedOverlayRows({ pending, builtRowCount: view.rowCount, barCount: st.bars.length, weightOf }) : new Set();
       const { states, overlay: list } = composeRowStates({
-        hiddenMask: hiddenMask(st.bars, st.concretes), selectedBars: st.selectedBars, forceOverlay: force,
+        hiddenMask: hiddenMask(st.bars, st.concretes), selectedBars: st.selectedBars, forceOverlay: force, weightOf,
       });
       if (view) {
         timed(() => {
@@ -148,8 +152,8 @@ export default function BarField({ renderOverlayBar }) {
         clearTimeout(timers.idle);
         timers.idle = setTimeout(() => scheduleRebuild(0), IDLE_REBUILD_MS);
         clearTimeout(timers.quiet);
-        // Too many edited rows for overlay meshes: flush the delta chunk at once instead of waiting.
-        if (pending.size > SELECTION_OVERLAY_LIMIT) flushDelta();
+        // Too many (or too heavy) edited rows for overlay meshes: flush the delta chunk at once instead of waiting.
+        if (!fitsOverlay(pending, { weightOf: overlayWeight(cur) })) flushDelta();
         else timers.quiet = setTimeout(flushDelta, EDIT_QUIET_MS);
       }
     };
