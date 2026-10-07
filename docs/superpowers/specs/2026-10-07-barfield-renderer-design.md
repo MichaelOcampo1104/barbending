@@ -219,6 +219,12 @@ Lighting is simple (Lambert plus hemisphere, tuned to the scene's lights). This 
 bit flatter than today's metallic material; **selected and edited bars keep today's
 exact material** through the overlay. Section clipping uses three's clipping chunks.
 
+Both materials exist in a clipped and an unclipped variant (the same shader source with the
+clipping chunks stripped). While the section box is off its planes are a giant box and cut
+nothing, yet their six per-fragment tests cost 24% of the frame at 3M bars (measured: 14.3 ->
+17.7 fps idle), so `FieldView` draws with the unclipped variants then and `BarField` swaps to
+the clipped ones when a section is switched on (`FieldView.setClipping`).
+
 ### 6.3 LOD rule (`lod.js`)
 
 Recomputed at most every 100 ms or when the camera or quality changes.

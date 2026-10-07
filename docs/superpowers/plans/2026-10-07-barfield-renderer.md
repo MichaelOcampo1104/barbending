@@ -867,6 +867,7 @@ const detail = arg('detail', ''); // bar detail preference to run with (field re
 const enforce = process.argv.includes('--enforce');
 
 const R = { label, url, dpr, detail: detail || 'default' };
+const LOAD_EV_MS = 5 * 60 * 1000; // the BBS table can block the page for minutes at 75,000 rows
 const tBench = Date.now();
 // Progress goes to stderr so a stalled run is visible; the RESULT line on stdout is unchanged.
 const phase = (name) => console.error(`[bench +${((Date.now() - tBench) / 1000).toFixed(1)}s] ${name}`);
@@ -953,12 +954,12 @@ try {
     let quick = 0, last = null, loaded = false, tFree = null, readyAt = null;
     while (Date.now() - tStart < 10 * 60 * 1000 && !b.isCrashed()) {
       const p0 = Date.now();
-      try { last = await ev('window.__status()', 90000); } catch (e) { R.loadError = e.message; break; }
+      try { last = await ev('window.__status()', LOAD_EV_MS); } catch (e) { R.loadError = e.message; break; }
       const rt = Date.now() - p0;
       // First answer with the project's bars in the store: the BBS table's synchronous render (spec
       // section 2: not part of the viewport budget) has finished by then, so the page is free again.
       if (tFree === null && projectIn(last)) tFree = Date.now();
-      if (readyAt === null && await ev(fieldReadyExpr, 90000).catch(() => false)) readyAt = Date.now();
+      if (readyAt === null && await ev(fieldReadyExpr, LOAD_EV_MS).catch(() => false)) readyAt = Date.now();
       if (projectIn(last)) {
         quick = rt < 200 ? quick + 1 : 0;
         if (quick >= 3) { loaded = true; break; }
@@ -971,7 +972,7 @@ try {
     // The field is drawn a little after the page is responsive again (build + install): keep waiting.
     if (readyAt === null && await ev('!!window.__barfield').catch(() => false)) {
       for (let i = 0; i < 600 && readyAt === null; i++) {
-        if (await ev(fieldReadyExpr, 90000).catch(() => false)) readyAt = Date.now();
+        if (await ev(fieldReadyExpr, LOAD_EV_MS).catch(() => false)) readyAt = Date.now();
         else await sleep(100);
       }
     }
@@ -992,9 +993,18 @@ try {
   await sleep(2500);
   const prof = !!process.env.PROFILE;
   if (prof) { await send('Profiler.enable'); await send('Profiler.setSamplingInterval', { interval: 500 }); await send('Profiler.start'); }
+  // Median of three measurement windows: the frame rate wobbles by several fps from run to run on a shared
+  // machine (other apps use the GPU), and one bad window should not fail a budget the build normally meets.
+  const recWindow = async (ms) => { await ev('window.__startRec()'); await sleep(ms); return ev('window.__stopRec()'); };
+  const median3 = async (measure) => {
+    const runs = [];
+    for (let i = 0; i < 3; i++) runs.push(await measure());
+    const sorted = [...runs].sort((a, b) => a.fps - b.fps);
+    return { ...sorted[1], runs: runs.map((r) => r.fps) };
+  };
   phase('idle (whole model framed)');
-  await ev('window.__startRec()'); await sleep(prof ? 6000 : 3000); R.idle = await ev('window.__stopRec()');
-  phase(`idle ${R.idle.fps} fps`);
+  R.idle = prof ? await recWindow(6000) : await median3(() => recWindow(3000));
+  phase(`idle ${R.idle.fps} fps${R.idle.runs ? ` (windows ${R.idle.runs.join(' / ')})` : ''}`);
   if (prof) {
     const { profile } = await send('Profiler.stop', {}, 120000);
     const self = new Map();
@@ -1028,19 +1038,23 @@ try {
   const [cx, cy] = await ev('(() => { const r = document.querySelector("canvas").getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()');
   // Orbit: a real trusted middle-button drag in a circle.
   phase('orbit');
-  await ev('window.__startRec()');
-  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'middle', buttons: 4, clickCount: 1 });
-  const tO = Date.now();
-  let th = 0;
-  while (Date.now() - tO < 4000) {
-    th += 0.12;
-    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx + 140 * Math.cos(th), y: cy + 70 * Math.sin(th), button: 'middle', buttons: 4 });
-    await sleep(8);
-  }
-  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'middle', buttons: 0, clickCount: 1 });
-  R.orbit = await ev('window.__stopRec()');
-  phase(`orbit ${R.orbit.fps} fps`);
-  await sleep(600);
+  const orbitOnce = async () => {
+    await ev('window.__startRec()');
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'middle', buttons: 4, clickCount: 1 });
+    const tO = Date.now();
+    let th = 0;
+    while (Date.now() - tO < 4000) {
+      th += 0.12;
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx + 140 * Math.cos(th), y: cy + 70 * Math.sin(th), button: 'middle', buttons: 4 });
+      await sleep(8);
+    }
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'middle', buttons: 0, clickCount: 1 });
+    const rec = await ev('window.__stopRec()');
+    await sleep(600);
+    return rec;
+  };
+  R.orbit = await median3(orbitOnce);
+  phase(`orbit ${R.orbit.fps} fps (windows ${R.orbit.runs.join(' / ')})`);
   // Zoom: wheel in then out.
   phase('zoom');
   await ev('window.__startRec()');
@@ -1053,13 +1067,13 @@ try {
   phase('close-up');
   for (let i = 0; i < 60; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: -100 }); await sleep(30); }
   await sleep(1500);
-  await ev('window.__startRec()'); await sleep(3000); R.closeup = await ev('window.__stopRec()');
-  phase(`close-up ${R.closeup.fps} fps`);
+  R.closeup = await median3(() => recWindow(3000));
+  phase(`close-up ${R.closeup.fps} fps (windows ${R.closeup.runs.join(' / ')})`);
 
   // Interaction latencies (click -> two frames later).
   phase('latencies');
   R.latency = {};
-  const lat = async (key, expr) => { try { R.latency[key] = await ev(expr, 90000); } catch (e) { R.latency[key] = 'ERR ' + e.message.slice(0, 40); } };
+  const lat = async (key, expr) => { try { R.latency[key] = await ev(expr, LOAD_EV_MS); } catch (e) { R.latency[key] = 'ERR ' + e.message.slice(0, 40); } };
   await lat('selectRow_ms', 'window.__lat(() => { const tr = document.querySelectorAll("table tbody tr")[1]; if (tr) tr.click(); })');
   await lat('editDuplicate_ms', 'window.__lat(() => { const x = document.querySelector(\'button[title^="Copy"]\'); if (x) x.click(); })');
   await lat('undo_ms', 'window.__lat(() => { const x = document.querySelector(\'button[title^="Undo"]\'); if (x && !x.disabled) x.click(); })');
@@ -1094,11 +1108,15 @@ npm run build && npx vite preview --port 5188 --host 127.0.0.1 &
 # 2. generate projects (written to scripts/perf/out/, git-ignored)
 node scripts/perf/gen_project.mjs 250 40 p10k 7        # ~10k bars
 node scripts/perf/gen_project.mjs 25000 40 p1m 7       # ~1M bars  (expect 1002336)
-node scripts/perf/gen_project.mjs 75000 40 p3m 11      # ~3M bars  (expect 3002391)
+node scripts/perf/gen_project.mjs 7500 400 p3mfat 11  # ~3M bars in 7,500 rows (expect 3007138): the 3M benchmark
+node scripts/perf/gen_project.mjs 75000 40 p3m 11      # ~3M bars in 75,000 rows (expect 3002391): the page cannot open
+                                                       # it until the BBS table is windowed (it blocks for minutes)
 
 # 3. benchmark
 node scripts/perf/cdp_bench.mjs --url "http://127.0.0.1:5188/?renderer=field" \
   --project scripts/perf/out/p1m.json --label field-1m --expect 1002336 --budget p1m --enforce
+node scripts/perf/cdp_bench.mjs --url "http://127.0.0.1:5188/" \
+  --project scripts/perf/out/p3mfat.json --label field-3m --expect 3007138 --budget p3m --enforce
 ```
 
 `--enforce` checks `budgets.json` (reference machine: Intel UHD, 1600×900, DPR 1, no IFC).
@@ -1110,6 +1128,9 @@ table rendering every row (sub-project B). `viewportMs` is the time from the pag
 the bars are drawn (the budgeted number: the viewport only, as the spec defines it). `viewportWallMs` is
 import-to-drawn wall-clock with the table included; it is reported, not budgeted. Both need the field
 renderer (`?renderer=field`), which publishes `window.__barfield`.
+
+The idle, orbit and close-up numbers are the median of three measurement windows (the individual windows
+are listed in `runs`): on a machine shared with other GPU users one window can wobble by 5-10 fps.
 
 ## Scripts
 
@@ -1685,8 +1706,11 @@ Create `src/viewer/barfield/fieldShaders.js`:
 
 ```js
 // Line and tube materials for the bar field (spec 6.1, 6.2). Both are ShaderMaterials that read
-// per-row state / colour / radius from the row texture, and both use three's clipping chunks so
-// the shared section-box planes cut them exactly like every other material.
+// per-row state / colour / radius from the row texture, and both come in two variants: one that uses
+// three's clipping chunks so the shared section-box planes cut them exactly like every other material,
+// and one without. While the section box is off the planes are a giant box and cut nothing, yet their
+// six per-fragment tests cost about 20% of the frame at 3M bars (measured), so FieldView uses the
+// unclipped variants then and swaps to the clipped ones when a section is switched on.
 import * as THREE from 'three';
 import { ROW_TEX_WIDTH } from './rowState.js';
 
@@ -1782,6 +1806,9 @@ const TUBE_FS = `
   }
 `;
 
+// The same shader without the clipping chunks.
+const unclipped = (src) => src.replace(/^\s*#include <clipping_planes[a-z_]*>[ \t]*\n/gm, '');
+
 function baseUniforms(rowTex) {
   return {
     uRowTex: { value: rowTex },
@@ -1790,14 +1817,20 @@ function baseUniforms(rowTex) {
   };
 }
 
-export function createLineMaterial(rowTex, planes) {
+export function createLineMaterial(rowTex, planes, clipped = true) {
+  if (!clipped) {
+    return new THREE.ShaderMaterial({ uniforms: baseUniforms(rowTex), vertexShader: unclipped(LINE_VS), fragmentShader: unclipped(LINE_FS) });
+  }
   const m = new THREE.ShaderMaterial({ uniforms: baseUniforms(rowTex), vertexShader: LINE_VS, fragmentShader: LINE_FS, clipping: true });
   m.clippingPlanes = planes;
   return m;
 }
 
-export function createTubeMaterial(rowTex, planes) {
+export function createTubeMaterial(rowTex, planes, clipped = true) {
   const uniforms = { ...baseUniforms(rowTex), uLight: { value: new THREE.Vector3(LIGHT.ambient, LIGHT.hemi, LIGHT.key) } };
+  if (!clipped) {
+    return new THREE.ShaderMaterial({ uniforms, vertexShader: unclipped(TUBE_VS), fragmentShader: unclipped(TUBE_FS) });
+  }
   const m = new THREE.ShaderMaterial({ uniforms, vertexShader: TUBE_VS, fragmentShader: TUBE_FS, clipping: true });
   m.clippingPlanes = planes;
   return m;
@@ -1857,7 +1890,8 @@ Create `src/viewer/barfield/fieldObjects.js`:
 ```js
 // FieldView: the GPU side of one built field (spec 6): one LineSegments per chunk, lazily created
 // instanced tube meshes for chunks near the camera (most recently used 64 kept), the row-state
-// texture, and optional delta chunks for edited rows (spec 5.6). All objects are static.
+// texture, and optional delta chunks for edited rows (spec 5.6). All objects are static. Line and tube
+// materials exist clipped and unclipped; setClipping() swaps them when the section box is switched.
 import * as THREE from 'three';
 import { createRowTexelData, rowTexDims, writeRowAttributes } from './rowState.js';
 import { createLineMaterial, createTubeMaterial } from './fieldShaders.js';
@@ -1878,7 +1912,7 @@ function makeLines(data, chunk, material) {
 }
 
 export class FieldView {
-  constructor(data, { deltaCapacity = 0 } = {}) {
+  constructor(data, { deltaCapacity = 0, clipping = false } = {}) {
     this.data = data;
     this.rowCount = data.rowCount;
     this.texelCount = data.rowCount + deltaCapacity;
@@ -1897,13 +1931,28 @@ export class FieldView {
     this.texture.minFilter = THREE.NearestFilter;
     this.texture.magFilter = THREE.NearestFilter;
     this.texture.needsUpdate = true;
-    this.lineMaterial = createLineMaterial(this.texture, sectionPlanes);
-    this.tubeMaterial = createTubeMaterial(this.texture, sectionPlanes);
+    this.clipping = clipping;
+    this.lineMaterials = { on: createLineMaterial(this.texture, sectionPlanes, true), off: createLineMaterial(this.texture, sectionPlanes, false) };
+    this.tubeMaterials = { on: createTubeMaterial(this.texture, sectionPlanes, true), off: createTubeMaterial(this.texture, sectionPlanes, false) };
     this.items = [];
     this.deltaDatas = [];
     this.addChunks(data, false);
     this.staticCount = this.items.length;
     this.frame = 0;
+  }
+
+  get lineMaterial() { return this.lineMaterials[this.clipping ? 'on' : 'off']; }
+
+  get tubeMaterial() { return this.tubeMaterials[this.clipping ? 'on' : 'off']; }
+
+  // Swap between the clipped and unclipped programs when the section box is switched on or off.
+  setClipping(on) {
+    if (on === this.clipping) return;
+    this.clipping = on;
+    for (const it of this.items) {
+      it.lines.material = this.lineMaterial;
+      if (it.tubes) it.tubes.material = this.tubeMaterial;
+    }
   }
 
   // Colour slot + radius for a row id (used for delta rows; call touch() afterwards).
@@ -1991,8 +2040,8 @@ export class FieldView {
   dispose() {
     for (const it of this.items) this._disposeItem(it);
     this.items.length = 0;
-    this.lineMaterial.dispose();
-    this.tubeMaterial.dispose();
+    for (const m of Object.values(this.lineMaterials)) m.dispose();
+    for (const m of Object.values(this.tubeMaterials)) m.dispose();
     this.texture.dispose();
   }
 }
@@ -2412,6 +2461,19 @@ const PIXEL_STATS = `(() => {
   return { n, x0, y0, x1, y1, cx: n ? sx / n : 0, cy: n ? sy / n : 0, w: t.width, h: t.height };
 })()`;
 
+// Waits until the camera has not moved for 1.2 s (the fit / zoom animation has finished).
+async function settleCamera(b, maxMs = 25000) {
+  const t0 = Date.now();
+  let prev = null;
+  let since = Date.now();
+  while (Date.now() - t0 < maxMs) {
+    const p = await b.ev('window.__camera ? window.__camera.position.toArray().concat(window.__camera.quaternion.toArray()).join(",") : "no-camera"', 15000).catch(() => 'err');
+    if (p === 'no-camera') { await sleep(3000); return; }
+    if (p === prev) { if (Date.now() - since >= 1200) return; } else { prev = p; since = Date.now(); }
+    await sleep(250);
+  }
+}
+
 async function openProject(b, query, projectFile) {
   await b.send('Page.navigate', { url: `${base}/?${query}` });
   let ready = false;
@@ -2420,18 +2482,27 @@ async function openProject(b, query, projectFile) {
     try { ready = await b.ev('!!document.querySelector("canvas") && !!window.__status', 5000); } catch { /* retry */ }
   }
   if (!ready) throw new Error('app did not start: ' + query);
+  const bars0 = await b.ev('window.__status().bars');
   const root = await b.send('DOM.getDocument', { depth: 0 });
   const q = await b.send('DOM.querySelectorAll', { nodeId: root.root.nodeId, selector: 'input[type=file]' });
   await b.send('DOM.setFileInputFiles', { files: [projectFile], nodeId: q.nodeIds[0] });
+  // Wait until the page shows the project (the bar count in the status bar changes), with either
+  // renderer: a Fit click before that would frame the default scene instead.
+  for (let i = 0; i < 160; i++) {
+    const n = await b.ev('window.__status().bars', 15000).catch(() => bars0);
+    if (n !== bars0 && n > 0) break;
+    await sleep(250);
+  }
   if (query.includes('renderer=field')) {
     for (let i = 0; i < 200; i++) {
       await sleep(250);
       if (await b.ev('!!(window.__barfield && window.__barfield.ready)', 5000).catch(() => false)) break;
     }
   }
-  await sleep(1500);
+  await sleep(1000);
   await b.ev('(document.querySelector(\'button[title="Fit entire model in view"]\') || { click() {} }).click()');
-  await sleep(3000);
+  await sleep(500);
+  await settleCamera(b);
 }
 
 async function parity() {
@@ -3886,7 +3957,10 @@ export default function BarField({ renderOverlayBar }) {
         if (disposed || !data || mySeq !== seq) return;
         if (data.skippedRows) console.warn(`[barfield] skipped ${data.skippedRows} rows with invalid geometry`);
         timed(() => {
-          const next = new FieldView(data, { deltaCapacity: Math.ceil(data.rowCount * DELTA_FRACTION) + 64 });
+          const next = new FieldView(data, {
+            deltaCapacity: Math.ceil(data.rowCount * DELTA_FRACTION) + 64,
+            clipping: !!useStore.getState().section?.enabled,
+          });
           const old = viewRef.current;
           root.add(next.group);
           viewRef.current = next;
@@ -3925,6 +3999,9 @@ export default function BarField({ renderOverlayBar }) {
     const unsub = useStore.subscribe((state, prev) => {
       if (state.bars !== prev.bars) barsChanged(state.bars);
       else if (state.selectedBars !== prev.selectedBars || state.concretes !== prev.concretes) applyStates();
+      // Section box switched on / off: swap the clipped and the (faster) unclipped materials.
+      const clip = !!state.section?.enabled;
+      if (clip !== !!prev.section?.enabled && viewRef.current) viewRef.current.setClipping(clip);
     });
 
     // Let PickHandler / QueryHandler pick bars through the field (rays are in scene metres). Both
@@ -4165,6 +4242,145 @@ async function bulk() {
   }
 }
 
+// clip : switching the section box on and off at runtime swaps the field between its unclipped and clipped
+//        materials. On: the bars are cut to the box (the extent shrinks); off: the full picture is back, the
+//        same as before; on again: cut again. Drives the real store (toggleSection / thirdSection).
+async function clip() {
+  const projectFile = path.join(outDir, 'check_clip.json');
+  fs.writeFileSync(projectFile, JSON.stringify(makeCheckProject()));
+  const b = await launchBrowser({ instrument: INSTR });
+  try {
+    await openProject(b, 'renderer=field&autotest=clip', projectFile);
+    const width = (s) => s.x1 - s.x0;
+    const near = (a, c, tol = 14) => Math.abs(a.x0 - c.x0) <= tol && Math.abs(a.x1 - c.x1) <= tol && Math.abs(a.y0 - c.y0) <= tol && Math.abs(a.y1 - c.y1) <= tol;
+    const off0 = await b.ev(PIXEL_STATS);
+    await b.ev('(() => { const s = window.__store.getState(); if (!s.section) s.toggleSection(); s.thirdSection(); })()');
+    await sleep(2000);
+    const on1 = await b.ev(PIXEL_STATS);
+    await b.ev('window.__store.getState().toggleSection()');
+    await sleep(2000);
+    const off1 = await b.ev(PIXEL_STATS);
+    await b.ev('window.__store.getState().toggleSection()');
+    await sleep(2000);
+    const on2 = await b.ev(PIXEL_STATS);
+    console.log(`      clip: off ${width(off0)} px wide -> on ${width(on1)} -> off ${width(off1)} -> on ${width(on2)}`);
+    report(off0.n > 200, `clip: section off, the whole project is drawn (${off0.n} amber px)`);
+    report(width(on1) < 0.8 * width(off0), `clip: switching the section on cuts the bars (${width(off0)} -> ${width(on1)} px wide)`);
+    report(near(off0, off1), 'clip: switching the section off restores the full picture');
+    report(near(on1, on2), 'clip: switching the section on again cuts the bars again');
+    report(b.consoleErrors.length === 0, `clip: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+  } finally {
+    b.close();
+  }
+}
+
+// colors : the field draws each diameter in the same colour as the classic renderer (the palette lives twice:
+//          Scene.jsx DIA_COLORS and fieldShaders.js PALETTE_HEX). One bar per diameter, nothing selected;
+//          the most saturated pixel next to each bar must have the same hue in both renderers.
+async function colors() {
+  const dias = [10, 12, 16, 20, 25, 32, 40];
+  const bars = dias.map((dia, k) => ({
+    Rebar_tag: k + 1, Bar_mark: `D${dia}`, Rebar_Type: 'straight', Plane: 'XY', Dia: dia, 'Length of Bar': 3000,
+    Pos_x: 0, Pos_y: k * 600, Pos_z: 1000, Pos_Rotation: 0, qty: 1, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150,
+    Group: 'colors', bond_condition: 'poor', Visible: 1,
+  }));
+  const projectFile = path.join(outDir, 'check_colors.json');
+  fs.writeFileSync(projectFile, JSON.stringify({ v: 1, app: 'barbending', savedAt: Date.now(), bars, concretes: [], refLines: [], cover: 40, bond: 'poor', selectedBar: 0, selectedBars: [] }));
+  const b = await launchBrowser({ instrument: INSTR });
+  const hues = {};
+  try {
+    for (const mode of ['legacy', 'field']) {
+      await openProject(b, `renderer=${mode}&autotest=colors`, projectFile);
+      await b.ev('window.__store.getState().clearBarSelection()');
+      await sleep(1200);
+      // Midpoint of each bar on screen (scene metres: x 1.5, y 1.0, z = -(app y)), then the most saturated
+      // pixel in a 13 x 13 window around it, as a hue angle in degrees.
+      hues[mode] = await b.ev(`(() => {
+        const cam = window.__camera;
+        const canvas = document.querySelector('canvas');
+        const t = document.createElement('canvas'); t.width = canvas.width; t.height = canvas.height;
+        const x = t.getContext('2d', { willReadFrequently: true }); x.drawImage(canvas, 0, 0);
+        const out = [];
+        for (let k = 0; k < ${dias.length}; k++) {
+          const v = new cam.position.constructor(1.5, 1.0, -(k * 600) / 1000).project(cam);
+          const cx = Math.round((v.x * 0.5 + 0.5) * t.width), cy = Math.round((-v.y * 0.5 + 0.5) * t.height);
+          const d = x.getImageData(cx - 6, cy - 6, 13, 13).data;
+          let best = -1, hue = -1;
+          for (let i = 0; i < d.length; i += 4) {
+            const r = d[i], g = d[i + 1], bl = d[i + 2];
+            const mx = Math.max(r, g, bl), mn = Math.min(r, g, bl);
+            const sat = mx ? (mx - mn) / mx : 0;
+            const score = sat * mx;
+            if (score > best && sat > 0.4 && mx > 60) {
+              best = score;
+              let h;
+              if (mx === r) h = ((g - bl) / (mx - mn)) % 6; else if (mx === g) h = (bl - r) / (mx - mn) + 2; else h = (r - g) / (mx - mn) + 4;
+              hue = Math.round(((h * 60) + 360) % 360);
+            }
+          }
+          out.push(hue);
+        }
+        return out;
+      })()`);
+    }
+  } finally {
+    b.close();
+  }
+  const diff = (a, c) => { const d = Math.abs(a - c) % 360; return Math.min(d, 360 - d); };
+  console.log(`      hues (deg) by diameter ${dias.join('/')}:  legacy ${hues.legacy.join(' ')}  field ${hues.field.join(' ')}`);
+  dias.forEach((dia, k) => {
+    const L = hues.legacy[k], F = hues.field[k];
+    report(L >= 0 && F >= 0 && diff(L, F) <= 25, `colors: Ø${dia} has the same hue in both renderers (legacy ${L}, field ${F})`);
+  });
+  report(new Set(hues.field.map((h) => Math.round(h / 20))).size >= 6, 'colors: the field shows distinct colours for the diameters');
+}
+
+// host : hiding a concrete member hides the bars hosted on it (and bars lying inside it), and showing it brings
+//        them back. (The share of amber pixels left is only checked for the field: in the classic renderer the
+//        bars sit inside translucent concrete boxes, which tints them below the amber detector's threshold.)
+async function host() {
+  const member = (id, y) => ({ id, name: `Member ${id}`, lx: 3500, ly: 400, lz: 600, x: -500, y, z: 1200 });
+  const bar = (k, y, hostId) => ({
+    Rebar_tag: k + 1, Bar_mark: `H${k + 1}`, Rebar_Type: 'straight', Plane: 'XY', Dia: 16, 'Length of Bar': 3000, host: hostId,
+    Pos_x: 0, Pos_y: y, Pos_z: 1500, Pos_Rotation: 0, qty: 1, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150,
+    Group: 'host', bond_condition: 'poor', Visible: 1,
+  });
+  const bars = [bar(0, 50, 'c1'), bar(1, 150, 'c1'), bar(2, 250, 'c1'), bar(3, 3050, 'c2'), bar(4, 3150, 'c2'), bar(5, 3250, 'c2')];
+  const projectFile = path.join(outDir, 'check_host.json');
+  fs.writeFileSync(projectFile, JSON.stringify({ v: 1, app: 'barbending', savedAt: Date.now(), bars, concretes: [member('c1', 0), member('c2', 3000)], refLines: [], cover: 40, bond: 'poor', selectedBar: 0, selectedBars: [] }));
+  const b = await launchBrowser({ instrument: INSTR });
+  const left = {};
+  try {
+    for (const mode of ['legacy', 'field']) {
+      b.consoleErrors.length = 0;
+      await openProject(b, `renderer=${mode}&autotest=host`, projectFile);
+      await b.ev('window.__store.getState().clearBarSelection()');
+      await sleep(1000);
+      const shot = async (name) => {
+        const s = await b.send('Page.captureScreenshot', { format: 'png' });
+        fs.writeFileSync(path.join(outDir, `check-host-${mode}-${name}.png`), Buffer.from(s.data, 'base64'));
+      };
+      const before = await b.ev(PIXEL_STATS);
+      await shot('before');
+      await b.ev("window.__store.getState().updateConcrete('c2', { visible: false })");
+      await sleep(1500);
+      const hidden = await b.ev(PIXEL_STATS);
+      await shot('hidden');
+      await b.ev("window.__store.getState().updateConcrete('c2', { visible: true })");
+      await sleep(1500);
+      const shown = await b.ev(PIXEL_STATS);
+      left[mode] = { ratio: hidden.n / before.n, back: shown.n / before.n, errors: b.consoleErrors.length };
+      console.log(`      ${mode}: bars before n=${before.n}, c2 hidden n=${hidden.n} (${(100 * hidden.n / before.n).toFixed(0)}%), shown again n=${shown.n}`);
+    }
+  } finally {
+    b.close();
+  }
+  report(left.field.ratio < 0.75 && left.field.ratio > 0.25, `host: hiding member c2 hides about half of the bars (${(100 * left.field.ratio).toFixed(0)}% left)`);
+  report(left.legacy.ratio < 0.9, `host: the classic renderer also loses bars when the member is hidden (${(100 * left.legacy.ratio).toFixed(0)}% left)`);
+  report(left.field.back > 0.9 && left.field.back < 1.1, `host: showing the member again brings the bars back (${(100 * left.field.back).toFixed(0)}%)`);
+  report(left.field.errors === 0, 'host: no errors logged');
+}
+
 // fallback : ?fieldfail=1 makes the field build fail on purpose: the classic renderer must take over
 //            (same picture as the legacy renderer) and the badge must say so.
 async function fallback() {
@@ -4195,6 +4411,9 @@ try {
   if (!only || only === 'pick') await pick();
   if (!only || only === 'edit') await edit();
   if (!only || only === 'bulk') await bulk();
+  if (!only || only === 'clip') await clip();
+  if (!only || only === 'colors') await colors();
+  if (!only || only === 'host') await host();
   if (!only || only === 'fallback') await fallback();
 } catch (e) {
 ```
@@ -4204,6 +4423,9 @@ and add these two lines to the usage comment at the top of the file:
 ```js
 // edit   : edits and hiding go through the delta path and match the legacy renderer.
 // bulk   : importing thousands of rows / bulk-editing hundreds creates no overlay-mesh flood.
+// clip   : switching the section box on / off at runtime clips / unclips the field bars.
+// colors : each diameter has the same colour in the field as in the classic renderer.
+// host   : hiding / showing a concrete member hides / shows the bars hosted on it.
 // fallback: ?fieldfail=1 -> the classic renderer takes over with a badge.
 ```
 

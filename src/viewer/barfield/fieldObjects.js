@@ -1,6 +1,7 @@
 // FieldView: the GPU side of one built field (spec 6): one LineSegments per chunk, lazily created
 // instanced tube meshes for chunks near the camera (most recently used 64 kept), the row-state
-// texture, and optional delta chunks for edited rows (spec 5.6). All objects are static.
+// texture, and optional delta chunks for edited rows (spec 5.6). All objects are static. Line and tube
+// materials exist clipped and unclipped; setClipping() swaps them when the section box is switched.
 import * as THREE from 'three';
 import { createRowTexelData, rowTexDims, writeRowAttributes } from './rowState.js';
 import { createLineMaterial, createTubeMaterial } from './fieldShaders.js';
@@ -21,7 +22,7 @@ function makeLines(data, chunk, material) {
 }
 
 export class FieldView {
-  constructor(data, { deltaCapacity = 0 } = {}) {
+  constructor(data, { deltaCapacity = 0, clipping = false } = {}) {
     this.data = data;
     this.rowCount = data.rowCount;
     this.texelCount = data.rowCount + deltaCapacity;
@@ -40,13 +41,28 @@ export class FieldView {
     this.texture.minFilter = THREE.NearestFilter;
     this.texture.magFilter = THREE.NearestFilter;
     this.texture.needsUpdate = true;
-    this.lineMaterial = createLineMaterial(this.texture, sectionPlanes);
-    this.tubeMaterial = createTubeMaterial(this.texture, sectionPlanes);
+    this.clipping = clipping;
+    this.lineMaterials = { on: createLineMaterial(this.texture, sectionPlanes, true), off: createLineMaterial(this.texture, sectionPlanes, false) };
+    this.tubeMaterials = { on: createTubeMaterial(this.texture, sectionPlanes, true), off: createTubeMaterial(this.texture, sectionPlanes, false) };
     this.items = [];
     this.deltaDatas = [];
     this.addChunks(data, false);
     this.staticCount = this.items.length;
     this.frame = 0;
+  }
+
+  get lineMaterial() { return this.lineMaterials[this.clipping ? 'on' : 'off']; }
+
+  get tubeMaterial() { return this.tubeMaterials[this.clipping ? 'on' : 'off']; }
+
+  // Swap between the clipped and unclipped programs when the section box is switched on or off.
+  setClipping(on) {
+    if (on === this.clipping) return;
+    this.clipping = on;
+    for (const it of this.items) {
+      it.lines.material = this.lineMaterial;
+      if (it.tubes) it.tubes.material = this.tubeMaterial;
+    }
   }
 
   // Colour slot + radius for a row id (used for delta rows; call touch() afterwards).
@@ -134,8 +150,8 @@ export class FieldView {
   dispose() {
     for (const it of this.items) this._disposeItem(it);
     this.items.length = 0;
-    this.lineMaterial.dispose();
-    this.tubeMaterial.dispose();
+    for (const m of Object.values(this.lineMaterials)) m.dispose();
+    for (const m of Object.values(this.tubeMaterials)) m.dispose();
     this.texture.dispose();
   }
 }

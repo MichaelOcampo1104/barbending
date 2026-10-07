@@ -170,7 +170,10 @@ export default function BarField({ renderOverlayBar }) {
         if (disposed || !data || mySeq !== seq) return;
         if (data.skippedRows) console.warn(`[barfield] skipped ${data.skippedRows} rows with invalid geometry`);
         timed(() => {
-          const next = new FieldView(data, { deltaCapacity: Math.ceil(data.rowCount * DELTA_FRACTION) + 64 });
+          const next = new FieldView(data, {
+            deltaCapacity: Math.ceil(data.rowCount * DELTA_FRACTION) + 64,
+            clipping: !!useStore.getState().section?.enabled,
+          });
           const old = viewRef.current;
           root.add(next.group);
           viewRef.current = next;
@@ -209,6 +212,9 @@ export default function BarField({ renderOverlayBar }) {
     const unsub = useStore.subscribe((state, prev) => {
       if (state.bars !== prev.bars) barsChanged(state.bars);
       else if (state.selectedBars !== prev.selectedBars || state.concretes !== prev.concretes) applyStates();
+      // Section box switched on / off: swap the clipped and the (faster) unclipped materials.
+      const clip = !!state.section?.enabled;
+      if (clip !== !!prev.section?.enabled && viewRef.current) viewRef.current.setClipping(clip);
     });
 
     // Let PickHandler / QueryHandler pick bars through the field (rays are in scene metres). Both

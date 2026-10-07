@@ -31,6 +31,7 @@ const detail = arg('detail', ''); // bar detail preference to run with (field re
 const enforce = process.argv.includes('--enforce');
 
 const R = { label, url, dpr, detail: detail || 'default' };
+const LOAD_EV_MS = 5 * 60 * 1000; // the BBS table can block the page for minutes at 75,000 rows
 const tBench = Date.now();
 // Progress goes to stderr so a stalled run is visible; the RESULT line on stdout is unchanged.
 const phase = (name) => console.error(`[bench +${((Date.now() - tBench) / 1000).toFixed(1)}s] ${name}`);
@@ -117,12 +118,12 @@ try {
     let quick = 0, last = null, loaded = false, tFree = null, readyAt = null;
     while (Date.now() - tStart < 10 * 60 * 1000 && !b.isCrashed()) {
       const p0 = Date.now();
-      try { last = await ev('window.__status()', 90000); } catch (e) { R.loadError = e.message; break; }
+      try { last = await ev('window.__status()', LOAD_EV_MS); } catch (e) { R.loadError = e.message; break; }
       const rt = Date.now() - p0;
       // First answer with the project's bars in the store: the BBS table's synchronous render (spec
       // section 2: not part of the viewport budget) has finished by then, so the page is free again.
       if (tFree === null && projectIn(last)) tFree = Date.now();
-      if (readyAt === null && await ev(fieldReadyExpr, 90000).catch(() => false)) readyAt = Date.now();
+      if (readyAt === null && await ev(fieldReadyExpr, LOAD_EV_MS).catch(() => false)) readyAt = Date.now();
       if (projectIn(last)) {
         quick = rt < 200 ? quick + 1 : 0;
         if (quick >= 3) { loaded = true; break; }
@@ -135,7 +136,7 @@ try {
     // The field is drawn a little after the page is responsive again (build + install): keep waiting.
     if (readyAt === null && await ev('!!window.__barfield').catch(() => false)) {
       for (let i = 0; i < 600 && readyAt === null; i++) {
-        if (await ev(fieldReadyExpr, 90000).catch(() => false)) readyAt = Date.now();
+        if (await ev(fieldReadyExpr, LOAD_EV_MS).catch(() => false)) readyAt = Date.now();
         else await sleep(100);
       }
     }
@@ -156,9 +157,18 @@ try {
   await sleep(2500);
   const prof = !!process.env.PROFILE;
   if (prof) { await send('Profiler.enable'); await send('Profiler.setSamplingInterval', { interval: 500 }); await send('Profiler.start'); }
+  // Median of three measurement windows: the frame rate wobbles by several fps from run to run on a shared
+  // machine (other apps use the GPU), and one bad window should not fail a budget the build normally meets.
+  const recWindow = async (ms) => { await ev('window.__startRec()'); await sleep(ms); return ev('window.__stopRec()'); };
+  const median3 = async (measure) => {
+    const runs = [];
+    for (let i = 0; i < 3; i++) runs.push(await measure());
+    const sorted = [...runs].sort((a, b) => a.fps - b.fps);
+    return { ...sorted[1], runs: runs.map((r) => r.fps) };
+  };
   phase('idle (whole model framed)');
-  await ev('window.__startRec()'); await sleep(prof ? 6000 : 3000); R.idle = await ev('window.__stopRec()');
-  phase(`idle ${R.idle.fps} fps`);
+  R.idle = prof ? await recWindow(6000) : await median3(() => recWindow(3000));
+  phase(`idle ${R.idle.fps} fps${R.idle.runs ? ` (windows ${R.idle.runs.join(' / ')})` : ''}`);
   if (prof) {
     const { profile } = await send('Profiler.stop', {}, 120000);
     const self = new Map();
@@ -192,19 +202,23 @@ try {
   const [cx, cy] = await ev('(() => { const r = document.querySelector("canvas").getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()');
   // Orbit: a real trusted middle-button drag in a circle.
   phase('orbit');
-  await ev('window.__startRec()');
-  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'middle', buttons: 4, clickCount: 1 });
-  const tO = Date.now();
-  let th = 0;
-  while (Date.now() - tO < 4000) {
-    th += 0.12;
-    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx + 140 * Math.cos(th), y: cy + 70 * Math.sin(th), button: 'middle', buttons: 4 });
-    await sleep(8);
-  }
-  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'middle', buttons: 0, clickCount: 1 });
-  R.orbit = await ev('window.__stopRec()');
-  phase(`orbit ${R.orbit.fps} fps`);
-  await sleep(600);
+  const orbitOnce = async () => {
+    await ev('window.__startRec()');
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'middle', buttons: 4, clickCount: 1 });
+    const tO = Date.now();
+    let th = 0;
+    while (Date.now() - tO < 4000) {
+      th += 0.12;
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx + 140 * Math.cos(th), y: cy + 70 * Math.sin(th), button: 'middle', buttons: 4 });
+      await sleep(8);
+    }
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'middle', buttons: 0, clickCount: 1 });
+    const rec = await ev('window.__stopRec()');
+    await sleep(600);
+    return rec;
+  };
+  R.orbit = await median3(orbitOnce);
+  phase(`orbit ${R.orbit.fps} fps (windows ${R.orbit.runs.join(' / ')})`);
   // Zoom: wheel in then out.
   phase('zoom');
   await ev('window.__startRec()');
@@ -217,13 +231,13 @@ try {
   phase('close-up');
   for (let i = 0; i < 60; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: -100 }); await sleep(30); }
   await sleep(1500);
-  await ev('window.__startRec()'); await sleep(3000); R.closeup = await ev('window.__stopRec()');
-  phase(`close-up ${R.closeup.fps} fps`);
+  R.closeup = await median3(() => recWindow(3000));
+  phase(`close-up ${R.closeup.fps} fps (windows ${R.closeup.runs.join(' / ')})`);
 
   // Interaction latencies (click -> two frames later).
   phase('latencies');
   R.latency = {};
-  const lat = async (key, expr) => { try { R.latency[key] = await ev(expr, 90000); } catch (e) { R.latency[key] = 'ERR ' + e.message.slice(0, 40); } };
+  const lat = async (key, expr) => { try { R.latency[key] = await ev(expr, LOAD_EV_MS); } catch (e) { R.latency[key] = 'ERR ' + e.message.slice(0, 40); } };
   await lat('selectRow_ms', 'window.__lat(() => { const tr = document.querySelectorAll("table tbody tr")[1]; if (tr) tr.click(); })');
   await lat('editDuplicate_ms', 'window.__lat(() => { const x = document.querySelector(\'button[title^="Copy"]\'); if (x) x.click(); })');
   await lat('undo_ms', 'window.__lat(() => { const x = document.querySelector(\'button[title^="Undo"]\'); if (x && !x.disabled) x.click(); })');

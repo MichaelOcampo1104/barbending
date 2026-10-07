@@ -1,6 +1,9 @@
 // Line and tube materials for the bar field (spec 6.1, 6.2). Both are ShaderMaterials that read
-// per-row state / colour / radius from the row texture, and both use three's clipping chunks so
-// the shared section-box planes cut them exactly like every other material.
+// per-row state / colour / radius from the row texture, and both come in two variants: one that uses
+// three's clipping chunks so the shared section-box planes cut them exactly like every other material,
+// and one without. While the section box is off the planes are a giant box and cut nothing, yet their
+// six per-fragment tests cost about 20% of the frame at 3M bars (measured), so FieldView uses the
+// unclipped variants then and swaps to the clipped ones when a section is switched on.
 import * as THREE from 'three';
 import { ROW_TEX_WIDTH } from './rowState.js';
 
@@ -96,6 +99,9 @@ const TUBE_FS = `
   }
 `;
 
+// The same shader without the clipping chunks.
+const unclipped = (src) => src.replace(/^\s*#include <clipping_planes[a-z_]*>[ \t]*\n/gm, '');
+
 function baseUniforms(rowTex) {
   return {
     uRowTex: { value: rowTex },
@@ -104,14 +110,20 @@ function baseUniforms(rowTex) {
   };
 }
 
-export function createLineMaterial(rowTex, planes) {
+export function createLineMaterial(rowTex, planes, clipped = true) {
+  if (!clipped) {
+    return new THREE.ShaderMaterial({ uniforms: baseUniforms(rowTex), vertexShader: unclipped(LINE_VS), fragmentShader: unclipped(LINE_FS) });
+  }
   const m = new THREE.ShaderMaterial({ uniforms: baseUniforms(rowTex), vertexShader: LINE_VS, fragmentShader: LINE_FS, clipping: true });
   m.clippingPlanes = planes;
   return m;
 }
 
-export function createTubeMaterial(rowTex, planes) {
+export function createTubeMaterial(rowTex, planes, clipped = true) {
   const uniforms = { ...baseUniforms(rowTex), uLight: { value: new THREE.Vector3(LIGHT.ambient, LIGHT.hemi, LIGHT.key) } };
+  if (!clipped) {
+    return new THREE.ShaderMaterial({ uniforms, vertexShader: unclipped(TUBE_VS), fragmentShader: unclipped(TUBE_FS) });
+  }
   const m = new THREE.ShaderMaterial({ uniforms, vertexShader: TUBE_VS, fragmentShader: TUBE_FS, clipping: true });
   m.clippingPlanes = planes;
   return m;

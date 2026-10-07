@@ -12,11 +12,15 @@ npm run build && npx vite preview --port 5188 --host 127.0.0.1 &
 # 2. generate projects (written to scripts/perf/out/, git-ignored)
 node scripts/perf/gen_project.mjs 250 40 p10k 7        # ~10k bars
 node scripts/perf/gen_project.mjs 25000 40 p1m 7       # ~1M bars  (expect 1002336)
-node scripts/perf/gen_project.mjs 75000 40 p3m 11      # ~3M bars  (expect 3002391)
+node scripts/perf/gen_project.mjs 7500 400 p3mfat 11  # ~3M bars in 7,500 rows (expect 3007138): the 3M benchmark
+node scripts/perf/gen_project.mjs 75000 40 p3m 11      # ~3M bars in 75,000 rows (expect 3002391): the page cannot open
+                                                       # it until the BBS table is windowed (it blocks for minutes)
 
 # 3. benchmark
 node scripts/perf/cdp_bench.mjs --url "http://127.0.0.1:5188/?renderer=field" \
   --project scripts/perf/out/p1m.json --label field-1m --expect 1002336 --budget p1m --enforce
+node scripts/perf/cdp_bench.mjs --url "http://127.0.0.1:5188/" \
+  --project scripts/perf/out/p3mfat.json --label field-3m --expect 3007138 --budget p3m --enforce
 ```
 
 `--enforce` checks `budgets.json` (reference machine: Intel UHD, 1600×900, DPR 1, no IFC).
@@ -28,6 +32,9 @@ table rendering every row (sub-project B). `viewportMs` is the time from the pag
 the bars are drawn (the budgeted number: the viewport only, as the spec defines it). `viewportWallMs` is
 import-to-drawn wall-clock with the table included; it is reported, not budgeted. Both need the field
 renderer (`?renderer=field`), which publishes `window.__barfield`.
+
+The idle, orbit and close-up numbers are the median of three measurement windows (the individual windows
+are listed in `runs`): on a machine shared with other GPU users one window can wobble by 5-10 fps.
 
 ## Scripts
 
