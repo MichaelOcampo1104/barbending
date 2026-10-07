@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, Grid, AdaptiveDpr, Line, Html, GizmoHelper, GizmoViewport } from '@react-three/drei';
+import { OrbitControls, Grid, AdaptiveDpr, Line, Html, GizmoHelper } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store.js';
 import { genBarPoints, transformBarLocalPoint, distOffsets, distCount, barOverlapsBoxes, snapPrimitives, barBaseEnds, barSpliceEnds, MAX_RENDER_COPIES, barAppBox } from '../bbs/shapes.js';
@@ -16,6 +16,13 @@ import BarField from './barfield/BarField.jsx';
 import { isFieldRendererActive } from './barfield/rendererFlag.js';
 import { fieldRegistry } from './barfield/fieldRegistry.js';
 import QualityController from './barfield/QualityController.jsx';
+import CameraRig from './CameraRig.jsx';
+import AxisGizmo from './AxisGizmo.jsx';
+import { setOrthoZoom } from './cameraOps.js';
+import {
+  PERSP_FOV_DEG, PERSP_MIN_DISTANCE, PERSP_MAX_DISTANCE, ORTHO_DEPTH, VIEW_OFFSETS, slerpDirection, viewMetrics,
+  clampOrthoZoom, zoomFactorForStep, zoomAboutCursorShift, fitZoomForBox, boxHalfExtentsAlong,
+} from './cameraMath.js';
 
 const noopStencilRaycast = () => null;
 const SNAP_PX = 14; // screen-space aperture for the snap magnet
@@ -26,7 +33,8 @@ const SNAP_OPTS_FALLBACK = { end: true, mid: true, center: true, nearest: true, 
 // and the Perpendicular foot from refPt (measure's last point) onto an edge.
 // Every candidate is gated by the same SNAP_PX cursor aperture and the
 // closest one wins — returns { p: app-mm [x,y,z], kind } or null. Points
-// behind the camera are skipped (projection flips there).
+// behind a perspective camera are skipped (projection flips there); an
+// orthographic camera draws everything inside its depth range, so nothing is.
 // Exported for TraceTool so draw modes share the same snap options.
 export function snapMagnet(ev, camera, rect, prim, opts, refPt) {
   const o = opts || SNAP_OPTS_FALLBACK;
@@ -34,11 +42,11 @@ export function snapMagnet(ev, camera, rect, prim, opts, refPt) {
   const v = new THREE.Vector3();
   const cam = new THREE.Vector3();
   let best = null;
-  // Project an app-mm point to screen px, or null when behind the camera.
+  // Project an app-mm point to screen px, or null when behind a perspective camera.
   const toScreen = ([x, y, z]) => {
     v.set(x * S, z * S, -y * S);
     cam.copy(v).applyMatrix4(camera.matrixWorldInverse);
-    if (cam.z > -1e-6) return null;
+    if (!camera.isOrthographicCamera && cam.z > -1e-6) return null;
     v.project(camera);
     return [(v.x * 0.5 + 0.5) * rect.width, (-v.y * 0.5 + 0.5) * rect.height];
   };
@@ -138,8 +146,8 @@ export function collectPickTargets(scene) {
 // hundreds of metres out so the model vanished): momentum cap, hard
 // camera-pivot range, and a last-good restore if math ever goes non-finite.
 const VEL_MAX = 0.6;
-const CAM_MIN_R = 0.002;
-const CAM_MAX_R = 400;
+const CAM_MIN_R = PERSP_MIN_DISTANCE;
+const CAM_MAX_R = PERSP_MAX_DISTANCE;
 function DiveZoom() {
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
@@ -150,6 +158,8 @@ function DiveZoom() {
   const clampV = useRef(new THREE.Vector3());
   const lastPos = useRef(null);
   const lastTgt = useRef(null);
+  const tmpA = useRef(new THREE.Vector3());
+  const tmpB = useRef(new THREE.Vector3());
 
   useEffect(() => {
     const el = gl.domElement;
@@ -187,7 +197,7 @@ function DiveZoom() {
 
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [gl, controls]);
+  }, [gl, controls, camera]);
 
   // Shared dolly step (zoom-to-cursor or pivot dolly + guardrails). Fluid
   // mode feeds it decayed velocity every frame; CAD mode feeds one direct
@@ -195,6 +205,32 @@ function DiveZoom() {
   const applyStep = (step) => {
     const ctl = controls;
     if (!ctl) return;
+
+    if (camera.isOrthographicCamera) {
+      // Orthographic: the wheel scales the zoom (px per metre) about the cursor; the camera never dollies.
+      const H = camera.top - camera.bottom;
+      const prev = camera.zoom;
+      const newZoom = clampOrthoZoom(prev * zoomFactorForStep(step), H);
+      if (newZoom === prev) {
+        zoomVel.current = 0; // at a zoom limit: no momentum
+        return;
+      }
+      if ((useStore.getState().nav?.zoomToCursor ?? true) !== false) {
+        const shift = zoomAboutCursorShift({
+          ndc: [cursorNDC.current.x, cursorNDC.current.y],
+          halfWidthPx: (camera.right - camera.left) / 2, halfHeightPx: H / 2, zoom: prev, newZoom,
+        });
+        tmpA.current.setFromMatrixColumn(camera.matrixWorld, 0).multiplyScalar(shift.right);
+        tmpB.current.setFromMatrixColumn(camera.matrixWorld, 1).multiplyScalar(shift.up);
+        tmpA.current.add(tmpB.current);
+        camera.position.add(tmpA.current);
+        ctl.target.add(tmpA.current);
+      }
+      setOrthoZoom(camera, newZoom);
+      ctl.update();
+      return;
+    }
+
     const r = Math.max(camera.position.distanceTo(ctl.target), 0.005);
 
     // Zoom→cursor off: classic orbit dolly straight at the pivot (pivot stays).
@@ -323,7 +359,7 @@ function PickHandler() {
       // handlers a RebarMesh would. A field bar counts as the nearest hit when it is at least as
       // close as any mesh, so the empty-space and IFC branches below behave as they did before.
       const fh = fieldRegistry.current
-        ? fieldRegistry.current.pick(raycaster.current.ray, { fovRad: (camera.fov * Math.PI) / 180, viewportHeightPx: rect.height, ev })
+        ? fieldRegistry.current.pick(raycaster.current.ray, { ...viewMetrics(camera, rect.height), ev })
         : null;
       if (fh) fieldBarClick(fh.row, ev);
       const hits = fh && (!meshHits.length || fh.distance <= meshHits[0].distance)
@@ -666,7 +702,7 @@ function QueryHandler() {
       const targets = collectPickTargets(scene);
       const hits = raycaster.current.intersectObjects(targets, false);
       const fh = fieldRegistry.current
-        ? fieldRegistry.current.pick(raycaster.current.ray, { fovRad: (camera.fov * Math.PI) / 180, viewportHeightPx: rect.height, ev })
+        ? fieldRegistry.current.pick(raycaster.current.ray, { ...viewMetrics(camera, rect.height), ev })
         : null;
       console.info(`[query] targets=${targets.length} hits=${hits.length} field=${fh ? fh.row : '-'}`);
       if (fh && (!hits.length || fh.distance <= hits[0].distance)) {
@@ -942,11 +978,13 @@ function AutotestDump() {
   const gl = useThree((s) => s.gl);
   const scene = useThree((s) => s.scene);
   const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls);
   // Expose scene/camera + a manual pick probe for headless debugging.
   useLayoutEffect(() => {
     window.__scene = scene;
     window.__camera = camera;
     window.__store = useStore; // browser checks drive edits / hiding through the real store
+    window.__controls = controls; // the active orbit controls (its target is the view's pivot)
     window.__probePick = (nx, ny) => {
       try {
         const rc = new THREE.Raycaster();
@@ -966,7 +1004,7 @@ function AutotestDump() {
         }));
       } catch (e) { return 'ERR:' + e.message; }
     };
-  }, [scene, camera]);
+  }, [scene, camera, controls]);
   useLayoutEffect(() => {
     const st = useStore.getState();
     // Section-driving belongs to the section harness only — other ?autotest
@@ -1068,6 +1106,9 @@ function AutotestDump() {
         pick: useStore.getState().ifcPick,
         field: { lines: fieldLines, tubes: fieldTubes, visible: fieldVisible, rebarMeshes },
         selectedBars: useStore.getState().selectedBars,
+        projection: useStore.getState().projection,
+        viewName: useStore.getState().viewName,
+        cam: (() => { const c = window.__camera; return c ? { type: c.type, ortho: !!c.isOrthographicCamera, zoom: c.zoom } : null; })(),
         lastPick: useStore.getState().lastPick,
         barPos: (() => {
           const s = useStore.getState();
@@ -1077,7 +1118,7 @@ function AutotestDump() {
       });
     }, 1000);
     return () => { clearInterval(iv); el.remove(); };
-  }, [gl, scene]);
+  }, [gl, scene, camera]);
   return null;
 }
 
@@ -1453,9 +1494,12 @@ function RefLinesGroup() {
 // Preset views (Blender-style, app frame):
 // App X = Length (Red), App Y = Width/Depth (Green), App Z = Height/Vertical UP (Blue).
 // Scene coords: ThreeX = AppX, ThreeY = AppZ (UP), ThreeZ = -AppY (Depth).
+// The six axis views look exactly along the axis (no epsilon: OrbitControls handles the poles itself)
+// and are drawn orthographic: the store switches the projection and CameraRig swaps the camera. The
+// camera swings along the orbit sphere from wherever it is when the animation starts - after a
+// projection switch that is the new camera - so opposite views never pass through the target.
 function ViewPreset() {
   const viewReq = useStore((s) => s.viewReq);
-  const camera = useThree((s) => s.camera);
   const controls = useThree((s) => s.controls);
   const animRef = useRef(null);
   const lastN = useRef(0);
@@ -1463,33 +1507,27 @@ function ViewPreset() {
   useEffect(() => {
     if (!viewReq || !controls || viewReq.n === lastN.current) return;
     lastN.current = viewReq.n;
-    const t = controls.target;
-    const d = Math.max(camera.position.distanceTo(t), 1);
-    const e = Math.max(d * 0.002, 0.001); // epsilon avoids gimbal lock
-    const off = {
-      top: [0, d, e],
-      bottom: [0, -d, e],
-      front: [0, e, d],
-      back: [0, e, -d],
-      right: [d, e, 0],
-      left: [-d, e, 0],
-      iso: [d * 0.65, d * 0.55, d * 0.65],
-    }[viewReq.dir] || [d * 0.65, d * 0.55, d * 0.65];
+    animRef.current = { to: VIEW_OFFSETS[viewReq.dir] || VIEW_OFFSETS.iso, from: null, r0: 0, r1: 0, t: 0 };
+  }, [viewReq, controls]);
 
-    animRef.current = {
-      from: camera.position.clone(),
-      to: new THREE.Vector3(t.x + off[0], t.y + off[1], t.z + off[2]),
-      t: 0,
-    };
-  }, [viewReq, controls, camera]);
-
-  useFrame((_, deltaSec) => {
-    if (!animRef.current || !controls) return;
+  useFrame((state, deltaSec) => {
     const a = animRef.current;
+    const cam = state.camera;
+    const ctl = state.controls;
+    if (!a || !ctl) return;
+    if (!a.from) {
+      // First frame: start from the active camera (it may just have been switched).
+      const off = new THREE.Vector3().subVectors(cam.position, ctl.target);
+      a.r0 = off.length();
+      a.r1 = Math.max(a.r0, 1);
+      a.from = a.r0 > 1e-9 ? off.divideScalar(a.r0) : new THREE.Vector3(0, 0, 1);
+    }
     a.t = Math.min(1, a.t + deltaSec * 6.0); // smooth ~180ms ease
     const ease = 1 - Math.pow(1 - a.t, 3);
-    camera.position.lerpVectors(a.from, a.to, ease);
-    controls.update();
+    const dir = slerpDirection([a.from.x, a.from.y, a.from.z], a.to, ease);
+    const r = a.r0 + (a.r1 - a.r0) * ease;
+    cam.position.set(ctl.target.x + dir[0] * r, ctl.target.y + dir[1] * r, ctl.target.z + dir[2] * r);
+    ctl.update();
     if (a.t >= 1) animRef.current = null;
   });
 
@@ -1524,6 +1562,12 @@ function NavKeys() {
       if (isZoom) {
         const dirIn = k === '+' || k === '=';
         const f = Math.pow(dirIn ? 1 / 1.2 : 1.2, st.nav?.zoomSpeed ?? 1);
+        if (camera.isOrthographicCamera) {
+          // f < 1 means "closer" in perspective: in orthographic that is more pixels per metre.
+          setOrthoZoom(camera, clampOrthoZoom(camera.zoom / f, camera.top - camera.bottom));
+          ctl.update();
+          return;
+        }
         off.subVectors(camera.position, ctl.target).multiplyScalar(f);
         // Clamp mega-zoom-outs so one key repeat can't lose the model.
         if (off.length() > 500) off.setLength(500);
@@ -1553,7 +1597,10 @@ function NavKeys() {
         return;
       }
       // Pan target + camera together in the screen plane.
-      const step = Math.max(r * 0.12, 0.01) * panMul;
+      // 12% of the distance in perspective; the same share of the view height (0.83 x distance) in orthographic.
+      const step = (camera.isOrthographicCamera
+        ? Math.max(((camera.top - camera.bottom) / camera.zoom) * 0.145, 0.0005)
+        : Math.max(r * 0.12, 0.01)) * panMul;
       right.setFromMatrixColumn(camera.matrix, 0);
       up.setFromMatrixColumn(camera.matrix, 1);
       off.set(0, 0, 0);
@@ -1675,11 +1722,26 @@ function FitModelHandler() {
     const targetPos = new THREE.Vector3(cx, cy, cz);
     const cameraPos = new THREE.Vector3(cx + curDir.x * d, cy + curDir.y * d, cz + curDir.z * d);
 
+    // Orthographic: the distance does not frame anything, the zoom does. Fit the box's extent along the
+    // screen's right / up axes into the viewport.
+    let toZoom = null;
+    if (camera.isOrthographicCamera) {
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+      const upv = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+      const [hx, hy] = boxHalfExtentsAlong([dx / 2, dy / 2, dz / 2], right.toArray(), upv.toArray());
+      const H = camera.top - camera.bottom;
+      toZoom = clampOrthoZoom(fitZoomForBox({
+        halfExtentX: hx, halfExtentY: hy, viewportWidthPx: camera.right - camera.left, viewportHeightPx: H,
+      }), H);
+    }
+
     animRef.current = {
       fromTgt: controls.target.clone(),
       toTgt: targetPos,
       fromCam: camera.position.clone(),
       toCam: cameraPos,
+      fromZoom: camera.zoom,
+      toZoom,
       t: 0,
     };
   }, [fitReq, concretes, bars, selectedBar, controls, camera]);
@@ -1691,6 +1753,9 @@ function FitModelHandler() {
     const ease = 1 - Math.pow(1 - a.t, 3);
     controls.target.lerpVectors(a.fromTgt, a.toTgt, ease);
     camera.position.lerpVectors(a.fromCam, a.toCam, ease);
+    if (a.toZoom != null && camera.isOrthographicCamera) {
+      setOrthoZoom(camera, a.fromZoom * Math.pow(a.toZoom / a.fromZoom, ease)); // zoom in log space: even steps
+    }
     controls.update();
     if (a.t >= 1) animRef.current = null;
   });
@@ -1721,6 +1786,27 @@ export default function Scene() {
     : null;
 
   const useField = useMemo(() => isFieldRendererActive(), []);
+  // Two real cameras (perspective + orthographic), each with its own OrbitControls; CameraRig keeps
+  // state.camera / state.controls on the active pair.
+  const cameras = useMemo(() => {
+    const persp = new THREE.PerspectiveCamera(PERSP_FOV_DEG, 1, 0.1, 1000);
+    persp.position.set(6, 4, -6);
+    const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, -ORTHO_DEPTH, ORTHO_DEPTH);
+    return { persp, ortho };
+  }, []);
+  const perspControls = useRef(null);
+  const orthoControls = useRef(null);
+  const orbitProps = {
+    enableDamping: nav.style !== 'cad' && nav.damping !== false,
+    dampingFactor: 0.08,
+    rotateSpeed: nav.rotateSpeed ?? 1,
+    panSpeed: 1.8 * (nav.panSpeed ?? 1),
+    screenSpacePanning: true,
+    enableZoom: false,
+    minDistance: 0,
+    maxDistance: Infinity,
+    mouseButtons: { LEFT: navOrbit ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN },
+  };
   const renderBar = (b, i) => (
     <RebarMesh
       key={i}
@@ -1733,7 +1819,7 @@ export default function Scene() {
   );
 
   return (
-    <Canvas camera={{ position: [6, 4, -6], fov: 45 }} style={{ background: '#0f172a' }}
+    <Canvas camera={cameras.persp} style={{ background: '#0f172a' }}
       dpr={[1, 1.75]}
       gl={{ preserveDrawingBuffer: AUTOTEST, powerPreference: 'high-performance', stencil: true }}
       onCreated={({ gl }) => {
@@ -1769,9 +1855,9 @@ export default function Scene() {
         if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return null;
         return renderBar(b, i);
       })}
-      <OrbitControls makeDefault enableDamping={nav.style !== 'cad' && nav.damping !== false} dampingFactor={0.08}
-        rotateSpeed={nav.rotateSpeed ?? 1} panSpeed={1.8 * (nav.panSpeed ?? 1)} screenSpacePanning enableZoom={false} minDistance={0} maxDistance={Infinity}
-        mouseButtons={{ LEFT: navOrbit ? THREE.MOUSE.ROTATE : -1, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN }} />
+      <OrbitControls ref={perspControls} camera={cameras.persp} {...orbitProps} />
+      <OrbitControls ref={orthoControls} camera={cameras.ortho} {...orbitProps} />
+      <CameraRig cameras={cameras} perspControls={perspControls} orthoControls={orthoControls} />
       <FitIfc />
       <FitModelHandler />
       <NavKeys />
@@ -1780,9 +1866,9 @@ export default function Scene() {
       <ViewPreset />
       {/* Engineering/BIM orientation gizmo:
           X = Length (Red), Z = Vertical UP (Blue), Y = Depth (Green).
-          Click an axis tip for Top/Bottom/Left/Right/Front/Back, drag to orbit. */}
+          Click an axis tip for the exact orthographic Top/Bottom/Left/Right/Front/Back view. */}
       <GizmoHelper alignment="top-right" margin={[70, 70]}>
-        <GizmoViewport
+        <AxisGizmo
           labels={['X', 'Z', 'Y']}
           axisColors={['#ef4444', '#3b82f6', '#22c55e']}
           labelColor="white"

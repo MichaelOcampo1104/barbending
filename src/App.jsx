@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useMemo, Fragment } from 'react';
 import Scene from './viewer/Scene.jsx';
 import FieldBadge from './viewer/barfield/FieldBadge.jsx';
+import ViewBadge from './viewer/ViewBadge.jsx';
+import { VIEW_LABELS } from './viewer/cameraMath.js';
 import { isFieldRendererActive } from './viewer/barfield/rendererFlag.js';
 import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
@@ -1235,6 +1237,9 @@ function ViewportBar() {
   const resetNav = useStore((s) => s.resetNav);
   const [navMenu, setNavMenu] = useState(false);
   const requestView = useStore((s) => s.requestView);
+  const viewName = useStore((s) => s.viewName);
+  const projection = useStore((s) => s.projection);
+  const setProjection = useStore((s) => s.setProjection);
   const requestFit = useStore((s) => s.requestFit);
   const duplicateBar = useStore((s) => s.duplicateBar);
   const section = useStore((s) => s.section);
@@ -1303,17 +1308,26 @@ function ViewportBar() {
             </div>
           )}
         </span>
-        <label className="cover" title="Blender-style preset view — jumps the camera, keeps the orbit focus. The axis gizmo top-right does the same on click.">
+        <label className="cover" title="Preset views, keeping the orbit focus. Top, Bottom, Front, Back, Left and Right are true orthographic views looking exactly along the axis (the axis gizmo top-right does the same on click); Iso is a perspective 3D view. The closed box shows the current view; the pill under the axis gizmo also switches Perspective / Orthographic.">
           view
-          <select defaultValue="" onChange={(e) => { if (e.target.value) requestView(e.target.value); e.target.value = ''; }}>
-            <option value="" disabled>Iso ▾</option>
-            <option value="top">Top (Z↓)</option>
-            <option value="bottom">Bottom (Z↑)</option>
-            <option value="front">Front (Y→)</option>
-            <option value="back">Back (Y←)</option>
-            <option value="left">Left (X→)</option>
-            <option value="right">Right (X←)</option>
-            <option value="iso">Iso</option>
+          <select
+            value="current"
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'ortho' || v === 'persp') setProjection(v);
+              else if (v !== 'current') requestView(v);
+            }}
+          >
+            <option value="current" hidden>{VIEW_LABELS[viewName] || 'Free'}</option>
+            <option value="top">Top (looking down)</option>
+            <option value="bottom">Bottom (looking up)</option>
+            <option value="front">Front (looking along Y)</option>
+            <option value="back">Back (looking along -Y)</option>
+            <option value="left">Left (looking along X)</option>
+            <option value="right">Right (looking along -X)</option>
+            <option value="iso">Iso (perspective 3D)</option>
+            <option value="persp">{projection === 'persp' ? '✓ ' : ''}Perspective</option>
+            <option value="ortho">{projection === 'ortho' ? '✓ ' : ''}Orthographic</option>
           </select>
         </label>
         <button onClick={() => requestFit('auto')} title="Zoom camera to selected rebar or beam (Hotkey: F)">🎯 Zoom Sel [F]</button>
@@ -2263,7 +2277,7 @@ export default function App() {
         ) : (
           <div className="rail"><button onClick={() => setLeftOpen(true)} title="Expand panel">»</button></div>
         )}
-        <section className="view"><Scene /><ViewportBar /><MeasureHud /><QueryHud /><FaceSketchHud /><FieldBadge /></section>
+        <section className="view"><Scene /><ViewportBar /><MeasureHud /><QueryHud /><FaceSketchHud /><FieldBadge /><ViewBadge /></section>
         {ifcActive && (
           <aside className="rside">
             <div className="rsidehead">IFC control</div>

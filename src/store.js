@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { defaultBar, defaultBarForHost, resolveBarHost, genBarPoints, barMainLength, barSpliceEnds, distToBar, barOverlapsBoxes, buildFaceBar, buildSlopedFaceRows, applyTypeDefaults } from './bbs/shapes.js';
 import { lapLengthMm, lapBondFor } from './bbs/calc.js';
 import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
+import { isAxisView } from './viewer/cameraMath.js';
 
 let tagSeq = 1;
 
@@ -816,9 +817,17 @@ export const useStore = create((set, get) => ({
   setNav: (patch) => set((s) => ({ nav: { ...s.nav, ...patch } })),
   resetNav: () => set({ nav: { style: 'fluid', rotateSpeed: 1, panSpeed: 1, zoomSpeed: 1, damping: true, zoomToCursor: true } }),
   // Preset view request (Blender-style Top/Bottom/Left/Right/Front/Back/Iso).
-  // Scene consumes {dir, n} and keeps the current orbit target (focus stays).
+  // Scene consumes {dir, n} and keeps the current orbit target (focus stays). The six true views are
+  // drawn in orthographic projection, Iso in perspective; the projection can be toggled on its own.
   viewReq: null,
-  requestView: (dir) => set({ viewReq: { dir, n: Date.now() } }),
+  requestView: (dir) => set({ viewReq: { dir, n: Date.now() }, projection: isAxisView(dir) ? 'ortho' : 'persp' }),
+  projection: 'persp', // 'persp' | 'ortho': which camera the viewport uses
+  setProjection: (p) => set({ projection: p === 'ortho' ? 'ortho' : 'persp' }),
+  toggleProjection: () => set((s) => ({ projection: s.projection === 'ortho' ? 'persp' : 'ortho' })),
+  // Which preset the camera is looking along ('top' ... 'iso', or 'free'); kept up to date by CameraRig.
+  viewName: 'iso',
+  // Returning the same state object is a true no-op (an empty patch would still notify every subscriber).
+  setViewName: (name) => set((s) => (s.viewName === name ? s : { viewName: name })),
   // Fit / Zoom to Selected (bar / concrete / all) view request
   fitReq: null,
   requestFit: (target = 'auto', idOrIdx = null) => set({ fitReq: { target, idOrIdx, n: Date.now() } }),

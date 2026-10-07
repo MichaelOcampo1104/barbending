@@ -14,8 +14,11 @@ export function apparentPx(maxRadiusM, distance, fovRad, viewportHeightPx) {
 //  - 'auto': a chunk is a candidate at >= onPx, or stays one while >= offPx (hysteresis, via prevTubes);
 //    candidates are promoted closest-first until the triangle budget is spent. The closest chunk is
 //    always promoted so zooming in always shows tubes. isVisible(i) skips chunks outside the view.
+//  - pxPerMeter (orthographic cameras): apparent width no longer depends on distance, so it is
+//    2 * radius * pxPerMeter for every chunk; pass the view centre as cameraPos so "closest" means
+//    "nearest what you are looking at".
 export function chooseTubeChunks({
-  chunks, cameraPos, fovRad, viewportHeightPx, budgetTris,
+  chunks, cameraPos, fovRad, viewportHeightPx, budgetTris, pxPerMeter = null,
   prevTubes = new Set(), detail = 'auto', isVisible = null, onPx = ON_PX, offPx = OFF_PX,
 }) {
   const out = new Set();
@@ -29,7 +32,7 @@ export function chooseTubeChunks({
     if (isVisible && !isVisible(i)) continue;
     const ch = chunks[i];
     const dist = Math.hypot(cameraPos[0] - ch.center[0], cameraPos[1] - ch.center[1], cameraPos[2] - ch.center[2]);
-    const px = apparentPx(ch.maxRadiusM, dist, fovRad, viewportHeightPx);
+    const px = pxPerMeter ? 2 * ch.maxRadiusM * pxPerMeter : apparentPx(ch.maxRadiusM, dist, fovRad, viewportHeightPx);
     if (px >= (prevTubes.has(i) ? offPx : onPx)) candidates.push({ i, dist, cost: TRIS_PER_SEGMENT * ch.count });
   }
   candidates.sort((a, b) => a.dist - b.dist);

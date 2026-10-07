@@ -770,7 +770,7 @@ export default function TraceTool() {
       el.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointerup', onUp);
     };
-  }, [gl, scene, drawMode, drawStart, concretes, selectedConcrete, addConcrete, addRefLine, setDrawStart]);
+  }, [gl, camera, scene, drawMode, drawStart, concretes, selectedConcrete, addConcrete, addRefLine, setDrawStart]);
 
   // Compute live bounding preview geometry for 2-point drawing
   const previewBox = useMemo(() => {

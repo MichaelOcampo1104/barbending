@@ -57,3 +57,27 @@ test('isVisible filters chunks outside the view before the budget is spent', () 
 test('an empty chunk list gives an empty set', () => {
   assert.equal(chooseTubeChunks({ ...base, chunks: [] }).size, 0);
 });
+
+// ---- orthographic cameras: apparent width depends on the zoom (px per metre), not on distance ----
+
+test('orthographic: tubes are chosen by px-per-metre alone, wherever the chunk is', () => {
+  // 8 mm bar radius: 2 * 0.008 * 1000 px/m = 16 px wide -> tubes even for a chunk far from the camera
+  const near1000 = chooseTubeChunks({ ...base, pxPerMeter: 1000, chunks: [chunk(1), chunk(500)] });
+  assert.deepEqual([...near1000].sort(), [0, 1]);
+  // 2 * 0.008 * 100 = 1.6 px -> lines, however close the chunk is
+  assert.equal(chooseTubeChunks({ ...base, pxPerMeter: 100, chunks: [chunk(0.5), chunk(1)] }).size, 0);
+});
+
+test('orthographic: hysteresis still applies between 2 and 3 px', () => {
+  // 2 * 0.008 * 160 = 2.56 px: not promoted from lines, but kept once it is a tube
+  const chunks = [chunk(1)];
+  assert.equal(chooseTubeChunks({ ...base, pxPerMeter: 160, chunks }).size, 0);
+  assert.equal(chooseTubeChunks({ ...base, pxPerMeter: 160, chunks, prevTubes: new Set([0]) }).size, 1);
+  assert.equal(chooseTubeChunks({ ...base, pxPerMeter: 100, chunks, prevTubes: new Set([0]) }).size, 0, '1.6 px drops back');
+});
+
+test('orthographic: the triangle budget still goes to the chunks closest to cameraPos (the view centre)', () => {
+  const chunks = [chunk(3), chunk(1), chunk(2)];
+  const set = chooseTubeChunks({ ...base, pxPerMeter: 1000, chunks, budgetTris: 25000 });
+  assert.deepEqual([...set].sort(), [1, 2]);
+});

@@ -11,6 +11,7 @@ import { diffRows } from './diffRows.js';
 import { forcedOverlayRows, fitsOverlay } from './overlayRows.js';
 import { chooseTubeChunks } from './lod.js';
 import { qualityState } from './qualityState.js';
+import { viewMetrics } from '../cameraMath.js';
 import { pickField } from './fieldPick.js';
 import { fieldRegistry } from './fieldRegistry.js';
 import { isWorldPointInSectionBox } from '../sectionPlanes.js';
@@ -50,7 +51,7 @@ export default function BarField({ renderOverlayBar }) {
   const root = useMemo(() => new THREE.Group(), []);
   const viewRef = useRef(null);
   const deltaRowsRef = useRef([]); // virtual id k (view.rowCount + k) -> bar index
-  const lod = useRef({ last: 0, prev: new Set(), cam: new THREE.Matrix4(), detail: '', budget: 0, view: null });
+  const lod = useRef({ last: 0, prev: new Set(), cam: new THREE.Matrix4(), zoom: 0, ortho: false, detail: '', budget: 0, view: null });
   const overlayStore = useMemo(() => createListStore(), []);
   const overlay = useSyncExternalStore(overlayStore.subscribe, overlayStore.get);
   const [failed, setFailed] = useState(false);
@@ -220,7 +221,7 @@ export default function BarField({ renderOverlayBar }) {
     // Let PickHandler / QueryHandler pick bars through the field (rays are in scene metres). Both
     // handlers listen to the same pointer-up, and the first one to run may select the bar, which turns
     // its row into an overlay row the picker skips: so the result is computed once per event object.
-    const pickRow = (ray, fovRad, viewportHeightPx) => {
+    const pickRow = (ray, fovRad, viewportHeightPx, pxPerMeter) => {
       const view = viewRef.current;
       if (!view) return null;
       const section = useStore.getState().section;
@@ -229,6 +230,7 @@ export default function BarField({ renderOverlayBar }) {
       for (const data of view.dataSets()) {
         const hit = pickField(data, r, {
           fovRad, viewportHeightPx, tolPx: 6, rowStates: view.states, rowRadiusM: view.radiusM,
+          worldPerPixel: pxPerMeter ? 1 / pxPerMeter : null,
           accept: (p) => isWorldPointInSectionBox({ x: p[0], y: p[1], z: p[2] }, section),
         });
         if (hit && (!best || hit.distance < best.distance)) best = hit;
@@ -240,9 +242,9 @@ export default function BarField({ renderOverlayBar }) {
     };
     let lastPick = { ev: null, res: null };
     fieldRegistry.current = {
-      pick(ray, { fovRad, viewportHeightPx, ev = null }) {
+      pick(ray, { fovRad, viewportHeightPx, pxPerMeter = null, ev = null }) {
         if (ev && lastPick.ev === ev) return lastPick.res;
-        const res = pickRow(ray, fovRad, viewportHeightPx);
+        const res = pickRow(ray, fovRad, viewportHeightPx, pxPerMeter);
         if (ev) lastPick = { ev, res };
         return res;
       },
@@ -265,6 +267,7 @@ export default function BarField({ renderOverlayBar }) {
   // Level of detail: at most every 100 ms (and only when something changed) decide which chunks
   // draw as tubes; the rest stay lines. Chunks outside the frustum never spend triangle budget.
   const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls);
   const gl = useThree((s) => s.gl);
   const frustum = useMemo(() => new THREE.Frustum(), []);
   const projView = useMemo(() => new THREE.Matrix4(), []);
@@ -274,7 +277,10 @@ export default function BarField({ renderOverlayBar }) {
     const st = lod.current;
     const detail = useStore.getState().barDetail || 'auto';
     camera.updateMatrixWorld();
-    const unchanged = st.view === view && detail === st.detail && qualityState.budgetTris === st.budget && st.cam.equals(camera.matrixWorld);
+    const ortho = !!camera.isOrthographicCamera;
+    // An orthographic zoom changes the picture without moving the camera, so it counts as a change too.
+    const unchanged = st.view === view && detail === st.detail && qualityState.budgetTris === st.budget
+      && st.cam.equals(camera.matrixWorld) && st.zoom === camera.zoom && st.ortho === ortho;
     const now = performance.now();
     if (unchanged || now - st.last < 100) return;
     if (st.view !== view) st.prev = new Set();
@@ -283,14 +289,18 @@ export default function BarField({ renderOverlayBar }) {
     st.detail = detail;
     st.budget = qualityState.budgetTris;
     st.cam.copy(camera.matrixWorld);
+    st.zoom = camera.zoom;
+    st.ortho = ortho;
     timed(() => {
       projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       frustum.setFromProjectionMatrix(projView);
       const tubes = chooseTubeChunks({
         chunks: view.items.map((it) => it.chunk),
-        cameraPos: [camera.position.x, camera.position.y, camera.position.z],
-        fovRad: (camera.fov * Math.PI) / 180,
-        viewportHeightPx: gl.domElement.clientHeight || 800,
+        // Orthographic: distance means nothing, so "closest" is nearest the view centre (the orbit target).
+        cameraPos: ortho && controls
+          ? [controls.target.x, controls.target.y, controls.target.z]
+          : [camera.position.x, camera.position.y, camera.position.z],
+        ...viewMetrics(camera, gl.domElement.clientHeight || 800),
         budgetTris: qualityState.budgetTris,
         prevTubes: st.prev,
         detail,

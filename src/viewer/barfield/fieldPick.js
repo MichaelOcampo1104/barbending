@@ -37,16 +37,19 @@ function rayBox(ox, oy, oz, dx, dy, dz, x0, y0, z0, x1, y1, z1) {
 
 // ray = { origin: [x,y,z], dir: [x,y,z] } (unit direction).
 // opts = { fovRad, viewportHeightPx, tolPx = 6, rowStates?: Uint8Array (1 hidden, 2 overlay: skipped),
-//          rowRadiusM?: Float32Array, accept?: (point) => boolean }
+//          rowRadiusM?: Float32Array, accept?: (point) => boolean,
+//          worldPerPixel?: number (orthographic cameras: a constant world size per pixel, replaces fov) }
 // Returns { row, distance (along the ray), point (closest point on the bar axis), seg } or null.
 export function pickField(data, ray, opts = {}) {
   const {
     fovRad = Math.PI / 4, viewportHeightPx = 800, tolPx = 6, rowStates = null, rowRadiusM = null, accept = null,
+    worldPerPixel = null,
   } = opts;
   const [ox, oy, oz] = ray.origin;
   const [dx, dy, dz] = ray.dir;
   const tanHalf = Math.tan(fovRad / 2);
-  const wpp = (t) => (2 * Math.max(t, 0) * tanHalf) / viewportHeightPx; // world units per pixel at distance t
+  // world units per pixel at distance t (constant for an orthographic camera)
+  const wpp = worldPerPixel ? () => worldPerPixel : (t) => (2 * Math.max(t, 0) * tanHalf) / viewportHeightPx;
   const { seg, rowOfVtx, blocks, chunks } = data;
 
   const cand = [];

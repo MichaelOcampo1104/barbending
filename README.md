@@ -42,6 +42,14 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
 - **Blender-style viewport** — unlimited zoom (dynamic clip planes +
   zoom-to-cursor), Solid / X-ray shading, FPS + camera readout in the status
   bar, collapsible panels.
+- **True views (orthographic)** — Top, Bottom, Front, Back, Left and Right
+  (toolbar `view ▾`, or a click on the axis gizmo) look exactly along the axis
+  through a parallel camera, like the plan / elevation views of AutoCAD or
+  Revit: no perspective, the same scale at every depth. Iso stays a perspective
+  3D view. The pill under the gizmo ("Front · Orthographic") names the view and
+  flips Perspective / Orthographic at any time (what you look at stays put).
+  Orbiting keeps the current projection (the view reads "Free"); zoom-to-cursor,
+  pan, Fit All, picking and the section box work in both.
 - **Snap-to-cover** — global cover (mm); 🎯 pick on a concrete/IFC face places
   the bar centreline cover + Ø/2 inside; stirrups fit to their host with one click.
 - **Hide members & bars** — 👁 per concrete (hosted bars follow) and per bar;
@@ -244,7 +252,8 @@ src/
   App.jsx            layout + panels + toolbar + BBS strip
   store.js           zustand state (bars, concrete, IFC meta, section)
   bbs/               shapes, BBS math, FreeCAD-compatible CSV
-  viewer/            Scene, IFC model, FitIfc, SectionBox, planes, stencil mats
+  viewer/            Scene, IFC model, FitIfc, SectionBox, planes, stencil mats,
+                     CameraRig + cameraMath/cameraOps (perspective / orthographic views)
   ifc/               WASM loader session, control panel, units
 public/web-ifc.wasm  IFC parser (must match bundled web-ifc version)
 agent.md             contributor/agent conventions · overview.md  architecture

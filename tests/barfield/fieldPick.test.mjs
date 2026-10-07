@@ -81,3 +81,22 @@ test('picking is fast on a large field (150,000 segments)', () => {
   assert.ok(total / N < 8, `average ${(total / N).toFixed(2)} ms per pick is too slow`);
   assert.ok(worst < 40, `worst ${worst.toFixed(1)} ms per pick is too slow`);
 });
+
+// ---- orthographic cameras: a constant world size per pixel instead of one that grows with distance ----
+
+test('orthographic: the pixel tolerance is a constant world size, so far and near bars pick alike', () => {
+  const f = buildField(threeBars());
+  // 250 px per metre -> 4 mm per pixel -> 6 px = 24 mm
+  const ortho = { ...opts, worldPerPixel: 0.004 };
+  assert.equal(pickField(f, down(1, 0.02), ortho).row, 0, '20 mm off is inside 24 mm');
+  assert.equal(pickField(f, down(1, 0.03), ortho), null, '30 mm off is outside');
+  // the same click from a much higher start point behaves identically (no distance growth)
+  assert.equal(pickField(f, down(1, 0.02, 500), ortho).row, 0);
+  assert.equal(pickField(f, down(1, 0.03, 500), ortho), null);
+});
+
+test('orthographic: zooming in tightens the tolerance, zooming out loosens it', () => {
+  const f = buildField(threeBars());
+  assert.equal(pickField(f, down(1, 0.012), { ...opts, worldPerPixel: 0.001 }), null, '6 px = 6 mm: 12 mm is a miss');
+  assert.equal(pickField(f, down(1, 0.012), { ...opts, worldPerPixel: 0.004 }).row, 0, '6 px = 24 mm: 12 mm is a hit');
+});

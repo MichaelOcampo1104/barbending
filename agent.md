@@ -125,6 +125,35 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   field build to fail to exercise the fallback. The rig reads the fps / bar count from the status bar text,
   so keep "N fps · cam … · N bars" in one `.statusbar span`.
 
+## Camera & views (`src/viewer/CameraRig.jsx`, `cameraMath.js`, `cameraOps.js`)
+
+- Two real cameras, two OrbitControls (perspective + orthographic); only one pair is enabled and
+  `state.camera` / `state.controls` always point at it. Do not make one "hybrid" camera: three-stdlib
+  `OrbitControls` tests `instanceof PerspectiveCamera` / `OrthographicCamera` for pan and zoom, so a camera
+  that only flips flags loses both. Never `makeDefault` either `<OrbitControls>`; `CameraRig` owns that.
+- Any effect or handler that captures `camera` or `controls` from `useThree` must list it in its deps: the
+  active camera changes object when the projection switches (`DiveZoom` and `TraceTool` had stale cameras).
+- Orthographic scale: R3F makes the frustum the canvas size in CSS pixels, so `camera.zoom` = **pixels per
+  metre** and the visible height is `H / zoom`. Never use `camera.fov` or the distance to the target for
+  scale in the orthographic path; take `viewMetrics(camera, H)` (→ `pxPerMeter`, `null` for perspective) as
+  LOD, pick tolerance, wheel zoom and Fit do. Orthographic near / far are ∓2000 (a negative near plane is
+  fine) and the zoom is clamped to 2 mm – 500 m visible height; perspective keeps its 2 mm – 400 m distance.
+- Switching projection keeps the same orbit target, view direction and visible region on the target plane
+  (the dolly-zoom identity `zoom = H / (2·d·tan(fov/2))`), so only the perspective changes (`switchProjection`).
+- The six true views use exact axis offsets (no epsilon: OrbitControls already clamps the pole at 1e-6); the
+  preset animation slerps the camera direction on the orbit sphere, so opposite views never fly through the
+  model. `viewName` is derived from the camera direction every frame (`viewFromForward`, 0.003 rad) and
+  `setViewName` returns the same state object when it is unchanged, or every subscriber would re-render each
+  frame.
+- Mutate cameras / controls only in `cameraOps.js`: the React-compiler lint rule `react(immutability)`
+  rejects direct property writes on hook-returned objects inside components. Pure math goes in
+  `cameraMath.js` (no React; `tests/views/` runs both under `npm test`).
+- Layout: `.vptools` (toolbar) is `pointer-events: none` with its children `auto` and stops 140 px short of
+  the right edge, so the axis gizmo heads stay clickable; the view pill sits under the gizmo. Keep the
+  bottom-left of the canvas free (hint bar; a click on empty canvas deselects).
+- Browser checks: `scripts/perf/check_views.mjs` (needs a built preview, 68 checks), next to
+  `check_field.mjs`; `cdp_bench.mjs --view front` benchmarks the orthographic camera.
+
 ## Dev servers & the stale-tab problem
 
 - `:5173` dev (`npm run dev`, started with `CHOKIDAR_USEPOLLING=1` — native
