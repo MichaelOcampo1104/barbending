@@ -2271,17 +2271,18 @@ with:
 
 ```js
       // BarField census: chunk line / tube objects and how many are currently drawn.
-      let fieldLines = 0, fieldTubes = 0, fieldVisible = 0;
+      let fieldLines = 0, fieldTubes = 0, fieldVisible = 0, rebarMeshes = 0;
       scene.traverse((o) => {
         if (o.userData?.barField === 'lines') { fieldLines += 1; if (o.visible) fieldVisible += 1; }
         else if (o.userData?.barField === 'tubes') { fieldTubes += 1; if (o.visible) fieldVisible += 1; }
+        else if (o.isMesh && o.geometry?.type === 'TubeGeometry') rebarMeshes += 1; // classic RebarMesh tubes (overlay rows)
       });
 ```
 
 and in the `el.textContent = JSON.stringify({ ... })` object, directly after the line `        pick: useStore.getState().ifcPick,` add:
 
 ```js
-        field: { lines: fieldLines, tubes: fieldTubes, visible: fieldVisible },
+        field: { lines: fieldLines, tubes: fieldTubes, visible: fieldVisible, rebarMeshes },
         selectedBars: useStore.getState().selectedBars,
 ```
 
@@ -3443,6 +3444,8 @@ git commit -m "feat(barfield): ray picker over chunks and blocks; PickHandler an
 **Files:**
 - Create: `src/viewer/barfield/diffRows.js`
 - Create: `tests/barfield/diffRows.test.mjs`
+- Create: `src/viewer/barfield/overlayRows.js`
+- Create: `tests/barfield/overlayRows.test.mjs`
 - Replace: `src/viewer/barfield/BarField.jsx` (full file below; it keeps the LOD loop of Task 6 and the picker of Task 7)
 - Modify: `src/viewer/Scene.jsx` (expose `window.__store` in `AutotestDump`)
 - Modify: `scripts/perf/check_field.mjs` (`edit` and `fallback` checks; the field wait skips `?fieldfail`)
@@ -3451,6 +3454,7 @@ git commit -m "feat(barfield): ray picker over chunks and blocks; PickHandler an
 - Consumes: Task 1 `buildField` (with `rowIds`), Task 3 `FieldBuilder`, Task 4 `computeHiddenMask` / `composeRowStates` / `STATE`, Task 5 `FieldView` (`addChunks`, `removeDelta`, `writeRowAttrs`, `touch`, `setStates`, `texelCount`, `rowCount`, `states`, `radiusM`, `dataSets`, `applyTubeSet`, `items`), Task 6 LOD, Task 7 picker and registry; store actions `updateBar(idx, patch)`, `hideBars(idxs, hidden)`, `clearBarSelection()`.
 - Produces:
   - `geometryKey(row) → string` (JSON of the row without view-only keys `hidden, Visible, host, Group, Bar_mark, Rebar_tag, setId, setSpec, bond_condition, feature`), `MAX_SIGNATURE_ROWS = 2000`, `diffRows(prev, next) → { sameLength, changed: number[], needsRebuild }` from `diffRows.js`. `needsRebuild` is true when the lengths differ or more than `MAX_SIGNATURE_ROWS` row objects changed identity (undo / redo / import).
+  - `forcedOverlayRows({ pending: Set, builtRowCount, barCount, limit = SELECTION_OVERLAY_LIMIT }) → Set<number>` from `overlayRows.js`: the unselected rows drawn as classic overlay meshes (edited rows waiting for their flush, rows added since the build), each group only up to `limit` rows.
   - Delta rows: an edited bar `bi` that has been flushed draws from the delta chunk with virtual id `view.rowCount + k`, where `deltaRows[k] = bi`; its static id `bi` is set to `STATE.HIDDEN`.
   - `window.__store` (autotest only) for the browser checks.
   - `?fieldfail=1` forces the field build to fail so the fallback can be exercised.
@@ -3516,10 +3520,57 @@ test('geometryKey ignores view-only keys but not geometry', () => {
 });
 ```
 
+- [ ] **Step 1b: Write the failing overlay-rows tests**
+
+Create `tests/barfield/overlayRows.test.mjs`:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { forcedOverlayRows } from '../../src/viewer/barfield/overlayRows.js';
+import { SELECTION_OVERLAY_LIMIT } from '../../src/viewer/barfield/rowState.js';
+
+const range = (a, b) => Array.from({ length: b - a }, (_, i) => a + i);
+
+test('edited rows waiting for their flush become overlay rows', () => {
+  const out = forcedOverlayRows({ pending: new Set([3, 7]), builtRowCount: 100, barCount: 100 });
+  assert.deepEqual([...out].sort((a, b) => a - b), [3, 7]);
+});
+
+test('more pending rows than the overlay limit are not overlaid (the caller flushes at once)', () => {
+  const pending = new Set(range(0, SELECTION_OVERLAY_LIMIT + 1));
+  assert.equal(forcedOverlayRows({ pending, builtRowCount: 5000, barCount: 5000 }).size, 0);
+  const atLimit = new Set(range(0, SELECTION_OVERLAY_LIMIT));
+  assert.equal(forcedOverlayRows({ pending: atLimit, builtRowCount: 5000, barCount: 5000 }).size, SELECTION_OVERLAY_LIMIT);
+});
+
+test('a few rows added since the build are overlaid at once', () => {
+  const out = forcedOverlayRows({ pending: new Set(), builtRowCount: 100, barCount: 103 });
+  assert.deepEqual([...out].sort((a, b) => a - b), [100, 101, 102]);
+});
+
+test('thousands of rows added since the build (an import) are not overlaid', () => {
+  assert.equal(forcedOverlayRows({ pending: new Set(), builtRowCount: 1, barCount: 25000 }).size, 0);
+  assert.equal(forcedOverlayRows({ pending: new Set(), builtRowCount: 100, barCount: 100 + SELECTION_OVERLAY_LIMIT + 1 }).size, 0);
+  assert.equal(forcedOverlayRows({ pending: new Set(), builtRowCount: 100, barCount: 100 + SELECTION_OVERLAY_LIMIT }).size, SELECTION_OVERLAY_LIMIT);
+});
+
+test('fewer rows than the build (deleted bars) add nothing', () => {
+  assert.equal(forcedOverlayRows({ pending: new Set(), builtRowCount: 100, barCount: 90 }).size, 0);
+});
+
+test('pending and added rows combine, each group judged on its own', () => {
+  const out = forcedOverlayRows({ pending: new Set([1]), builtRowCount: 10, barCount: 12 });
+  assert.deepEqual([...out].sort((a, b) => a - b), [1, 10, 11]);
+  const flood = forcedOverlayRows({ pending: new Set(range(0, 400)), builtRowCount: 5000, barCount: 5002 });
+  assert.deepEqual([...flood].sort((a, b) => a - b), [5000, 5001], 'pending flood dropped, the 2 added rows kept');
+});
+```
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `npm test`
-Expected: FAIL — `Cannot find module '.../diffRows.js'`.
+Expected: FAIL — `Cannot find module '.../diffRows.js'` and `Cannot find module '.../overlayRows.js'`.
 
 - [ ] **Step 3: Implement `diffRows.js`**
 
@@ -3552,6 +3603,27 @@ export function diffRows(prev, next) {
 }
 ```
 
+- [ ] **Step 3b: Implement `overlayRows.js`**
+
+Create `src/viewer/barfield/overlayRows.js`:
+
+```js
+// Pure: which UNSELECTED rows are drawn as classic overlay meshes. The classic renderer costs one mesh
+// per bar copy, so overlay rows must stay few (spec 6.4): edited rows wait in the overlay for their delta
+// flush, and rows added since the field was built show at once - each group only up to the overlay limit.
+// For more (a bulk edit, an import) the caller flushes the delta / waits for the rebuild instead of
+// mounting thousands of meshes.
+import { SELECTION_OVERLAY_LIMIT } from './rowState.js';
+
+export function forcedOverlayRows({ pending, builtRowCount, barCount, limit = SELECTION_OVERLAY_LIMIT }) {
+  const out = new Set();
+  if (pending.size <= limit) for (const i of pending) out.add(i);
+  const added = barCount - builtRowCount;
+  if (added > 0 && added <= limit) for (let i = builtRowCount; i < barCount; i++) out.add(i);
+  return out;
+}
+```
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npm test`
@@ -3562,15 +3634,17 @@ Expected: PASS — every test file, 0 failures.
 Replace the whole content of `src/viewer/barfield/BarField.jsx` with:
 
 ```jsx
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import * as THREE from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useStore } from '../../store.js';
+import { distCount } from '../../bbs/shapes.js';
 import { FieldBuilder } from './fieldClient.js';
 import { buildField } from './buildField.js';
 import { FieldView } from './fieldObjects.js';
-import { computeHiddenMask, composeRowStates, STATE } from './rowState.js';
+import { computeHiddenMask, composeRowStates, STATE, SELECTION_OVERLAY_LIMIT } from './rowState.js';
 import { diffRows } from './diffRows.js';
+import { forcedOverlayRows } from './overlayRows.js';
 import { chooseTubeChunks } from './lod.js';
 import { qualityState } from './qualityState.js';
 import { pickField } from './fieldPick.js';
@@ -3583,6 +3657,23 @@ const EDIT_QUIET_MS = 400; // edited rows move from the overlay into the delta c
 const IDLE_REBUILD_MS = 10000; // a non-empty delta is folded into a full rebuild after this long
 const DELTA_FRACTION = 0.05; // delta capacity = 5% of the rows (+64)
 const LEGACY_FALLBACK_ROWS = 20000;
+const DELTA_MAX_COPIES = 40000; // a flush with more distribution copies than this is rebuilt in the worker instead
+
+// The overlay row list as a tiny external store: the effect that keeps the field in sync updates it from
+// store subscriptions without calling setState inside an effect, and equal lists never re-render.
+function createListStore() {
+  let list = [];
+  const subs = new Set();
+  return {
+    get: () => list,
+    set(next) {
+      if (next.length === list.length && next.every((v, i) => v === list[i])) return;
+      list = next;
+      subs.forEach((f) => f());
+    },
+    subscribe(f) { subs.add(f); return () => subs.delete(f); },
+  };
+}
 
 // Draws every bar through the chunked field (lines far, tubes near), keeps it in sync with the store,
 // and lets selected / just-edited rows use the classic RebarMesh through `renderOverlayBar(i)`.
@@ -3593,7 +3684,8 @@ export default function BarField({ renderOverlayBar }) {
   const viewRef = useRef(null);
   const deltaRowsRef = useRef([]); // virtual id k (view.rowCount + k) -> bar index
   const lod = useRef({ last: 0, prev: new Set(), cam: new THREE.Matrix4(), detail: '', budget: 0, view: null });
-  const [overlay, setOverlay] = useState([]);
+  const overlayStore = useMemo(() => createListStore(), []);
+  const overlay = useSyncExternalStore(overlayStore.subscribe, overlayStore.get);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -3617,8 +3709,10 @@ export default function BarField({ renderOverlayBar }) {
     const applyStates = () => {
       const st = useStore.getState();
       const view = viewRef.current;
-      const force = new Set(pending);
-      if (view) for (let i = view.rowCount; i < st.bars.length; i++) force.add(i); // rows added since the build
+      // Edited rows wait in the overlay for the quiet period and rows added since the build show as overlay at
+      // once, each only up to the overlay limit (a bulk edit flushes its delta immediately instead, and after
+      // an import the field is simply stale until the rebuild lands).
+      const force = view ? forcedOverlayRows({ pending, builtRowCount: view.rowCount, barCount: st.bars.length }) : new Set();
       const { states, overlay: list } = composeRowStates({
         hiddenMask: hiddenMask(st.bars, st.concretes), selectedBars: st.selectedBars, forceOverlay: force,
       });
@@ -3632,7 +3726,7 @@ export default function BarField({ renderOverlayBar }) {
           view.setStates(tex);
         });
       }
-      setOverlay((prev) => (prev.length === list.length && prev.every((v, i) => v === list[i]) ? prev : list));
+      overlayStore.set(list);
     };
 
     const scheduleRebuild = (delay) => {
@@ -3649,6 +3743,7 @@ export default function BarField({ renderOverlayBar }) {
       const d = diffRows(builtFrom, cur);
       if (d.needsRebuild || d.changed.length > view.texelCount - view.rowCount) { scheduleRebuild(0); return; }
       const rows = d.changed;
+      if (rows.reduce((sum, i) => sum + distCount(cur[i]), 0) > DELTA_MAX_COPIES) { scheduleRebuild(0); return; }
       try {
         timed(() => {
           view.removeDelta();
@@ -3686,10 +3781,12 @@ export default function BarField({ renderOverlayBar }) {
       for (const i of changed) if (deltaBuilt.get(i) !== cur[i]) { pending.add(i); stale = true; }
       for (const i of deltaSet) if (!changed.has(i)) stale = true; // reverted to the built geometry (undo)
       if (stale) {
-        clearTimeout(timers.quiet);
-        timers.quiet = setTimeout(flushDelta, EDIT_QUIET_MS);
         clearTimeout(timers.idle);
         timers.idle = setTimeout(() => scheduleRebuild(0), IDLE_REBUILD_MS);
+        clearTimeout(timers.quiet);
+        // Too many edited rows for overlay meshes: flush the delta chunk at once instead of waiting.
+        if (pending.size > SELECTION_OVERLAY_LIMIT) flushDelta();
+        else timers.quiet = setTimeout(flushDelta, EDIT_QUIET_MS);
       }
     };
 
@@ -3746,25 +3843,34 @@ export default function BarField({ renderOverlayBar }) {
       else if (state.selectedBars !== prev.selectedBars || state.concretes !== prev.concretes) applyStates();
     });
 
-    // Let PickHandler / QueryHandler pick bars through the field (rays are in scene metres).
+    // Let PickHandler / QueryHandler pick bars through the field (rays are in scene metres). Both
+    // handlers listen to the same pointer-up, and the first one to run may select the bar, which turns
+    // its row into an overlay row the picker skips: so the result is computed once per event object.
+    const pickRow = (ray, fovRad, viewportHeightPx) => {
+      const view = viewRef.current;
+      if (!view) return null;
+      const section = useStore.getState().section;
+      const r = { origin: [ray.origin.x, ray.origin.y, ray.origin.z], dir: [ray.direction.x, ray.direction.y, ray.direction.z] };
+      let best = null;
+      for (const data of view.dataSets()) {
+        const hit = pickField(data, r, {
+          fovRad, viewportHeightPx, tolPx: 6, rowStates: view.states, rowRadiusM: view.radiusM,
+          accept: (p) => isWorldPointInSectionBox({ x: p[0], y: p[1], z: p[2] }, section),
+        });
+        if (hit && (!best || hit.distance < best.distance)) best = hit;
+      }
+      if (!best) return null;
+      const row = best.row < view.rowCount ? best.row : (deltaRowsRef.current[best.row - view.rowCount] ?? -1);
+      if (row < 0) return null;
+      return { row, distance: best.distance, point: new THREE.Vector3(best.point[0], best.point[1], best.point[2]) };
+    };
+    let lastPick = { ev: null, res: null };
     fieldRegistry.current = {
-      pick(ray, { fovRad, viewportHeightPx }) {
-        const view = viewRef.current;
-        if (!view) return null;
-        const section = useStore.getState().section;
-        const r = { origin: [ray.origin.x, ray.origin.y, ray.origin.z], dir: [ray.direction.x, ray.direction.y, ray.direction.z] };
-        let best = null;
-        for (const data of view.dataSets()) {
-          const hit = pickField(data, r, {
-            fovRad, viewportHeightPx, tolPx: 6, rowStates: view.states, rowRadiusM: view.radiusM,
-            accept: (p) => isWorldPointInSectionBox({ x: p[0], y: p[1], z: p[2] }, section),
-          });
-          if (hit && (!best || hit.distance < best.distance)) best = hit;
-        }
-        if (!best) return null;
-        const row = best.row < view.rowCount ? best.row : (deltaRowsRef.current[best.row - view.rowCount] ?? -1);
-        if (row < 0) return null;
-        return { row, distance: best.distance, point: new THREE.Vector3(best.point[0], best.point[1], best.point[2]) };
+      pick(ray, { fovRad, viewportHeightPx, ev = null }) {
+        if (ev && lastPick.ev === ev) return lastPick.res;
+        const res = pickRow(ray, fovRad, viewportHeightPx);
+        if (ev) lastPick = { ev, res };
+        return res;
       },
     };
 
@@ -3780,7 +3886,7 @@ export default function BarField({ renderOverlayBar }) {
       if (v) { root.remove(v.group); v.dispose(); viewRef.current = null; }
       publishStats({ ready: false });
     };
-  }, [root]);
+  }, [root, overlayStore]);
 
   // Level of detail: at most every 100 ms (and only when something changed) decide which chunks
   // draw as tubes; the rest stay lines. Chunks outside the frustum never spend triangle budget.
@@ -3913,9 +4019,15 @@ async function edit() {
     b.close();
   }
   const L = res.legacy, F = res.field;
-  const close = (a, c, tol = 14) => Math.abs(a.x0 - c.x0) <= tol && Math.abs(a.x1 - c.x1) <= tol && Math.abs(a.y0 - c.y0) <= tol && Math.abs(a.y1 - c.y1) <= tol
-    && Math.hypot(a.cx - c.cx, a.cy - c.cy) <= 12;
-  console.log(`      field: before c=(${F.before.cx.toFixed(0)},${F.before.cy.toFixed(0)}) moved c=(${F.moved.cx.toFixed(0)},${F.moved.cy.toFixed(0)}) n ${F.moved.n} -> hidden n ${F.hiddenStats.n}`);
+  // Compare the extents only: they are set by the bars this check edits and hides (the moved bar sets the
+  // right and bottom edges, the hidden bar the left and top ones) and move by 70-100 px between the steps.
+  // The centre of mass is not compared: with three bars it depends on how many amber pixels each bar
+  // contributes, and tubes shade while lines do not.
+  const close = (a, c, tol = 14) => Math.abs(a.x0 - c.x0) <= tol && Math.abs(a.x1 - c.x1) <= tol && Math.abs(a.y0 - c.y0) <= tol && Math.abs(a.y1 - c.y1) <= tol;
+  for (const k of ['before', 'moved', 'hiddenStats']) {
+    const a = L[k], c = F[k];
+    console.log(`      ${k}: legacy n=${a.n} bbox=[${a.x0},${a.y0},${a.x1},${a.y1}] c=(${a.cx.toFixed(0)},${a.cy.toFixed(0)})  field n=${c.n} bbox=[${c.x0},${c.y0},${c.x1},${c.y1}] c=(${c.cx.toFixed(0)},${c.cy.toFixed(0)})`);
+  }
   report(F.errors.length === 0, `edit: no errors logged${F.errors.length ? ': ' + F.errors[0] : ''}`);
   report(Math.hypot(F.before.cx - F.moved.cx, F.before.cy - F.moved.cy) >= 5, 'edit: the edited bar moved on screen');
   report(close(L.before, F.before), 'edit: before the edit both renderers agree');
@@ -3923,6 +4035,50 @@ async function edit() {
   report(F.hiddenStats.n < 0.9 * F.moved.n, `edit: hiding a bar removes its pixels (${F.moved.n} -> ${F.hiddenStats.n})`);
   report(close(L.hiddenStats, F.hiddenStats), 'edit: after hiding a bar both renderers agree');
   report(F.v1 === F.v0, `edit: a single edit used the delta chunk, not a full rebuild (field version ${F.v0} -> ${F.v1})`);
+}
+
+// bulk : a bulk edit of hundreds of rows goes through the delta chunk (no rebuild) and shows on screen, and
+//        adding thousands of rows creates no overlay flood (the classic renderer draws one mesh per bar copy).
+//        The mesh count is read from the live scene ~150 ms after the store update, while the field is still
+//        stale: that is the window where a flood would exist. (The edited-rows overlay limit is unit-tested
+//        in overlayRows.test.mjs: that overlay only lives for 400 ms, too short to sample reliably here.)
+async function bulk() {
+  const N = 8000;
+  const row = (k) => ({
+    Rebar_tag: k + 1, Bar_mark: `B${k + 1}`, Rebar_Type: 'straight', Plane: 'XY', Dia: 16, 'Length of Bar': 2000,
+    Pos_x: (k % 100) * 120, Pos_y: Math.floor(k / 100) * 120, Pos_z: 1000, Pos_Rotation: 0, qty: 1, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150,
+    Group: 'bulk', bond_condition: 'poor', Visible: 1,
+  });
+  const projectFile = path.join(outDir, 'check_bulk.json');
+  fs.writeFileSync(projectFile, JSON.stringify({ v: 1, app: 'barbending', savedAt: Date.now(), bars: Array.from({ length: N }, (_, k) => row(k)), concretes: [], refLines: [], cover: 40, bond: 'poor', selectedBar: 0, selectedBars: [] }));
+  const b = await launchBrowser({ instrument: INSTR });
+  const meshes = () => b.ev("(() => { let n = 0; window.__scene.traverse((o) => { if (o.isMesh && o.geometry && o.geometry.type === 'TubeGeometry') n += 1; }); return n; })()");
+  try {
+    await openProject(b, 'renderer=field&autotest=bulk', projectFile);
+    await sleep(1500);
+    const rows = await b.ev('window.__barfield.rows');
+    report(rows === N, `bulk: the field holds all ${N} rows after the import (rows=${rows})`);
+    // 400 rows moved in one store update: more than the overlay limit, within the delta capacity.
+    const v0 = await b.ev('window.__barfield.version');
+    const before = await b.ev(PIXEL_STATS);
+    await b.ev("(() => { const s = window.__store; const bars = s.getState().bars.map((r, i) => (i < 400 ? { ...r, Pos_x: r.Pos_x + 3000 } : r)); s.setState({ bars }); })()");
+    await sleep(1550);
+    const after = await b.ev(PIXEL_STATS);
+    const v1 = await b.ev('window.__barfield.version');
+    report(v1 === v0, `bulk: the bulk edit used the delta chunk, not a rebuild (field version ${v0} -> ${v1})`);
+    report(Math.abs(after.x0 - before.x0) + Math.abs(after.x1 - before.x1) > 20, `bulk: the edited rows moved on screen (left/right edge ${before.x0}/${before.x1} -> ${after.x0}/${after.x1})`);
+    // 1,000 rows added in one store update: the field is stale until the rebuild lands, with no overlay flood.
+    await b.ev("(() => { const s = window.__store; const extra = Array.from({ length: 1000 }, (_, k) => ({ ...s.getState().bars[k], Pos_z: 1600, Rebar_tag: 90000 + k, Bar_mark: 'X' + k })); s.setState({ bars: [...s.getState().bars, ...extra] }); })()");
+    await sleep(150);
+    const addMeshes = await meshes();
+    report(addMeshes <= 300, `bulk: adding 1000 rows created no overlay flood (${addMeshes} classic bar meshes after 150 ms)`);
+    let rebuilt = false;
+    for (let i = 0; i < 80 && !rebuilt; i++) { await sleep(250); rebuilt = (await b.ev('window.__barfield.rows')) === N + 1000; }
+    report(rebuilt, `bulk: the rebuild picked up the ${N + 1000} rows`);
+    report(b.consoleErrors.length === 0, `bulk: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+  } finally {
+    b.close();
+  }
 }
 
 // fallback : ?fieldfail=1 makes the field build fail on purpose: the classic renderer must take over
@@ -3954,6 +4110,7 @@ try {
   if (!only || only === 'tubes') await tubes();
   if (!only || only === 'pick') await pick();
   if (!only || only === 'edit') await edit();
+  if (!only || only === 'bulk') await bulk();
   if (!only || only === 'fallback') await fallback();
 } catch (e) {
 ```
@@ -3962,6 +4119,7 @@ and add these two lines to the usage comment at the top of the file:
 
 ```js
 // edit   : edits and hiding go through the delta path and match the legacy renderer.
+// bulk   : importing thousands of rows / bulk-editing hundreds creates no overlay-mesh flood.
 // fallback: ?fieldfail=1 -> the classic renderer takes over with a badge.
 ```
 

@@ -1937,9 +1937,15 @@ function StatusBar() {
   const perf = useStore((s) => s.perf);
   const navMode = useStore((s) => s.navMode);
   const bars = useStore((s) => s.bars);
-  const rows = bars.map(enrichBar);
-  const totalW = rows.reduce((a, r) => a + (r.Weight_kg || 0), 0);
-  const totalBars = rows.reduce((a, r) => a + (r._copies || 1), 0);
+  // The totals only change with the bars, but this bar re-renders whenever the fps / camera-distance
+  // readout changes (several times a second while orbiting): do not re-enrich every row each time.
+  const { totalW, totalBars } = useMemo(() => {
+    const rows = bars.map(enrichBar);
+    return {
+      totalW: rows.reduce((a, r) => a + (r.Weight_kg || 0), 0),
+      totalBars: rows.reduce((a, r) => a + (r._copies || 1), 0),
+    };
+  }, [bars]);
   const dist = perf.dist >= 1
     ? `${perf.dist.toFixed(1)} m`
     : `${Math.round(perf.dist * 1000).toLocaleString('en-US')} mm`;

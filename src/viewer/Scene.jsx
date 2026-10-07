@@ -945,6 +945,7 @@ function AutotestDump() {
   useLayoutEffect(() => {
     window.__scene = scene;
     window.__camera = camera;
+    window.__store = useStore; // browser checks drive edits / hiding through the real store
     window.__probePick = (nx, ny) => {
       try {
         const rc = new THREE.Raycaster();
@@ -1026,10 +1027,11 @@ function AutotestDump() {
           + `clip=${o.material.clippingPlanes === sectionPlanes}/${mp.numClippingPlanes}`;
       });
       // BarField census: chunk line / tube objects and how many are currently drawn.
-      let fieldLines = 0, fieldTubes = 0, fieldVisible = 0;
+      let fieldLines = 0, fieldTubes = 0, fieldVisible = 0, rebarMeshes = 0;
       scene.traverse((o) => {
         if (o.userData?.barField === 'lines') { fieldLines += 1; if (o.visible) fieldVisible += 1; }
         else if (o.userData?.barField === 'tubes') { fieldTubes += 1; if (o.visible) fieldVisible += 1; }
+        else if (o.isMesh && o.geometry?.type === 'TubeGeometry') rebarMeshes += 1; // classic RebarMesh tubes (overlay rows)
       });
       // Pixel verdict: 5 sample points along the default bar OUTSIDE the box
       // (bar x∈[0,3] at y=z=0; thirded box x∈[-1.33,1.33]) must read background.
@@ -1063,7 +1065,7 @@ function AutotestDump() {
         sampleMat: sample,
         tube: tubeInfo,
         pick: useStore.getState().ifcPick,
-        field: { lines: fieldLines, tubes: fieldTubes, visible: fieldVisible },
+        field: { lines: fieldLines, tubes: fieldTubes, visible: fieldVisible, rebarMeshes },
         selectedBars: useStore.getState().selectedBars,
         lastPick: useStore.getState().lastPick,
         barPos: (() => {

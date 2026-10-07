@@ -5,6 +5,9 @@
 //          occupy the same screen box (placement + clipping), and the field must draw something.
 // tubes  : Detail = Tubes draws instanced tubes with the same extent as the legacy renderer.
 // pick   : real clicks on the field renderer select / toggle / clear bars.
+// edit   : edits and hiding go through the delta path and match the legacy renderer.
+// bulk   : importing thousands of rows / bulk-editing hundreds creates no overlay-mesh flood.
+// fallback: ?fieldfail=1 -> the classic renderer takes over with a badge.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,7 +74,7 @@ async function openProject(b, query, projectFile) {
   const root = await b.send('DOM.getDocument', { depth: 0 });
   const q = await b.send('DOM.querySelectorAll', { nodeId: root.root.nodeId, selector: 'input[type=file]' });
   await b.send('DOM.setFileInputFiles', { files: [projectFile], nodeId: q.nodeIds[0] });
-  if (query.includes('renderer=field')) {
+  if (query.includes('renderer=field') && !query.includes('fieldfail')) {
     for (let i = 0; i < 200; i++) {
       await sleep(250);
       if (await b.ev('!!(window.__barfield && window.__barfield.ready)', 5000).catch(() => false)) break;
@@ -222,10 +225,135 @@ async function pick() {
   }
 }
 
+// edit : edit and hide bars through the real store and compare with the legacy renderer.
+//        The edited bar must move (centre of mass shifts), both renderers must agree afterwards, hiding a
+//        bar must remove its pixels, and a single edit must not trigger a full rebuild (delta path).
+async function edit() {
+  const mk = (k) => ({
+    Rebar_tag: k + 1, Bar_mark: `B${k + 1}`, Rebar_Type: 'straight', Plane: 'XY', Dia: 16, 'Length of Bar': 3000,
+    Pos_x: 0, Pos_y: k * 1200, Pos_z: 1500, Pos_Rotation: 0, qty: 1, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150,
+    Group: 'edit', bond_condition: 'poor', Visible: 1,
+  });
+  const projectFile = path.join(outDir, 'check_edit.json');
+  fs.writeFileSync(projectFile, JSON.stringify({ v: 1, app: 'barbending', savedAt: Date.now(), bars: [0, 1, 2].map(mk), concretes: [], refLines: [], cover: 40, bond: 'poor', selectedBar: 0, selectedBars: [] }));
+  const b = await launchBrowser({ instrument: INSTR });
+  const res = {};
+  try {
+    for (const mode of ['legacy', 'field']) {
+      b.consoleErrors.length = 0;
+      await openProject(b, `renderer=${mode}&autotest=edit`, projectFile);
+      await b.ev('window.__store.getState().clearBarSelection()');
+      await sleep(800);
+      const v0 = mode === 'field' ? await b.ev('window.__barfield.version') : 0;
+      const before = await b.ev(PIXEL_STATS);
+      await b.ev('window.__store.getState().updateBar(2, { Pos_y: 3200, Pos_x: 400 })');
+      await sleep(1800); // 400 ms quiet period + delta flush + a few frames
+      const moved = await b.ev(PIXEL_STATS);
+      await b.ev('window.__store.getState().hideBars([0], true)');
+      await sleep(1200);
+      const hiddenStats = await b.ev(PIXEL_STATS);
+      const v1 = mode === 'field' ? await b.ev('window.__barfield.version') : 0;
+      res[mode] = { before, moved, hiddenStats, v0, v1, errors: b.consoleErrors.slice() };
+      const shot = await b.send('Page.captureScreenshot', { format: 'png' });
+      fs.writeFileSync(path.join(outDir, `check-edit-${mode}.png`), Buffer.from(shot.data, 'base64'));
+    }
+  } finally {
+    b.close();
+  }
+  const L = res.legacy, F = res.field;
+  // Compare the extents only: they are set by the bars this check edits and hides (the moved bar sets the
+  // right and bottom edges, the hidden bar the left and top ones) and move by 70-100 px between the steps.
+  // The centre of mass is not compared: with three bars it depends on how many amber pixels each bar
+  // contributes, and tubes shade while lines do not.
+  const close = (a, c, tol = 14) => Math.abs(a.x0 - c.x0) <= tol && Math.abs(a.x1 - c.x1) <= tol && Math.abs(a.y0 - c.y0) <= tol && Math.abs(a.y1 - c.y1) <= tol;
+  for (const k of ['before', 'moved', 'hiddenStats']) {
+    const a = L[k], c = F[k];
+    console.log(`      ${k}: legacy n=${a.n} bbox=[${a.x0},${a.y0},${a.x1},${a.y1}] c=(${a.cx.toFixed(0)},${a.cy.toFixed(0)})  field n=${c.n} bbox=[${c.x0},${c.y0},${c.x1},${c.y1}] c=(${c.cx.toFixed(0)},${c.cy.toFixed(0)})`);
+  }
+  report(F.errors.length === 0, `edit: no errors logged${F.errors.length ? ': ' + F.errors[0] : ''}`);
+  report(Math.hypot(F.before.cx - F.moved.cx, F.before.cy - F.moved.cy) >= 5, 'edit: the edited bar moved on screen');
+  report(close(L.before, F.before), 'edit: before the edit both renderers agree');
+  report(close(L.moved, F.moved), 'edit: after moving a bar both renderers agree');
+  report(F.hiddenStats.n < 0.9 * F.moved.n, `edit: hiding a bar removes its pixels (${F.moved.n} -> ${F.hiddenStats.n})`);
+  report(close(L.hiddenStats, F.hiddenStats), 'edit: after hiding a bar both renderers agree');
+  report(F.v1 === F.v0, `edit: a single edit used the delta chunk, not a full rebuild (field version ${F.v0} -> ${F.v1})`);
+}
+
+// bulk : a bulk edit of hundreds of rows goes through the delta chunk (no rebuild) and shows on screen, and
+//        adding thousands of rows creates no overlay flood (the classic renderer draws one mesh per bar copy).
+//        The mesh count is read from the live scene ~150 ms after the store update, while the field is still
+//        stale: that is the window where a flood would exist. (The edited-rows overlay limit is unit-tested
+//        in overlayRows.test.mjs: that overlay only lives for 400 ms, too short to sample reliably here.)
+async function bulk() {
+  const N = 8000;
+  const row = (k) => ({
+    Rebar_tag: k + 1, Bar_mark: `B${k + 1}`, Rebar_Type: 'straight', Plane: 'XY', Dia: 16, 'Length of Bar': 2000,
+    Pos_x: (k % 100) * 120, Pos_y: Math.floor(k / 100) * 120, Pos_z: 1000, Pos_Rotation: 0, qty: 1, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150,
+    Group: 'bulk', bond_condition: 'poor', Visible: 1,
+  });
+  const projectFile = path.join(outDir, 'check_bulk.json');
+  fs.writeFileSync(projectFile, JSON.stringify({ v: 1, app: 'barbending', savedAt: Date.now(), bars: Array.from({ length: N }, (_, k) => row(k)), concretes: [], refLines: [], cover: 40, bond: 'poor', selectedBar: 0, selectedBars: [] }));
+  const b = await launchBrowser({ instrument: INSTR });
+  const meshes = () => b.ev("(() => { let n = 0; window.__scene.traverse((o) => { if (o.isMesh && o.geometry && o.geometry.type === 'TubeGeometry') n += 1; }); return n; })()");
+  try {
+    await openProject(b, 'renderer=field&autotest=bulk', projectFile);
+    await sleep(1500);
+    const rows = await b.ev('window.__barfield.rows');
+    report(rows === N, `bulk: the field holds all ${N} rows after the import (rows=${rows})`);
+    // 400 rows moved in one store update: more than the overlay limit, within the delta capacity.
+    const v0 = await b.ev('window.__barfield.version');
+    const before = await b.ev(PIXEL_STATS);
+    await b.ev("(() => { const s = window.__store; const bars = s.getState().bars.map((r, i) => (i < 400 ? { ...r, Pos_x: r.Pos_x + 3000 } : r)); s.setState({ bars }); })()");
+    await sleep(1550);
+    const after = await b.ev(PIXEL_STATS);
+    const v1 = await b.ev('window.__barfield.version');
+    report(v1 === v0, `bulk: the bulk edit used the delta chunk, not a rebuild (field version ${v0} -> ${v1})`);
+    report(Math.abs(after.x0 - before.x0) + Math.abs(after.x1 - before.x1) > 20, `bulk: the edited rows moved on screen (left/right edge ${before.x0}/${before.x1} -> ${after.x0}/${after.x1})`);
+    // 1,000 rows added in one store update: the field is stale until the rebuild lands, with no overlay flood.
+    await b.ev("(() => { const s = window.__store; const extra = Array.from({ length: 1000 }, (_, k) => ({ ...s.getState().bars[k], Pos_z: 1600, Rebar_tag: 90000 + k, Bar_mark: 'X' + k })); s.setState({ bars: [...s.getState().bars, ...extra] }); })()");
+    await sleep(150);
+    const addMeshes = await meshes();
+    report(addMeshes <= 300, `bulk: adding 1000 rows created no overlay flood (${addMeshes} classic bar meshes after 150 ms)`);
+    let rebuilt = false;
+    for (let i = 0; i < 80 && !rebuilt; i++) { await sleep(250); rebuilt = (await b.ev('window.__barfield.rows')) === N + 1000; }
+    report(rebuilt, `bulk: the rebuild picked up the ${N + 1000} rows`);
+    report(b.consoleErrors.length === 0, `bulk: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+  } finally {
+    b.close();
+  }
+}
+
+// fallback : ?fieldfail=1 makes the field build fail on purpose: the classic renderer must take over
+//            (same picture as the legacy renderer) and the badge must say so.
+async function fallback() {
+  const projectFile = path.join(outDir, 'check_clip.json');
+  fs.writeFileSync(projectFile, JSON.stringify(makeCheckProject()));
+  const b = await launchBrowser({ instrument: INSTR });
+  try {
+    await openProject(b, 'renderer=legacy&autotest=parity', projectFile);
+    const L = await b.ev(PIXEL_STATS);
+    b.consoleErrors.length = 0;
+    await openProject(b, 'renderer=field&fieldfail=1&autotest=parity', projectFile);
+    await sleep(1500);
+    const F = await b.ev(PIXEL_STATS);
+    const badge = await b.ev("document.body.innerText.includes('Bar renderer unavailable')");
+    console.log(`      fallback: legacy n=${L.n} c=(${L.cx.toFixed(0)},${L.cy.toFixed(0)})  fieldfail n=${F.n} c=(${F.cx.toFixed(0)},${F.cy.toFixed(0)})`);
+    report(badge, 'fallback: the badge says the classic view is showing');
+    report(b.consoleErrors.some((e) => e.includes('build failed')), 'fallback: the failure was logged');
+    report(F.n > 0.7 * L.n && F.n < 1.4 * L.n, `fallback: the classic renderer drew the bars (${F.n} vs ${L.n} amber px)`);
+    report(Math.hypot(L.cx - F.cx, L.cy - F.cy) <= 8, 'fallback: same picture as the legacy renderer');
+  } finally {
+    b.close();
+  }
+}
+
 try {
   if (!only || only === 'parity') await parity();
   if (!only || only === 'tubes') await tubes();
   if (!only || only === 'pick') await pick();
+  if (!only || only === 'edit') await edit();
+  if (!only || only === 'bulk') await bulk();
+  if (!only || only === 'fallback') await fallback();
 } catch (e) {
   console.error('ERROR', e.message);
   failures += 1;
