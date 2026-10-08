@@ -20,6 +20,7 @@ import CameraRig from './CameraRig.jsx';
 import AxisGizmo from './AxisGizmo.jsx';
 import { setOrthoZoom } from './cameraOps.js';
 import { capTubeGeometry } from './tubeCaps.js';
+import { boxRegion, lassoRegion, selectBarsInRegion } from './regionSelect.js';
 import {
   PERSP_FOV_DEG, PERSP_MIN_DISTANCE, PERSP_MAX_DISTANCE, ORTHO_DEPTH, VIEW_OFFSETS, slerpDirection, viewMetrics,
   clampOrthoZoom, zoomFactorForStep, zoomAboutCursorShift, fitZoomForBox, boxHalfExtentsAlong,
@@ -348,7 +349,7 @@ function PickHandler() {
       down = null;
       if (dx * dx + dy * dy > 25) return; // drag, not a click
       const st = useStore.getState();
-      if (st.drawMode || st.measure?.active || st.boxSelect) return; // Drawing / tracing / measuring / box-select own their clicks
+      if (st.drawMode || st.measure?.active || st.selectTool) return; // Drawing / tracing / measuring / region-select own their clicks
       const t0 = performance.now();
       const rect = el.getBoundingClientRect();
       const nx = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
@@ -436,48 +437,75 @@ function PickHandler() {
   return null;
 }
 
-// FreeCAD-style window select (Shift+B arms, then LMB drags a rectangle).
-// Rebar only: every visible bar whose projected bbox touches the window joins
-// the selection (Ctrl held = add to current set, else replace). One-shot —
-// the mode disarms on mouse-up or Esc so normal orbit/click resumes.
-function BoxSelect() {
+// Region select, one-shot: the toolbar's Box and Lasso buttons (or Shift+B / Shift+L) arm it, one LMB drag draws
+// a rectangle or a free-form loop, and every rebar row with a bar that touches the shape joins the selection
+// (Ctrl held = add to the current set, else replace). The tool then disarms (so does Esc) and normal orbit /
+// click resumes. The rule lives in regionSelect.js: the bars' real lines through the current camera, every copy.
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const LASSO_STEP_PX = 3; // a new lasso point once the pointer has moved this far
+
+function RegionSelect() {
   const gl = useThree((s) => s.gl);
   const camera = useThree((s) => s.camera);
   const controls = useThree((s) => s.controls);
-  const boxSelect = useStore((s) => s.boxSelect);
+  const selectTool = useStore((s) => s.selectTool);
+  const viewProj = useMemo(() => new THREE.Matrix4(), []);
   useEffect(() => {
     const el = gl.domElement;
-    if (!boxSelect) { el.style.cursor = ''; return; }
+    if (!selectTool) { el.style.cursor = ''; return; }
+    const lasso = selectTool === 'lasso';
     el.style.cursor = 'crosshair';
-    // Floating rectangle, parked in the canvas wrapper (pointer-events none
-    // so the drag keeps flowing to the canvas).
-    const box = document.createElement('div');
-    box.style.cssText = 'position:absolute;display:none;z-index:50;pointer-events:none;'
-      + 'border:1px dashed #38bdf8;background:rgba(56,189,248,0.12);';
+    // The outline, parked in the canvas wrapper (pointer-events none so the drag keeps flowing to the canvas):
+    // a dashed rectangle, or an SVG polygon for the lasso.
     const wrap = el.parentElement;
     const prevPos = wrap ? window.getComputedStyle(wrap).position : '';
     if (wrap && (prevPos === 'static' || !prevPos)) wrap.style.position = 'relative';
-    if (wrap) wrap.appendChild(box);
-    let start = null;
+    const outline = document.createElement('div');
+    let polygon = null;
+    if (lasso) {
+      outline.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;display:none;z-index:50;pointer-events:none;';
+      const svg = document.createElementNS(SVG_NS, 'svg');
+      svg.setAttribute('width', '100%');
+      svg.setAttribute('height', '100%');
+      polygon = document.createElementNS(SVG_NS, 'polygon');
+      polygon.setAttribute('style', 'fill:rgba(56,189,248,0.12);stroke:#38bdf8;stroke-width:1.5;stroke-dasharray:5 3;stroke-linejoin:round;');
+      svg.appendChild(polygon);
+      outline.appendChild(svg);
+    } else {
+      outline.style.cssText = 'position:absolute;display:none;z-index:50;pointer-events:none;'
+        + 'border:1px dashed #38bdf8;background:rgba(56,189,248,0.12);';
+    }
+    if (wrap) wrap.appendChild(outline);
+    let start = null; // client coordinates at pointer-down
     let additive = false;
     let moved = false;
-    const paint = (a, b) => {
+    let path = []; // lasso: canvas-relative points
+    const rel = (ev) => {
+      const r = el.getBoundingClientRect();
+      return [ev.clientX - r.left, ev.clientY - r.top];
+    };
+    const paintBox = (a, b) => {
       const r = el.getBoundingClientRect();
       const x1 = Math.min(a[0], b[0]) - r.left;
       const y1 = Math.min(a[1], b[1]) - r.top;
       const x2 = Math.max(a[0], b[0]) - r.left;
       const y2 = Math.max(a[1], b[1]) - r.top;
-      box.style.display = 'block';
-      box.style.left = `${x1}px`;
-      box.style.top = `${y1}px`;
-      box.style.width = `${Math.max(0, x2 - x1)}px`;
-      box.style.height = `${Math.max(0, y2 - y1)}px`;
+      outline.style.display = 'block';
+      outline.style.left = `${x1}px`;
+      outline.style.top = `${y1}px`;
+      outline.style.width = `${Math.max(0, x2 - x1)}px`;
+      outline.style.height = `${Math.max(0, y2 - y1)}px`;
+    };
+    const paintLasso = () => {
+      polygon.setAttribute('points', path.map((p) => `${p[0]},${p[1]}`).join(' '));
+      outline.style.display = 'block';
     };
     const onDown = (ev) => {
       if (ev.button !== 0) return;
       const st = useStore.getState();
-      if (!st.boxSelect || st.drawMode || st.measure?.active) return;
+      if (!st.selectTool || st.drawMode || st.measure?.active) return;
       start = [ev.clientX, ev.clientY];
+      path = lasso ? [rel(ev)] : [];
       additive = !!(ev.ctrlKey || ev.metaKey);
       moved = false;
       if (controls) controls.enabled = false;
@@ -487,77 +515,61 @@ function BoxSelect() {
     const onMove = (ev) => {
       if (!start) return;
       moved = true;
-      paint(start, [ev.clientX, ev.clientY]);
+      if (lasso) {
+        const p = rel(ev);
+        const last = path[path.length - 1];
+        if (Math.hypot(p[0] - last[0], p[1] - last[1]) >= LASSO_STEP_PX) { path.push(p); paintLasso(); }
+      } else {
+        paintBox(start, [ev.clientX, ev.clientY]);
+      }
     };
     const onUp = (ev) => {
       if (!start) return;
       const s = start;
       const wasAdd = additive || ev.ctrlKey || ev.metaKey;
       start = null;
-      box.style.display = 'none';
+      outline.style.display = 'none';
       if (controls) controls.enabled = true;
       const st = useStore.getState();
-      const dx = ev.clientX - s[0];
-      const dy = ev.clientY - s[1];
-      if (!moved || dx * dx + dy * dy < 25) {
-        // Click, not a window — disarm and let the next click select normally.
-        st.setBoxSelect(false);
+      const rect = el.getBoundingClientRect();
+      let region = null;
+      if (moved) {
+        if (lasso) {
+          path.push([ev.clientX - rect.left, ev.clientY - rect.top]);
+          region = lassoRegion(path);
+        } else {
+          const dx = ev.clientX - s[0];
+          const dy = ev.clientY - s[1];
+          if (dx * dx + dy * dy >= 25) region = boxRegion(s[0] - rect.left, s[1] - rect.top, ev.clientX - rect.left, ev.clientY - rect.top);
+        }
+      }
+      if (!region) {
+        // A click (or a scribble too short to be a loop), not a shape: disarm and let the next click select normally.
+        st.setSelectTool(null);
         return;
       }
       ev.preventDefault();
       ev.stopPropagation();
-      const rect = el.getBoundingClientRect();
-      const rx0 = (Math.min(s[0], ev.clientX) - rect.left);
-      const ry0 = (Math.min(s[1], ev.clientY) - rect.top);
-      const rx1 = (Math.max(s[0], ev.clientX) - rect.left);
-      const ry1 = (Math.max(s[1], ev.clientY) - rect.top);
-      const v = new THREE.Vector3();
-      const toPx = ([x, y, z]) => {
-        v.set(x * S, z * S, -y * S).project(camera);
-        if (v.z > 1) return null; // behind camera
-        return [(v.x * 0.5 + 0.5) * rect.width, (-v.y * 0.5 + 0.5) * rect.height];
-      };
-      const hiddenHosts = new Set((st.concretes || []).filter((c) => c.visible === false).map((c) => c.id));
-      const hiddenBoxes = (st.concretes || []).filter((c) => c.visible === false)
-        .map((c) => ({ minX: c.x, minY: c.y, minZ: c.z, maxX: c.x + c.lx, maxY: c.y + c.ly, maxZ: c.z + c.lz }));
-      const hit = [];
-      (st.bars || []).forEach((b, i) => {
-        if (b.hidden) return;
-        if (b.host && hiddenHosts.has(b.host)) return;
-        if (hiddenBoxes.length && barOverlapsBoxes(b, hiddenBoxes)) return;
-        let bb;
-        try { bb = barAppBox(b); } catch { return; }
-        if (![bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ].every(Number.isFinite)) return;
-        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-        let any = false;
-        for (const cx of [bb.minX, bb.maxX]) {
-          for (const cy of [bb.minY, bb.maxY]) {
-            for (const cz of [bb.minZ, bb.maxZ]) {
-              const p = toPx([cx, cy, cz]);
-              if (!p) continue;
-              any = true;
-              if (p[0] < x0) x0 = p[0];
-              if (p[0] > x1) x1 = p[0];
-              if (p[1] < y0) y0 = p[1];
-              if (p[1] > y1) y1 = p[1];
-            }
-          }
-        }
-        if (!any) return;
-        if (x0 <= rx1 && x1 >= rx0 && y0 <= ry1 && y1 >= ry0) hit.push(i);
+      camera.updateMatrixWorld();
+      viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      const t0 = performance.now();
+      const hit = selectBarsInRegion({
+        bars: st.bars, concretes: st.concretes, region, viewProj: viewProj.elements, width: rect.width, height: rect.height,
       });
+      const ms = performance.now() - t0;
       if (wasAdd) {
         const merged = [...new Set([...(st.selectedBars || []), ...hit])].sort((a, b) => a - b);
         if (merged.length) st.setSelectedBars(merged);
       } else {
         st.setSelectedBars(hit);
       }
-      console.info(`[box] window ${Math.round(rx1 - rx0)}x${Math.round(ry1 - ry0)}px → ${hit.length} bars${wasAdd ? ' (added)' : ''}`);
-      st.setBoxSelect(false);
+      console.info(`[select] ${selectTool} → ${hit.length} rows${wasAdd ? ' (added)' : ''} in ${ms.toFixed(0)} ms`);
+      if (AUTOTEST) window.__lastSelect = { tool: selectTool, rows: hit.length, ms, added: wasAdd, hit: hit.slice(0, 500) };
+      st.setSelectTool(null);
     };
     const onKey = (e) => {
       if (e.key === 'Escape') {
-        useStore.getState().setBoxSelect(false);
+        useStore.getState().setSelectTool(null);
         e.preventDefault(); // consumed — App's Esc cascade must not clear the selection too
       }
     };
@@ -572,10 +584,10 @@ function BoxSelect() {
       window.removeEventListener('pointermove', onMove, { capture: true });
       window.removeEventListener('pointerup', onUp, { capture: true });
       window.removeEventListener('keydown', onKey);
-      box.remove();
+      outline.remove();
       if (controls) controls.enabled = true;
     };
-  }, [gl, camera, controls, boxSelect]);
+  }, [gl, camera, controls, selectTool, viewProj]);
   return null;
 }
 
@@ -601,7 +613,7 @@ function MeasureHandler() {
       down = null;
       if (dx * dx + dy * dy > 25) return; // drag (orbit/pan), not a click
       const st = useStore.getState();
-      if (!st.measure?.active || st.boxSelect) return;
+      if (!st.measure?.active || st.selectTool) return;
       if (ev.button === 2) { st.popMeasurePoint(); return; } // right-click: drop last
       if (ev.button !== 0 || btn !== 0) return;
       const rect = el.getBoundingClientRect();
@@ -686,7 +698,7 @@ function QueryHandler() {
       if (dx * dx + dy * dy > 25) return; // drag (orbit/pan), not a click
       const st = useStore.getState();
       if (!st.query?.active) return;
-      if (st.measure?.active || st.drawMode || st.boxSelect) {
+      if (st.measure?.active || st.drawMode || st.selectTool) {
         // Another tool owns canvas clicks — say so in the panel instead of
         // silently swallowing the click. Never clobbers a real result.
         const owner = st.measure?.active ? 'Measure' : st.drawMode ? `draw (${st.drawMode})` : 'Box-select';
@@ -1141,7 +1153,7 @@ const colorFor = (dia) => DIA_COLORS[dia] || '#f59e0b';
 // Ctrl/Cmd/Shift toggle, lap picking. Same behaviour as the closure that used to live in Scene().
 function handleBarClick(i, ev) {
   const st = useStore.getState();
-  if (st.measure?.active || st.boxSelect) return;
+  if (st.measure?.active || st.selectTool) return;
   // Lap picking: first click anchors, second click laps + selects.
   if (st.lapArmed) {
     if (st.lapAnchor == null) { st.setLapAnchor(i); return; }
@@ -1878,7 +1890,7 @@ export default function Scene() {
       </GizmoHelper>
       <TraceTool />
       <PickHandler />
-      <BoxSelect />
+      <RegionSelect />
       <QueryHandler />
       <MeasureHandler />
       <MeasureView />

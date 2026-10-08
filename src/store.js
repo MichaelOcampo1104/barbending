@@ -127,9 +127,12 @@ export const useStore = create((set, get) => ({
   // Multi-selection (rebar indices). selectedBar stays the active/edited bar
   // (last of the set) so the single-bar editor keeps working unchanged.
   selectedBars: [0],
-  // Box/window select armed by Shift+B (one-shot: next LMB drag selects).
-  boxSelect: false,
-  setBoxSelect: (v) => set({ boxSelect: !!v }),
+  // Region select armed from the toolbar or by Shift+B / Shift+L: null, 'box' or 'lasso' (one-shot: the next
+  // LMB drag draws the shape and selects, then the tool disarms).
+  selectTool: null,
+  setSelectTool: (t) => set({ selectTool: t === 'box' || t === 'lasso' ? t : null }),
+  // The toolbar buttons and the hotkeys: arm that tool, or turn it off when it is the armed one already.
+  toggleSelectTool: (t) => set((s) => ({ selectTool: (t === 'box' || t === 'lasso') && s.selectTool !== t ? t : null })),
   selectedConcrete: 'c1',
   showConcrete: true,
 
@@ -637,7 +640,7 @@ export const useStore = create((set, get) => ({
         bond: d.bond === 'good' || d.bond === 'poor' ? d.bond : 'poor',
       selectedBar: sel,
       selectedBars: multi.length ? multi : (d.bars.length ? [sel] : []),
-      boxSelect: false,
+      selectTool: null,
       saveStamp: d.savedAt || null,
       past: [], future: [],
     });

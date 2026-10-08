@@ -1331,6 +1331,21 @@ export function distOffsets(bar) {
   return out;
 }
 
+// The extents of distOffsets(bar) (mm) without building the grid: along each axis the copies run from the offset
+// to offset + (count - 1) * spacing, whichever way the spacing points. Region select measures every row, and a
+// row can have thousands of copies.
+export function distOffsetExtents(bar) {
+  const axis = (n, spacing, offset) => {
+    const span = (Math.max(1, Math.floor(num(n, 1))) - 1) * num(spacing, 0);
+    const o = num(offset, 0);
+    return [o + Math.min(0, span), o + Math.max(0, span)];
+  };
+  const [minX, maxX] = axis(bar.qty_x, bar.spacing_x, bar.offset_x);
+  const [minY, maxY] = axis(bar.qty_y, bar.spacing_y, bar.offset_y);
+  const [minZ, maxZ] = axis(bar.qty_z, bar.spacing_z, bar.offset_z);
+  return { minX, minY, minZ, maxX, maxY, maxZ };
+}
+
 // Distance calculation from a 3D point (app-mm) to a rebar's centerline/geometry
 export function distToBar(pt, bar) {
   if (!bar || !pt) return Infinity;

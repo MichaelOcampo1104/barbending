@@ -53,6 +53,13 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
   at the camera (a starter bar in the Front view, a vertical bar in the Top view)
   shows as a dot, like a rebar section in a drawing: a small dash when far away,
   the true round cross-section when you zoom in, and it can be clicked and selected.
+- **Box & Lasso select** — the viewport toolbar's `⊞ Box [Shift+B]` and
+  `➰ Lasso [Shift+L]` arm a one-shot selection: drag a rectangle or a free-form
+  loop (Ctrl-drag adds to the selection, Esc cancels, a plain click just turns
+  the tool off). A BBS row is selected when any bar of it actually touches the
+  shape, in the perspective and the orthographic views alike (an end-on bar is a
+  dot, so a loop around the dots works), so a shape in the gap between the copies
+  of a wide set selects nothing. Hidden bars and members are skipped.
 - **Snap-to-cover** — global cover (mm); 🎯 pick on a concrete/IFC face places
   the bar centreline cover + Ø/2 inside; stirrups fit to their host with one click.
 - **Hide members & bars** — 👁 per concrete (hosted bars follow) and per bar;

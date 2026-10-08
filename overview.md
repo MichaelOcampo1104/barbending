@@ -32,12 +32,13 @@ everything runs from static files.
 | `src/bbs/shapes.js` | 6 shape generators → 3D polylines + cut lengths; `distCount`/`distOffsets` distribution grid; `applyTypeDefaults` for shape switching |
 | `src/bbs/calc.js` | `D²/162.2` unit weights, bend deductions |
 | `src/bbs/csv.js` | FreeCAD-compatible CSV export/import (`MASTER_HEADERS` superset) |
-| `src/viewer/Scene.jsx` | Canvas, lights, grid, `RebarMesh` (tube per bar × distribution copies; now only the selected / just-edited rows, `BarField` draws the rest), `ConcreteMesh`, `DiveZoom` (stall-free wheel dives), `PickHandler`, `MeasureHandler` + `MeasureView` (ephemeral measure) |
+| `src/viewer/Scene.jsx` | Canvas, lights, grid, `RebarMesh` (tube per bar × distribution copies; now only the selected / just-edited rows, `BarField` draws the rest), `ConcreteMesh`, `DiveZoom` (stall-free wheel dives), `PickHandler`, `RegionSelect` (box / lasso select), `MeasureHandler` + `MeasureView` (ephemeral measure) |
 | `src/viewer/barfield/*` | Default bar renderer: worker-built chunked segments, line / instanced-tube LOD, row-state texture, ray picker, adaptive quality (`BarField.jsx` composes them) |
 | `src/viewer/CameraRig.jsx` | Owns the two cameras (perspective + orthographic) and their OrbitControls; keeps `state.camera` / `state.controls` on the active pair and switches projection from the store (`projection`) without changing what you look at |
 | `src/viewer/cameraMath.js` | Pure camera math (Node-tested): the preset view offsets / labels, `viewFromForward`, perspective ↔ orthographic zoom / distance, ortho zoom limits and zoom-about-cursor shift, fit zoom, `viewMetrics` |
 | `src/viewer/cameraOps.js` | The few imperative camera / controls mutations (`switchProjection`, `setOrthoZoom`, `enableControls`), kept out of components for the React-compiler lint rules and so Node tests can run them |
 | `src/viewer/AxisGizmo.jsx`, `ViewBadge.jsx` | Axis gizmo (heads request the exact true views) and the "Front · Orthographic" pill that names the view and toggles the projection |
+| `src/viewer/regionSelect.js` | Pure geometry of the Box and Lasso tools: the shapes (`boxRegion`, `lassoRegion`), segment-vs-shape tests, projection of every bar copy through the camera's matrix with near / far clipping, and `selectBarsInRegion` (a row is selected when any of its bars touches the shape) |
 | `src/viewer/barfield/endOn.js` | Pure helpers for end-on bars (a bar pointing straight at an orthographic camera): per-vertex axis tags written by `buildField`, and the axis a camera looks along; the line shader draws such bars as a dash, the tube shader as a disc |
 | `src/viewer/tubeCaps.js` | Flat end caps for the classic rebar tube (`RebarMesh`), so a selected bar seen end-on shows as a disc |
 | `src/viewer/IfcModel.jsx` | (lazy) IFC subsets, ghost/solid materials, click-select + highlight, pick-to-place |
@@ -65,6 +66,11 @@ for Top / Bottom / Front / Back / Left / Right, perspective for Iso) → `ViewPr
 direction on the orbit sphere to the exact axis offset → `CameraRig` switches the active camera + controls
 when `projection` changes (same target, same direction, same visible region on the target plane) and
 publishes `viewName` from the camera direction every frame, which labels the dropdown and the pill.
+
+**Region select:** toolbar `⊞ Box` / `➰ Lasso` or Shift+B / Shift+L → `selectTool` ('box' | 'lasso') → one LMB drag
+in `RegionSelect` draws the rectangle / loop (an SVG overlay) → `selectBarsInRegion` projects every copy of every
+visible bar through the active camera and keeps the rows that touch the shape → `setSelectedBars`; the tool then
+disarms (Esc too). Orthographic and perspective share the code, which only needs the camera's view-projection matrix.
 
 **Section:** box state `{enabled, mode, center, size, quat, solidCut}` →
 `updateSectionPlanesBox` mutates the 6 shared planes → all clipped materials

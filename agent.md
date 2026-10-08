@@ -169,6 +169,32 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
 - Browser checks: `scripts/perf/check_views.mjs` (needs a built preview, 78 checks), next to
   `check_field.mjs`; `cdp_bench.mjs --view front` benchmarks the orthographic camera.
 
+## Region select (Box / Lasso: `RegionSelect` in `Scene.jsx`, `src/viewer/regionSelect.js`)
+
+- One-shot tools: the store's `selectTool` is `null | 'box' | 'lasso'` (the toolbar pair, Shift+B / Shift+L,
+  the left-panel buttons); one LMB drag draws the shape and selects, then the tool disarms. A tool that stays
+  on would fight the section-box handles and the drawing tools for the same drags, so do not make it sticky
+  without handling those. Everything that used to ask `boxSelect` asks `selectTool`.
+- The rule is exact and shared by both shapes: a BBS row is selected when any segment of any copy of its bar,
+  projected through the active camera, lies inside the shape, crosses its outline or passes within
+  `TOUCH_TOL_PX` (2 px). Not the row's bounding box: a box in the gap between the copies of a wide set selects
+  nothing. Hidden bars, bars of hidden members and bars inside hidden members are skipped; the section box does
+  not clip the selection (same as before). An end-on bar projects to a point, so a shape around the dot works.
+- `regionSelect.js` is pure (no three.js, no DOM): it only needs the camera's projection * view matrix as 16
+  numbers and the canvas size, so perspective and orthographic share it, with near / far clipping so nothing
+  behind a perspective camera is picked. Per-row geometry (base polyline and box) is cached in a `WeakMap`
+  keyed by the row object, which relies on rows being replaced, not mutated, as everywhere else in the store.
+  The bounding-box prefilter uses `distOffsetExtents` (shapes.js) instead of building the distribution grid;
+  keep its equivalence test against `distOffsets`.
+- Measured at 1M bars (25,000 rows x 40 copies): about 100-180 ms for a small lasso, a whole-view box or a big
+  lasso. The seconds the page stays busy after selecting thousands of rows are the selection-dependent UI (the
+  BBS table renders every row: 2.4 s for 3,206 rows, 3.7 s for 25,000, the same when the rows are set straight
+  in the store), not this module.
+- The drag handlers sit on the canvas in the capture phase and disable the orbit controls while dragging; Esc is
+  consumed (`preventDefault`) so the App's Esc cascade does not also clear the selection. The toolbar rows
+  overlay the top of the canvas: a drag that starts on a toolbar button never reaches it, so keep browser-check
+  shapes clear of the toolbar. Browser check: `scripts/perf/check_select.mjs`.
+
 ## Dev servers & the stale-tab problem
 
 - `:5173` dev (`npm run dev`, started with `CHOKIDAR_USEPOLLING=1` — native

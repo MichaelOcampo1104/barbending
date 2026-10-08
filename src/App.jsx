@@ -225,7 +225,7 @@ function BarEditor() {
   const duplicateBars = useStore((s) => s.duplicateBars);
   const hideBars = useStore((s) => s.hideBars);
   const moveBars = useStore((s) => s.moveBars);
-  const setBoxSelect = useStore((s) => s.setBoxSelect);
+  const setSelectTool = useStore((s) => s.setSelectTool);
   const clearBarSelection = useStore((s) => s.clearBarSelection);
   const updateSetDia = useStore((s) => s.updateSetDia);
   const respreadSet = useStore((s) => s.respreadSet);
@@ -293,8 +293,9 @@ function BarEditor() {
       )}
       {!multiOn && (
         <div className="crow" style={{ marginBottom: 6 }}>
-          <span className="hint">Tip: Shift+B then drag a window — or Ctrl-click bars / BBS rows — to multi-select for bulk delete, copy or move.</span>
-          <button className="ghost sm" onClick={() => setBoxSelect(true)} title="Arm window select (Shift+B)">⊞ Box select</button>
+          <span className="hint">Tip: Shift+B (box) or Shift+L (lasso), then drag a shape around the bars — or Ctrl-click bars / BBS rows — to multi-select for bulk delete, copy or move.</span>
+          <button className="ghost sm" onClick={() => setSelectTool('box')} title="Arm box select (Shift+B)">⊞ Box select</button>
+          <button className="ghost sm" onClick={() => setSelectTool('lasso')} title="Arm lasso select (Shift+L)">➰ Lasso select</button>
         </div>
       )}
       {bar.setId && setIndices(bar.setId).length > 1 && (
@@ -1253,8 +1254,8 @@ function ViewportBar() {
   const setDrawMode = useStore((s) => s.setDrawMode);
   const drawStart = useStore((s) => s.drawStart);
   const snapNode = useStore((s) => s.snapNode);
-  const boxSelect = useStore((s) => s.boxSelect);
-  const setBoxSelect = useStore((s) => s.setBoxSelect);
+  const selectTool = useStore((s) => s.selectTool);
+  const toggleSelectTool = useStore((s) => s.toggleSelectTool);
   const selectedBars = useStore((s) => s.selectedBars);
 
   return (
@@ -1331,7 +1332,11 @@ function ViewportBar() {
           </select>
         </label>
         <button onClick={() => requestFit('auto')} title="Zoom camera to selected rebar or beam (Hotkey: F)">🎯 Zoom Sel [F]</button>
-        <button className={boxSelect ? 'on' : ''} onClick={() => setBoxSelect(!boxSelect)} title="Window select rebars: arm (or press Shift+B), then drag a rectangle in the viewport. Ctrl-drag adds to the selection · Esc cancels">⊞ Box{(selectedBars?.length || 0) > 1 ? ` (${selectedBars.length})` : ''} [Shift+B]</button>
+        <span className="seg" title="Select rebars by drawing a shape (one-shot). A set is selected when any of its bars touches the shape. Ctrl-drag adds to the selection · Esc cancels">
+          <button className={selectTool === 'box' ? 'on' : ''} onClick={() => toggleSelectTool('box')} title="Box select: arm (or press Shift+B), then drag a rectangle in the viewport. Ctrl-drag adds to the selection · Esc cancels">⊞ Box [Shift+B]</button>
+          <button className={selectTool === 'lasso' ? 'on' : ''} onClick={() => toggleSelectTool('lasso')} title="Lasso select: arm (or press Shift+L), then drag a free-form loop around the bars in the viewport. Ctrl-drag adds to the selection · Esc cancels">➰ Lasso [Shift+L]</button>
+        </span>
+        {(selectedBars?.length || 0) > 1 && <span className="vstat" title="Rebar rows in the current selection">{selectedBars.length} selected</span>}
         <button onClick={() => duplicateBar()} title="Duplicate / Copy selected rebar (Hotkey: Ctrl+D or C)">📋 Copy [Ctrl+D]</button>
         <button onClick={() => requestFit('all')} title="Fit entire model in view">⛶ Fit All</button>
         <button className={section?.enabled ? 'on' : ''} onClick={toggleSection} title="Revit-style section box: push/pull faces, move or rotate gizmo">◫ Section</button>
@@ -1383,8 +1388,9 @@ function ViewportBar() {
         <span className="vstat">{totalBars} bars · {totalW.toFixed(1)} kg</span>
       </div>
       <div className="overlay">
-        drag = orbit · wheel = zoom · right-drag = pan · click bar = select · click empty/Esc = deselect · Ctrl-click = multi · Shift+B = box select · F = zoom · Ctrl+D/C = copy rebar
-        {boxSelect && <b> — ⊞ BOX SELECT armed: drag a rectangle to select rebars · Ctrl-drag adds · Esc cancels</b>}
+        drag = orbit · wheel = zoom · right-drag = pan · click bar = select · click empty/Esc = deselect · Ctrl-click = multi · Shift+B / Shift+L = box / lasso select · F = zoom · Ctrl+D/C = copy rebar
+        {selectTool === 'box' && <b> — ⊞ BOX SELECT armed: drag a rectangle to select rebars · Ctrl-drag adds · Esc cancels</b>}
+        {selectTool === 'lasso' && <b> — ➰ LASSO SELECT armed: drag a loop around the rebars to select them · Ctrl-drag adds · Esc cancels</b>}
         {drawMode && !drawStart && <b> — 📐 [{drawMode.toUpperCase()} TOOL] Click 1st corner/node (snapping active) · Esc to cancel</b>}
         {drawMode && drawStart && <b> — 📐 [{drawMode.toUpperCase()} TOOL] Click opposite corner/node to complete member · Esc to cancel</b>}
         {snapNode && <b> — 📍 Snapped: ({snapNode.x}, {snapNode.y}, {snapNode.z}) [{snapNode.type}]</b>}
@@ -2144,16 +2150,17 @@ export default function App() {
       // exit themselves without touching the selection).
       if (e.key === 'Escape') {
         if (e.defaultPrevented) return;
-        if (st.boxSelect) { st.setBoxSelect(false); return; } // fallback (BoxSelect owns it)
+        if (st.selectTool) { st.setSelectTool(null); return; } // fallback (RegionSelect owns it)
         if ((st.selectedBars?.length || 0) > 0) st.clearBarSelection();
         return;
       }
-      // FreeCAD-style Shift+B arms the window select (rebar only). Ignored
-      // while typing, measuring, or drawing so the drag goes to that tool.
-      if (e.shiftKey && (k === 'b' || e.code === 'KeyB') && !e.ctrlKey && !e.metaKey) {
+      // Shift+B arms the box select (FreeCAD-style window select), Shift+L the lasso; pressing the armed one
+      // again turns it off (rebar only). Ignored while typing, measuring, or drawing so the drag goes to that tool.
+      const regionKey = (k === 'b' || e.code === 'KeyB') ? 'box' : (k === 'l' || e.code === 'KeyL') ? 'lasso' : null;
+      if (e.shiftKey && regionKey && !e.ctrlKey && !e.metaKey) {
         if (st.measure?.active || st.drawMode) return;
         e.preventDefault();
-        st.setBoxSelect(!st.boxSelect);
+        st.toggleSelectTool(regionKey);
         return;
       }
 
