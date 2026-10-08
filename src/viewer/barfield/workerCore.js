@@ -3,7 +3,7 @@ import { buildFieldSteps } from './buildField.js';
 
 export function transferablesOf(data) {
   return [
-    data.seg.buffer, data.rowOfVtx.buffer, data.rows.radiusM.buffer, data.rows.colorIdx.buffer,
+    data.seg.buffer, data.rowOfVtx.buffer, data.axisOfVtx.buffer, data.rows.radiusM.buffer, data.rows.colorIdx.buffer,
     data.blocks.start.buffer, data.blocks.size.buffer, data.blocks.bounds.buffer, data.blocks.maxRadiusM.buffer,
   ];
 }

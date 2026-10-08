@@ -125,6 +125,18 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   field build to fail to exercise the fallback. The rig reads the fps / bar count from the status bar text,
   so keep "N fps · cam … · N bars" in one `.statusbar span`.
 
+- End-on bars: a bar pointing straight at an orthographic camera (a starter bar in the Front view, a vertical
+  bar in the Top view) has no projected area, so nothing draws it: a hardware line becomes zero length and the
+  open six-sided tube prism has edge-on sides. Three paths handle it, keep all three: (1) `buildField` tags
+  every line vertex in `axisOfVtx` (`endOn.js`: 1 / 2 / 3 = the scene X / Y / Z axis the segment runs along
+  within 0.06 degrees, +4 on the end vertex) and `LINE_VS` opens a segment on the camera's exact axis
+  (`uEndOnAxis`, from `cameraEndOnAxis`) into a 2 px dash; (2) `TUBE_VS` collapses an instance within about a
+  degree of the view direction (orthographic only: `uOrtho`, `uViewDir`) onto a hexagonal disc at its near end,
+  using the prism's own triangles; (3) the classic `RebarMesh` tube is capped (`tubeCaps.js`, still named
+  `TubeGeometry` for the tools that count it). `BarField.jsx` pushes the camera state every frame through
+  `FieldView.setCameraState`. Measured cost at 1M bars in an exact-axis orthographic view: idle about 46 -> 39
+  fps (the end-on bars are drawn now), other numbers unchanged. Browser check: `check_views.mjs --only dots`.
+
 ## Camera & views (`src/viewer/CameraRig.jsx`, `cameraMath.js`, `cameraOps.js`)
 
 - Two real cameras, two OrbitControls (perspective + orthographic); only one pair is enabled and

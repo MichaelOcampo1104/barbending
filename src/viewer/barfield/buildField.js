@@ -2,6 +2,7 @@
 // No DOM and no three.js, so it runs in a Web Worker and in plain Node tests.
 // Relative imports keep their .js extension so Node can load this file.
 import { genBarPoints, transformBarLocalPoint, distOffsets, distCount } from '../../bbs/shapes.js';
+import { segmentAxisCode, vertexAxisFlags } from './endOn.js';
 
 const S = 0.001; // app mm -> scene metres (same mapping as RebarMesh: x, z, -y)
 
@@ -179,6 +180,7 @@ export function* buildFieldSteps(rows, options = {}) {
   // ---- stage 4: gather segments in tree order, then bounds per block and chunk ----
   const seg = new Float32Array(used * 6);
   const rowOfVtx = new Float32Array(used * 2);
+  const axisOfVtx = new Uint8Array(used * 2); // end-on tags per line vertex (endOn.js)
   const localRow = new Uint32Array(used);
   for (let i = 0; i < used; i++) {
     const s = order[i];
@@ -190,6 +192,9 @@ export function* buildFieldSteps(rows, options = {}) {
     const gid = rowIds ? rowIds[lr] : lr;
     rowOfVtx[2 * i] = gid;
     rowOfVtx[2 * i + 1] = gid;
+    const [f0, f1] = vertexAxisFlags(segmentAxisCode(seg[b + 3] - seg[b], seg[b + 4] - seg[b + 1], seg[b + 5] - seg[b + 2]));
+    axisOfVtx[2 * i] = f0;
+    axisOfVtx[2 * i + 1] = f1;
   }
 
   const B = blockRanges.length;
@@ -245,7 +250,7 @@ export function* buildFieldSteps(rows, options = {}) {
 
   return {
     rowCount: n, segCount: used, chunkCount: chunks.length, skippedRows,
-    seg, rowOfVtx, rows: { radiusM, colorIdx }, chunks, blocks,
+    seg, rowOfVtx, axisOfVtx, rows: { radiusM, colorIdx }, chunks, blocks,
     bounds: { min: bmin, max: bmax },
   };
 }

@@ -10,6 +10,7 @@ import { computeHiddenMask, composeRowStates, STATE } from './rowState.js';
 import { diffRows } from './diffRows.js';
 import { forcedOverlayRows, fitsOverlay } from './overlayRows.js';
 import { chooseTubeChunks } from './lod.js';
+import { cameraEndOnAxis } from './endOn.js';
 import { qualityState } from './qualityState.js';
 import { viewMetrics } from '../cameraMath.js';
 import { pickField } from './fieldPick.js';
@@ -271,6 +272,8 @@ export default function BarField({ renderOverlayBar }) {
   const gl = useThree((s) => s.gl);
   const frustum = useMemo(() => new THREE.Frustum(), []);
   const projView = useMemo(() => new THREE.Matrix4(), []);
+  const fwd = useMemo(() => new THREE.Vector3(), []);
+  const bufSize = useMemo(() => new THREE.Vector2(), []);
   useFrame(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -278,6 +281,13 @@ export default function BarField({ renderOverlayBar }) {
     const detail = useStore.getState().barDetail || 'auto';
     camera.updateMatrixWorld();
     const ortho = !!camera.isOrthographicCamera;
+    // End-on bars (endOn.js): a bar an orthographic camera looks straight along becomes a dot, not nothing.
+    camera.getWorldDirection(fwd);
+    gl.getDrawingBufferSize(bufSize);
+    view.setCameraState({
+      endOnAxis: ortho ? cameraEndOnAxis([fwd.x, fwd.y, fwd.z]) : 0,
+      pxX: 2 / Math.max(bufSize.x, 1), pxY: 2 / Math.max(bufSize.y, 1), ortho, forward: fwd,
+    });
     // An orthographic zoom changes the picture without moving the camera, so it counts as a change too.
     const unchanged = st.view === view && detail === st.detail && qualityState.budgetTris === st.budget
       && st.cam.equals(camera.matrixWorld) && st.zoom === camera.zoom && st.ortho === ortho;

@@ -14,6 +14,7 @@ function makeLines(data, chunk, material) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(data.seg.subarray(chunk.start * 6, (chunk.start + chunk.count) * 6), 3));
   g.setAttribute('aRow', new THREE.BufferAttribute(data.rowOfVtx.subarray(chunk.start * 2, (chunk.start + chunk.count) * 2), 1));
+  g.setAttribute('aAxis', new THREE.BufferAttribute(data.axisOfVtx.subarray(chunk.start * 2, (chunk.start + chunk.count) * 2), 1));
   g.boundingSphere = new THREE.Sphere(new THREE.Vector3(chunk.center[0], chunk.center[1], chunk.center[2]), chunk.radius);
   const lines = new THREE.LineSegments(g, material);
   lines.matrixAutoUpdate = false;
@@ -72,6 +73,20 @@ export class FieldView {
   }
 
   touch() { this.texture.needsUpdate = true; }
+
+  // End-on bars (endOn.js). Lines: `endOnAxis` is the scene axis an orthographic camera looks exactly along
+  // (0 = none) and pxX / pxY are one framebuffer pixel in clip units; bars along that axis open into a 2 px dash.
+  // Tubes: with an orthographic camera (`forward` = its look direction), a bar pointing at it becomes a disc.
+  setCameraState({ endOnAxis, pxX, pxY, ortho, forward }) {
+    for (const m of Object.values(this.lineMaterials)) {
+      m.uniforms.uEndOnAxis.value = endOnAxis;
+      m.uniforms.uPixelNdc.value.set(pxX, pxY);
+    }
+    for (const m of Object.values(this.tubeMaterials)) {
+      m.uniforms.uOrtho.value = ortho ? 1 : 0;
+      m.uniforms.uViewDir.value.copy(forward);
+    }
+  }
 
   // states: Uint8Array over texels (row ids); texels beyond its length keep their value.
   setStates(states) {

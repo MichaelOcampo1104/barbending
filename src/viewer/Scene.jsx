@@ -19,6 +19,7 @@ import QualityController from './barfield/QualityController.jsx';
 import CameraRig from './CameraRig.jsx';
 import AxisGizmo from './AxisGizmo.jsx';
 import { setOrthoZoom } from './cameraOps.js';
+import { capTubeGeometry } from './tubeCaps.js';
 import {
   PERSP_FOV_DEG, PERSP_MIN_DISTANCE, PERSP_MAX_DISTANCE, ORTHO_DEPTH, VIEW_OFFSETS, slerpDirection, viewMetrics,
   clampOrthoZoom, zoomFactorForStep, zoomAboutCursorShift, fitZoomForBox, boxHalfExtentsAlong,
@@ -1216,8 +1217,9 @@ function RebarMesh({ bar, index, selected, onClick, onDoubleClick }) {
     else curve = new THREE.CatmullRomCurve3(v3, false, 'catmullrom', 0.0);
     // sharp corners: use low-tension catmull ~ polyline; radius = dia/2 in m
     const diaM = (Number(bar.Dia) || 16) / 1000;
-    const geo = new THREE.TubeGeometry(curve, Math.max(8, v3.length * 12), Math.max(0.008, diaM / 2), 8, false);
-    return geo;
+    const tubular = Math.max(8, v3.length * 12);
+    // Capped: a bar seen exactly end-on (a starter bar in the Front view) shows as a disc, not nothing.
+    return capTubeGeometry(new THREE.TubeGeometry(curve, tubular, Math.max(0.008, diaM / 2), 8, false), curve, tubular, 8);
   // NOTE: depends on the whole bar object — a manual field list went stale
   // before (bent_up_down flip was swallowed by the cache). Tube rebuilds are
   // cheap at BBS scale and distribution copies share one geometry.

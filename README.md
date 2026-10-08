@@ -49,7 +49,10 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
   3D view. The pill under the gizmo ("Front · Orthographic") names the view and
   flips Perspective / Orthographic at any time (what you look at stays put).
   Orbiting keeps the current projection (the view reads "Free"); zoom-to-cursor,
-  pan, Fit All, picking and the section box work in both.
+  pan, Fit All, picking and the section box work in both. A bar pointing straight
+  at the camera (a starter bar in the Front view, a vertical bar in the Top view)
+  shows as a dot, like a rebar section in a drawing: a small dash when far away,
+  the true round cross-section when you zoom in, and it can be clicked and selected.
 - **Snap-to-cover** — global cover (mm); 🎯 pick on a concrete/IFC face places
   the bar centreline cover + Ø/2 inside; stirrups fit to their host with one click.
 - **Hide members & bars** — 👁 per concrete (hosted bars follow) and per bar;

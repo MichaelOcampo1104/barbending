@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildField, buildFieldSteps, colorIndexForDia, radiusMForDia, DIA_PALETTE, DEFAULT_COLOR_IDX,
 } from '../../src/viewer/barfield/buildField.js';
+import { END_VERTEX } from '../../src/viewer/barfield/endOn.js';
 import { straightRow, profileRow, spreadRows } from './helpers.mjs';
 
 const near = (a, b, eps = 1e-5) => Math.abs(a - b) <= eps;
@@ -135,4 +136,43 @@ test('an empty row list builds an empty field', () => {
   assert.equal(f.chunks.length, 0);
   assert.equal(f.blocks.start.length, 0);
   assert.deepEqual(f.bounds, { min: [0, 0, 0], max: [0, 0, 0] });
+});
+
+// ---- end-on tags: which scene axis a line segment runs along (see endOn.js) ----
+test('line vertices carry the axis their segment runs along; the end vertex adds the end bit', () => {
+  // straightRow: 3 m along +X in plan, which is scene X (axis 1).
+  const f = buildField([straightRow()]);
+  assert.equal(f.axisOfVtx.length, 2 * f.segCount);
+  assert.deepEqual([...f.axisOfVtx], [1, 1 + END_VERTEX]);
+});
+
+test('a plan bar along app Y is scene Z (axis 3) and a leg going up is scene Y (axis 2)', () => {
+  const alongY = buildField([straightRow({ Pos_Rotation: 90 })]);
+  assert.ok(Math.abs(alongY.seg[3] - alongY.seg[0]) < 1e-6 && Math.abs(alongY.seg[5] - alongY.seg[2]) > 2.9, 'it really runs along scene Z');
+  assert.deepEqual([...alongY.axisOfVtx], [3, 3 + END_VERTEX]);
+  // profileRow: 1000 mm along +X, then 500 mm up.
+  const f = buildField([profileRow()]);
+  assert.equal(f.segCount, 2);
+  const codes = [];
+  for (let i = 0; i < f.segCount; i++) codes.push(f.axisOfVtx[2 * i]);
+  assert.deepEqual(codes.sort(), [1, 2]);
+});
+
+test('a bar at an angle in plan gets no axis tag, and neither do both its vertices', () => {
+  const f = buildField([straightRow({ Pos_Rotation: 30 })]);
+  assert.deepEqual([...f.axisOfVtx], [0, 0]);
+});
+
+test('every distribution copy and every row is tagged, and the tags travel with the segment order', () => {
+  const f = buildField([straightRow({ qty_y: 3 }), straightRow({ Pos_Rotation: 90, qty_y: 2 })]);
+  assert.equal(f.segCount, 5);
+  assert.equal(f.axisOfVtx.length, 10);
+  let x = 0, z = 0;
+  for (let i = 0; i < f.segCount; i++) {
+    const code = f.axisOfVtx[2 * i];
+    assert.equal(f.axisOfVtx[2 * i + 1], code + END_VERTEX);
+    if (code === 1) x += 1;
+    if (code === 3) z += 1;
+  }
+  assert.deepEqual([x, z], [3, 2]);
 });

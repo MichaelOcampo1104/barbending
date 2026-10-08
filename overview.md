@@ -38,6 +38,8 @@ everything runs from static files.
 | `src/viewer/cameraMath.js` | Pure camera math (Node-tested): the preset view offsets / labels, `viewFromForward`, perspective ↔ orthographic zoom / distance, ortho zoom limits and zoom-about-cursor shift, fit zoom, `viewMetrics` |
 | `src/viewer/cameraOps.js` | The few imperative camera / controls mutations (`switchProjection`, `setOrthoZoom`, `enableControls`), kept out of components for the React-compiler lint rules and so Node tests can run them |
 | `src/viewer/AxisGizmo.jsx`, `ViewBadge.jsx` | Axis gizmo (heads request the exact true views) and the "Front · Orthographic" pill that names the view and toggles the projection |
+| `src/viewer/barfield/endOn.js` | Pure helpers for end-on bars (a bar pointing straight at an orthographic camera): per-vertex axis tags written by `buildField`, and the axis a camera looks along; the line shader draws such bars as a dash, the tube shader as a disc |
+| `src/viewer/tubeCaps.js` | Flat end caps for the classic rebar tube (`RebarMesh`), so a selected bar seen end-on shows as a disc |
 | `src/viewer/IfcModel.jsx` | (lazy) IFC subsets, ghost/solid materials, click-select + highlight, pick-to-place |
 | `src/viewer/FitIfc.jsx` | Camera fit to IFC bbox |
 | `src/viewer/SectionBox.jsx` | Revit-style section box: push/pull faces, move/rotate gizmos, stencil cap quads, size tag |
