@@ -436,6 +436,24 @@ async function section() {
     const sec = await b.ev('window.__store.getState().section');
     const keptM = Math.min(3, sec.center[0] + sec.size[0] / 2) - Math.max(0, sec.center[0] - sec.size[0] / 2);
     const expectPx = keptM * zoom * dpr;
+    // Dragging a face grip resizes the box by exactly the pointer's movement along that axis (pins the drag maths that
+    // moved into sectionBoxMath.js): the +X grip sits 0.7 m outside the face; the opposite face must not move.
+    await b.ev('window.__store.getState().setSection({ mode: "faces", showBox: true })');
+    await sleep(600);
+    const secA = await b.ev('window.__store.getState().section');
+    const rectA = await rectOf(b);
+    const gripPt = await toScreen(b, [secA.center[0] + secA.size[0] / 2 + 0.7, secA.center[1], secA.center[2]]);
+    const gripFrom = [rectA.x + gripPt[0], rectA.y + gripPt[1]];
+    const dragPx = 90;
+    await drag(b, gripFrom, [gripFrom[0] + dragPx, gripFrom[1]], 'left', 10);
+    await sleep(600);
+    const secB = await b.ev('window.__store.getState().section');
+    const dW = secB.size[0] - secA.size[0];
+    const leftA = secA.center[0] - secA.size[0] / 2;
+    const leftB = secB.center[0] - secB.size[0] / 2;
+    console.log(`      section grip: +X grip dragged ${dragPx} px -> width ${secA.size[0].toFixed(4)} -> ${secB.size[0].toFixed(4)} m (expected +${(dragPx / zoom).toFixed(4)})`);
+    report(near(dW, dragPx / zoom, 0.004) && near(leftB, leftA, 1e-6) && near(secB.size[1], secA.size[1], 1e-9) && near(secB.size[2], secA.size[2], 1e-9),
+      `section: dragging the +X face grip ${dragPx} px widens the box by ${dW.toFixed(4)} m (expected ${(dragPx / zoom).toFixed(4)}); the opposite face and the other sizes stay put`);
     await b.ev('window.__store.getState().toggleSection()');
     await sleep(1500);
     const off1 = await b.ev(PIXELS);

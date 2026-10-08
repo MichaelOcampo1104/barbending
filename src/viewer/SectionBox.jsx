@@ -5,14 +5,8 @@ import * as THREE from 'three';
 import { useStore } from '../store.js';
 import { sectionPlanes, updateSectionPlanes, updateSectionPlanesBox, closestAxisParam, normalizeSection } from './sectionPlanes.js';
 import { stencilMats, capMaterial } from './stencilMats.js';
+import { FACES, AXIS_COLORS, capQuad, faceDragResult } from './sectionBoxMath.js';
 
-const FACES = [
-  { axis: 0, sign: -1 }, { axis: 0, sign: 1 },
-  { axis: 1, sign: -1 }, { axis: 1, sign: 1 },
-  { axis: 2, sign: -1 }, { axis: 2, sign: 1 },
-];
-const AXIS_COLORS = ['#ef4444', '#22c55e', '#3b82f6'];
-const MIN_THICK = 0.05; // 50 mm
 const noHitRaycast = () => null;
 
 // One cap material per plane (created once; shared Plane refs, no recompiles).
@@ -38,18 +32,6 @@ if (typeof window !== 'undefined') {
   }
 }
 
-// Cap quad transforms per plane, in box-local coords (box centred at origin).
-function capQuad(i, size) {
-  const [sx, sy, sz] = size;
-  switch (i) {
-    case 0: return { args: [sz, sy], pos: [sx / 2, 0, 0], rot: [0, Math.PI / 2, 0] };
-    case 1: return { args: [sz, sy], pos: [-sx / 2, 0, 0], rot: [0, -Math.PI / 2, 0] };
-    case 2: return { args: [sx, sz], pos: [0, sy / 2, 0], rot: [-Math.PI / 2, 0, 0] };
-    case 3: return { args: [sx, sz], pos: [0, -sy / 2, 0], rot: [Math.PI / 2, 0, 0] };
-    case 4: return { args: [sx, sy], pos: [0, 0, sz / 2], rot: [0, 0, 0] };
-    default: return { args: [sx, sy], pos: [0, 0, -sz / 2], rot: [0, Math.PI, 0] };
-  }
-}
 const noopRaycast = () => null;
 // Imperative (not the onAfterRender prop — R3F may not forward it to the object,
 // and without a per-face stencil clear the caps accumulate into full grey faces).
@@ -129,11 +111,8 @@ export default function SectionBox() {
     const d = drag.current;
     if (!d) return;
     const delta = closestAxisParam(ray.origin, ray.direction, d.A0, d.N) - d.t0;
-    const newSize = [...d.startSize];
-    newSize[d.axis] = Math.max(MIN_THICK, d.startSize[d.axis] + delta);
-    const applied = newSize[d.axis] - d.startSize[d.axis];
-    const nc = new THREE.Vector3(...d.startCenter).addScaledVector(d.N, applied / 2);
-    setSection({ center: [nc.x, nc.y, nc.z], size: newSize });
+    const next = faceDragResult({ startCenter: d.startCenter, startSize: d.startSize, axis: d.axis, normal: d.N.toArray(), delta });
+    setSection({ center: next.center, size: next.size });
   };
   const endDrag = () => {
     if (!drag.current) return;
