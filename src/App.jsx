@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo, Fragment } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import Scene from './viewer/Scene.jsx';
 import FieldBadge from './viewer/barfield/FieldBadge.jsx';
 import ViewBadge from './viewer/ViewBadge.jsx';
@@ -12,6 +12,9 @@ import { lapLengthMm, barBond, lapBondFor } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
 import { packViewerHtml, cleanViewerTitle, viewerFileName, parseProjectFile, DEFAULT_VIEWER_TITLE } from './standalone/pack.js';
 import { loadViewerTemplate } from './standalone/exportViewer.js';
+import BbsTable from './bbs/BbsTable.jsx';
+import BbsGroups from './bbs/BbsGroups.jsx';
+import { flattenItems, makeRowFilter, filterGroups, groupBySet } from './bbs/tableView.js';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
 // IFC load so the main bundle stays light. See IfcPanel handlers.
 import './App.css';
@@ -1409,6 +1412,10 @@ function ViewportBar() {
   );
 }
 
+// Column widths of the BBS table, in px (the last one takes the rest): row actions, #, Mark, Type, Shape, Ø, Bars, Cut, Wt, Bond, Set.
+const BBS_COLS = [104, 56, 96, 190, 60, 48, 64, 84, 76, 72, null];
+const BBS_DEFAULT_H = 300; // px, until the user drags the panel's top edge (then their height is remembered)
+
 function BbsStrip() {
   const bars = useStore((s) => s.bars);
   const concretes = useStore((s) => s.concretes);
@@ -1430,8 +1437,33 @@ function BbsStrip() {
   const insertFileRef = useRef(null);
 
   const [elemFilter, setElemFilter] = useState('all');
-  const [groupByElem, setGroupByElem] = useState(true);
+  // How the table is grouped: under concrete-element headers, under ▦ group headers (the Set column), or not at all. Remembered.
+  const [groupMode, setGroupModeState] = useState(() => {
+    try {
+      const v = localStorage.getItem('barbending.bbsGroupMode');
+      return v === 'set' || v === 'none' ? v : 'element';
+    } catch {
+      return 'element';
+    }
+  });
+  const setGroupMode = (m) => {
+    setGroupModeState(m);
+    try { localStorage.setItem('barbending.bbsGroupMode', m); } catch { /* storage unavailable */ }
+  };
   const [collapsed, setCollapsed] = useState({});
+  const [view, setView] = useState('rows'); // 'rows' | 'groups' (the overview of every member and ▦ group)
+  const [query, setQuery] = useState(''); // the find box of the Rows view
+  const [groupQuery, setGroupQuery] = useState(''); // the find box of the Groups view
+  const [goNonce, setGoNonce] = useState(0); // bumped by "Go to selection"
+  const [jump, setJump] = useState(null); // a jump from the Groups view to a group in the table
+  const [maximized, setMaximized] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(() => {
+    try { return localStorage.getItem('barbending.bbsTools') !== '0'; } catch { return true; }
+  });
+  const toggleTools = () => {
+    setToolsOpen(!toolsOpen);
+    try { localStorage.setItem('barbending.bbsTools', toolsOpen ? '0' : '1'); } catch { /* storage unavailable */ }
+  };
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [joinMode, setJoinMode] = useState(false);
   const [joinedIds, setJoinedIds] = useState([]);
@@ -1448,13 +1480,15 @@ function BbsStrip() {
   const sortArrow = (key) => (sortKey === key ? (sortDir === 1 ? ' ▲' : ' ▼') : '');
 
   // Resizable bottom-panel height (px), persisted like the side width.
-  // Drag the top-edge handle up/down; double-click resets to 240.
+  // Drag the top-edge handle up/down; double-click resets to BBS_DEFAULT_H.
   const [bbsHeight, setBbsHeight] = useState(() => {
     try {
-      const saved = Number(localStorage.getItem('barbending.bbsHeight'));
-      return Number.isFinite(saved) ? Math.max(120, Math.min(800, saved)) : 240;
+      // Nothing saved means the default: Number(null) is 0, which used to clamp to 120 px on a first run (the toolbar alone filled it).
+      const raw = localStorage.getItem('barbending.bbsHeight');
+      const saved = raw === null ? NaN : Number(raw);
+      return Number.isFinite(saved) && saved > 0 ? Math.max(120, Math.min(800, saved)) : BBS_DEFAULT_H;
     } catch {
-      return 240;
+      return BBS_DEFAULT_H;
     }
   });
   const [bbsResizing, setBbsResizing] = useState(false);
@@ -1612,14 +1646,43 @@ function BbsStrip() {
   // order, else the sorted flat list). Shift-click ranges span THIS order —
   // never the raw model index range, which diverges as soon as sorting or
   // element grouping reorders the rows.
-  const groupedView = joinMode || (elemFilter === 'all' && groupByElem);
-  const visibleOrder = useMemo(() => (
-    groupedView
-      ? groups.flatMap((g) => g.rows.map((r) => r._origIdx))
-      : sortedRows.map((r) => r._origIdx)
-  ), [groupedView, groups, sortedRows]);
+  // Which grouping the table shows: joined members always group by element, and "Element" grouping needs "All Elements".
+  const elementGrouped = joinMode || (elemFilter === 'all' && groupMode === 'element');
+  const setGrouped = !joinMode && groupMode === 'set';
+  const groupedView = elementGrouped || setGrouped;
+  const setGroups = useMemo(() => groupBySet(sortedRows), [sortedRows]);
+  const hostNameOf = useMemo(() => (r) => (r.host && concMap.get(r.host)?.name) || '', [concMap]);
+  // The find box narrows what the table lists. The totals, the exports and the group headers keep counting the whole Element scope.
+  const rowPred = useMemo(() => makeRowFilter(query), [query]);
+  const shownGroups = useMemo(() => {
+    const base = elementGrouped ? groups : setGrouped ? setGroups : null;
+    return base ? filterGroups({ groups: base, pred: rowPred, hostNameOf }) : null;
+  }, [elementGrouped, setGrouped, groups, setGroups, rowPred, hostNameOf]);
+  const shownFlat = useMemo(
+    () => (rowPred && !groupedView ? sortedRows.filter((r) => rowPred(r, hostNameOf(r))) : sortedRows),
+    [rowPred, groupedView, sortedRows, hostNameOf],
+  );
+  // What the table draws (only the part on screen): group headers and rows, in order; collapsed groups keep their header only.
+  const items = useMemo(() => flattenItems({ groups: shownGroups, collapsed, rows: shownFlat }), [shownGroups, collapsed, shownFlat]);
+  const shownCount = shownGroups ? shownGroups.reduce((a, g) => a + g.shown.length, 0) : shownFlat.length;
+  const visibleOrder = useMemo(
+    () => (shownGroups ? shownGroups.flatMap((g) => g.shown.map((r) => r._origIdx)) : shownFlat.map((r) => r._origIdx)),
+    [shownGroups, shownFlat],
+  );
+  const selSet = useMemo(() => new Set(selectedBars || []), [selectedBars]);
 
   const toggleCollapse = (gid) => setCollapsed((c) => ({ ...c, [gid]: !c[gid] }));
+  const collapseAll = () => setCollapsed(Object.fromEntries((shownGroups || []).map((g) => [g.id, true])));
+  const expandAll = () => setCollapsed({});
+  const expandGroup = (gid) => setCollapsed((c) => (c[gid] ? { ...c, [gid]: false } : c));
+  // From the Groups view: show that group in the table (with the grouping that has it), opened and at the top.
+  const jumpToGroup = (g) => {
+    if (g.kind === 'set') setGroupMode('set');
+    else if (!joinMode && elemFilter === 'all') setGroupMode('element');
+    setQuery('');
+    setView('rows');
+    setJump({ gid: g.id, firstIdx: g.rows[0] ? g.rows[0]._origIdx : -1 });
+  };
 
   // Delete mode: Esc disarms (skipped while typing in a field).
   useEffect(() => {
@@ -1674,7 +1737,7 @@ function BbsStrip() {
 
   const renderRow = (r) => {
     const i = r._origIdx;
-    const isSel = (selectedBars || []).includes(i);
+    const isSel = selSet.has(i);
     return (
       <tr
         key={i}
@@ -1740,217 +1803,316 @@ function BbsStrip() {
     );
   };
 
+  // The header of a group in the table: a member or a ▦ group, with its totals and what can be done with it. Also pinned under the column
+  // titles while the table scrolls inside the group.
+  const renderGroupRow = (g, pinned) => {
+    const open = !collapsed[g.id];
+    const isSet = g.kind === 'set';
+    const match = rowPred && g.shown && g.shown.length !== g.rows.length ? ` · ${g.shown.length} match` : '';
+    return (
+      <tr
+        key={`g:${g.id}${pinned ? ':pin' : ''}`}
+        className={`bbs-group-row${pinned ? ' pin' : ''}`}
+        onClick={() => toggleCollapse(g.id)}
+        title={open ? 'Click to collapse this group' : 'Click to expand this group'}
+      >
+        <td colSpan={BBS_COLS.length}>
+          <div className="bbs-group-line">
+            <span className="bbs-group-title">
+              <span>{open ? '▼' : '▶'}</span>
+              <strong>{isSet ? `▦ ${g.name}` : `📦 ${g.name}`}</strong>
+              <span className="bbs-group-badge">
+                {g.rows.length} rows · {g.totalBars} bars · {g.totalW.toFixed(1)} kg
+                {g.concrete ? ` · ${g.volM3.toFixed(3)} m³ · ${g.ratio == null ? 'n/a' : `${g.ratio.toFixed(1)} kg/m³`}` : ''}
+                {match}
+              </span>
+            </span>
+            <span className="btnrow inline" onClick={(e) => e.stopPropagation()} style={{ gap: 4 }}>
+              {isSet ? (
+                g.setId && (
+                  <>
+                    <button className="ghost sm" onClick={() => selectSet(g.setId)} title={`Select every bar of ${g.name} (the Set card opens on the left)`}>▦ Select</button>
+                    <button className="ghost sm" onClick={() => ungroupSet(g.setId)} title={`Dissolve ${g.name}: its bars stay, they just edit one by one again (undoable)`}>Ungroup</button>
+                  </>
+                )
+              ) : (
+                <>
+                  {g.concrete && (
+                    <button className="ghost sm" onClick={() => requestFit('concrete', g.id)} title={`Zoom 3D view to ${g.name}`}>🎯 Zoom</button>
+                  )}
+                  <button className="ghost sm" onClick={() => { setJoinMode(false); setElemFilter(g.id); }} title={`Filter table and BBS to ${g.name}`}>🔍 Pick only</button>
+                </>
+              )}
+              <button
+                className="ghost sm"
+                onClick={() => downloadBbsCsv(g.rows.map((r) => bars[r._origIdx]), concretes, `BBS_${g.name.replace(/[\s\W]+/g, '_')}.csv`, { memberIds: g.concrete ? [g.id] : [] })}
+                title={`Export BBS CSV with volume + ratio for ${g.name}`}
+              >⤓ BBS CSV</button>
+            </span>
+          </div>
+        </td>
+      </tr>
+    );
+  };
+
+  const headCells = (
+    <>
+      <th />
+      <th>#</th>
+      <th onClick={() => toggleSort('Bar_mark')} title="Sort by bar mark (natural order)" style={{ cursor: 'pointer' }}>Mark{sortArrow('Bar_mark')}</th>
+      <th onClick={() => toggleSort('Rebar_Type')} title="Sort by type" style={{ cursor: 'pointer' }}>Type{sortArrow('Rebar_Type')}</th>
+      <th>Shape</th>
+      <th onClick={() => toggleSort('Dia')} title="Sort by diameter" style={{ cursor: 'pointer' }}>Ø{sortArrow('Dia')}</th>
+      <th onClick={() => toggleSort('_copies')} title="Sort by bar count" style={{ cursor: 'pointer' }}>Bars{sortArrow('_copies')}</th>
+      <th onClick={() => toggleSort('_cut')} title="Sort by cut length" style={{ cursor: 'pointer' }}>Cut (mm){sortArrow('_cut')}</th>
+      <th onClick={() => toggleSort('Weight_kg')} title="Sort by weight" style={{ cursor: 'pointer' }}>Wt (kg){sortArrow('Weight_kg')}</th>
+      <th>Bond</th>
+      <th onClick={() => toggleSort('setId')} title="Sort by group" style={{ cursor: 'pointer' }}>Set{sortArrow('setId')}</th>
+    </>
+  );
+
   return (
-    <footer className="bbs" style={{ flex: `0 0 ${bbsHeight}px` }}>
+    <footer className={`bbs${maximized ? ' max' : ''}`} style={{ flex: maximized ? '0 0 75vh' : `0 0 ${bbsHeight}px` }}>
       <div
         className={`bbs-resizer ${bbsResizing ? 'active' : ''}`}
-        onMouseDown={startBbsResize}
+        onMouseDown={maximized ? undefined : startBbsResize}
         onDoubleClick={() => {
-          setBbsHeight(240);
-          try { localStorage.setItem('barbending.bbsHeight', '240'); } catch {}
+          setBbsHeight(BBS_DEFAULT_H);
+          try { localStorage.setItem('barbending.bbsHeight', String(BBS_DEFAULT_H)); } catch { /* storage unavailable */ }
         }}
-        title="Drag up/down to resize the BBS panel · Double-click to reset"
+        title="Drag up/down to resize the BBS panel · Double-click to reset (⤢ makes it tall)"
       >
         <div className="bbs-resizer-handle" />
       </div>
-      <div className="bbstool">
+      <div className="bbstool bbs-nav">
         <strong>
           {joinMode || elemFilter !== 'all'
             ? `BBS for ${filterLabel} · ${filteredRows.length} rows · ${totalBars} bars · ${totalW.toFixed(1)} kg · ${volStr} concrete · ${ratioStr}`
             : `BBS · ${filteredRows.length} rows · ${totalBars} bars · ${totalW.toFixed(1)} kg · ${volStr} concrete · ${ratioStr}`}
         </strong>
-
-        <label className="bbs-filter" title="Filter table & BBS CSV exports to a specific concrete member">
-          <span>Element:</span>
-          <select value={joinMode ? '__joined' : elemFilter} onChange={(e) => {
-            if (e.target.value === '__joined') {
-              setJoinMode(true);
-              if (!joinedIds.length) setJoinedIds((concretes || []).map((c) => c.id));
-            } else {
-              setJoinMode(false);
-              setElemFilter(e.target.value);
-            }
-          }}>
-            <option value="all">All Elements ({allRows.length} marks)</option>
-            {visibleConcretes.map((c) => (
-              <option key={c.id} value={c.id}>{c.name} ({marksByHost.get(c.id) || 0} marks)</option>
-            ))}
-            {activeConcrete && !visibleConcretes.some((c) => c.id === activeConcrete.id) && (
-              <option value={activeConcrete.id}>{activeConcrete.name} ({marksByHost.get(activeConcrete.id) || 0} marks)</option>
-            )}
-            {(marksByHost.get('unhosted') || 0) > 0 && (
-              <option value="unhosted">Free / Unassigned ({marksByHost.get('unhosted')} marks)</option>
-            )}
-            {concretes.length > 1 && <option value="__joined">🔗 Joined members…</option>}
-          </select>
-        </label>
-        <input
-          className="member-search"
-          placeholder="Filter members…"
-          title="Narrow the Element dropdown and the join picker (scales to hundreds of members)"
-          value={memberSearch}
-          onChange={(e) => setMemberSearch(e.target.value)}
-        />
-
-        {joinMode && (
-          <div className="join-list" title="Tick members to join into one BBS (volumes + ratio combine)">
-            <div className="join-head">
-              <span>{joinedIds.length} members · {filteredRows.length} marks · {totalW.toFixed(1)} kg · {volStr} · {ratioStr}</span>
-              <span style={{ display: 'inline-flex', gap: 4 }}>
-                <button className="ghost sm" onClick={() => setJoinedIds((concretes || []).map((c) => c.id))}>All</button>
-                <button className="ghost sm" onClick={() => setJoinedIds([])}>None</button>
-                <button className="ghost sm" onClick={() => setJoinedIds((prev) => (concretes || []).filter((c) => !prev.includes(c.id)).map((c) => c.id))} title="Invert selection">Invert</button>
-              </span>
-            </div>
-            {joinGroups.map((g) => {
-              const ids = g.members.map((c) => c.id);
-              const allIn = ids.every((id) => joinedSet.has(id));
-              const kindVol = g.members.filter((c) => joinedSet.has(c.id)).reduce((a, c) => a + concreteVolumeM3(c), 0);
-              return (
-                <div key={g.kind} className="join-group">
-                  <button className="ghost sm" onClick={() => toggleKind(g.members)} title={allIn ? `Untick all ${g.kind}s` : `Tick all ${g.kind}s`}>
-                    {allIn ? '☑' : '☐'} {g.kind}s ({g.members.length}{kindVol > 0 ? ` · ${kindVol.toFixed(2)} m³ sel` : ''})
-                  </button>
-                  {g.members.map((c) => (
-                    <label key={c.id} className="chk" style={{ margin: 0, fontSize: 11 }}>
-                      <input
-                        type="checkbox"
-                        checked={joinedSet.has(c.id)}
-                        onChange={(e) => setJoinedIds((prev) => e.target.checked ? [...prev, c.id] : prev.filter((id) => id !== c.id))}
-                      />
-                      {c.name} ({marksByHost.get(c.id) || 0} · {concreteVolumeM3(c).toFixed(2)} m³)
-                    </label>
-                  ))}
-                </div>
-              );
-            })}
-            {!joinGroups.length && <span className="hint">No members match “{memberSearch}”.</span>}
-          </div>
-        )}
-
-        {!joinMode && elemFilter === 'all' && (
-          <label className="chk" style={{ margin: 0, fontSize: 11 }} title="Group rebar rows under concrete element headers">
-            <input type="checkbox" checked={groupByElem} onChange={(e) => setGroupByElem(e.target.checked)} />
-            Group by Element
-          </label>
-        )}
-
-        <label className="bbs-filter" title="Sort rows: Mark uses natural order (B2 < B10). Applies within each element group too.">
-          <span>Sort:</span>
-          <select value={sortKey} onChange={(e) => { setSortKey(e.target.value); setSortDir(1); }}>
-            <option value="none">Model order</option>
-            <option value="Bar_mark">Bar mark</option>
-            <option value="Dia">Diameter Ø</option>
-            <option value="Rebar_Type">Type</option>
-            <option value="_cut">Cut length</option>
-            <option value="Weight_kg">Weight</option>
-            <option value="setId">Group</option>
-          </select>
-        </label>
-        {sortKey !== 'none' && (
-          <button className="ghost sm" onClick={() => setSortDir((d) => (d === 1 ? -1 : 1))} title="Toggle ascending / descending">
-            {sortDir === 1 ? '↑ Asc' : '↓ Desc'}
-          </button>
-        )}
-
-        {multiSel.length > 1 && (
-          <button
-            className="sm"
-            style={{ background: '#166534', fontWeight: 700 }}
-            onClick={() => {
-              const r = groupBars(multiSel);
-              if (!r?.ok) alert(r?.msg || 'Group failed.');
-            }}
-            title="Make the selected bars a parametric group — then edit Dia, dims, type and lengths together in the green Set card (left Rebar tab). Undoable."
-          >
-            ▦ Group {multiSel.length}
-          </button>
-        )}
-        {(activeSetId || multiSetIds.length > 0) && (
-          <button
-            className="ghost sm"
-            onClick={() => {
-              if (multiSetIds.length === 1) ungroupSet(multiSetIds[0]);
-              else if (activeSetId) ungroupSet(activeSetId);
-              else ungroupBars(multiSel);
-            }}
-            title="Remove the selected bars from their group (dims stay, they just edit solo again). Undoable."
-          >
-            ▦ Ungroup{multiSetIds.length === 1 ? ` ${multiSetIds[0]}` : activeSetId ? ` ${activeSetId}` : ''}
-          </button>
-        )}
-        {multiSel.length > 1 && (
-          <span className="hint">{multiSel.length} selected — sort by Ø/Mark, then ▦ Group to edit them as one</span>
-        )}
-
-        {activeConcrete && (
-          <button className="ghost sm" onClick={() => requestFit('concrete', activeConcrete.id)} title={`Zoom camera to ${activeConcrete.name}`}>
-            🎯 Zoom {activeConcrete.name}
-          </button>
-        )}
-
-        <span className="btnrow inline">
-          <button
-            className={deleteArmed ? 'danger sm' : 'ghost sm'}
-            style={deleteArmed ? { background: '#dc2626', fontWeight: 700 } : undefined}
-            onClick={() => setDeleteArmed((v) => !v)}
-            title={deleteArmed ? 'Delete mode ON: click any row to delete it · Esc to exit · Ctrl+Z undoes' : 'Delete mode: arm, then click rows to delete them (undoable)'}
-          >
-            {deleteArmed ? '🗑 Delete ON' : '🗑 Delete'}
-          </button>
-          <button className="ghost sm" onClick={() => setBars(autoAssignBarMarks(bars, { scopeByHost: joinMode || elemFilter !== 'all' }))} title="Detect and unify bar marks for all bars with identical shape, diameter, and length">
-            🏷️ Match Marks
-          </button>
-          <button style={{ background: '#059669', fontWeight: 600 }} onClick={() => downloadBbsCsv(exportBars, concretes, bbsFilename, { memberIds: exportMemberIds })} title={`Generate BBS Schedule CSV with concrete volumes + rebar ratio (${joinMode || elemFilter !== 'all' ? filterLabel : 'Entire Model'})`}>
-            ⤓ BBS Schedule CSV {(joinMode || elemFilter !== 'all') ? `(${filterLabel})` : ''}
-          </button>
-          <button onClick={() => downloadCsv(exportBars, rebarFilename)} title={`Export FreeCAD parametric template CSV (${elemFilter === 'all' ? 'Entire Model' : filterLabel})`}>
-            ⤓ rebar_scheduling.csv
-          </button>
-          <button onClick={() => insertFileRef.current?.click()} title="Insert / Append rebars from CSV into existing concrete elements (Defaults to XY plane)">+ Insert CSV</button>
-          <input ref={insertFileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, true)} />
-          <button onClick={() => fileRef.current?.click()} title="Import and replace all bars in model (Defaults to XY plane)">⤒ Replace CSV</button>
-          <input ref={fileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, false)} />
+        {view === 'rows' && rowPred && <span className="hint">{shownCount} of {filteredRows.length} rows match</span>}
+        <span className="seg">
+          <button className={view === 'rows' ? 'on' : ''} onClick={() => setView('rows')} title="The bar rows, grouped as chosen under Tools">Rows</button>
+          <button className={view === 'groups' ? 'on' : ''} onClick={() => setView('groups')} title="Every member and ▦ group with its totals — click one to jump to it">Groups</button>
         </span>
-        <span className="hint">{deleteArmed ? '🗑 Delete mode: click a row to delete · Esc to exit · Ctrl+Z undoes' : 'Tip: Click headers to sort by Mark / Ø · Checkbox or Ctrl-click to multi-select · Shift-click for a range · ▦ Group edits them as one'}</span>
+        <input
+          className="bbs-find"
+          type="search"
+          placeholder={view === 'rows' ? 'Find mark, type, Ø, group, member…' : 'Find a member or group…'}
+          title={view === 'rows'
+            ? 'Narrows the table as you type: every word must match a mark, # tag, type, Ø (16, ø16 or d16), ▦ group (S8), bond or member name. Esc clears it.'
+            : 'Narrows the list by name or member. Esc clears it.'}
+          value={view === 'rows' ? query : groupQuery}
+          onChange={(e) => (view === 'rows' ? setQuery(e.target.value) : setGroupQuery(e.target.value))}
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape') return;
+            e.preventDefault();
+            if (view === 'rows') setQuery(''); else setGroupQuery('');
+            e.currentTarget.blur();
+          }}
+        />
+        {view === 'rows' && groupedView && (
+          <>
+            <button className="ghost sm" onClick={collapseAll} title="Collapse every group to its header, to see them all at once">⊟ Collapse all</button>
+            <button className="ghost sm" onClick={expandAll} title="Open every group">⊞ Expand all</button>
+          </>
+        )}
+        {view === 'rows' && (
+          <button className="ghost sm" onClick={() => setGoNonce((n) => n + 1)} title="Scroll the table to the selected bar (clicking a bar in the 3D view does this by itself)">⌖ Selection</button>
+        )}
+        <span className="grow" />
+        <span className="hint bbs-info" title="Click a column title to sort by it · Checkbox or Ctrl-click to multi-select · Shift-click for a range · Double-click a row to zoom to it · ▦ Group edits the selected rows as one">ⓘ</span>
+        <button className="ghost sm" onClick={toggleTools} title="Show or hide the filter, group, sort and export buttons to give the table more room">{toolsOpen ? '▴ Tools' : '▾ Tools'}</button>
+        <button className="ghost sm" onClick={() => setMaximized((m) => !m)} title={maximized ? 'Back to the normal panel height' : 'Make the panel tall (three quarters of the window)'}>{maximized ? '⤡' : '⤢'}</button>
       </div>
-      <div className="tblwrap">
-        <table>
-          <thead><tr><th></th><th>#</th><th onClick={() => toggleSort('Bar_mark')} title="Sort by bar mark (natural order)" style={{ cursor: 'pointer' }}>Mark{sortArrow('Bar_mark')}</th><th onClick={() => toggleSort('Rebar_Type')} title="Sort by type" style={{ cursor: 'pointer' }}>Type{sortArrow('Rebar_Type')}</th><th>Shape</th><th onClick={() => toggleSort('Dia')} title="Sort by diameter" style={{ cursor: 'pointer' }}>Ø{sortArrow('Dia')}</th><th onClick={() => toggleSort('_copies')} title="Sort by bar count" style={{ cursor: 'pointer' }}>Bars{sortArrow('_copies')}</th><th onClick={() => toggleSort('_cut')} title="Sort by cut length" style={{ cursor: 'pointer' }}>Cut (mm){sortArrow('_cut')}</th><th onClick={() => toggleSort('Weight_kg')} title="Sort by weight" style={{ cursor: 'pointer' }}>Wt (kg){sortArrow('Weight_kg')}</th><th>Bond</th><th onClick={() => toggleSort('setId')} title="Sort by group" style={{ cursor: 'pointer' }}>Set{sortArrow('setId')}</th></tr></thead>
-          <tbody>
-            {groupedView ? (
-              groups.map((g) => {
-                const isCollapsed = !!collapsed[g.id];
+      {toolsOpen && (
+        <div className="bbstool bbs-tools">
+          <label className="bbs-filter" title="Filter table & BBS CSV exports to a specific concrete member">
+            <span>Element:</span>
+            <select value={joinMode ? '__joined' : elemFilter} onChange={(e) => {
+              if (e.target.value === '__joined') {
+                setJoinMode(true);
+                if (!joinedIds.length) setJoinedIds((concretes || []).map((c) => c.id));
+              } else {
+                setJoinMode(false);
+                setElemFilter(e.target.value);
+              }
+            }}>
+              <option value="all">All Elements ({allRows.length} marks)</option>
+              {visibleConcretes.map((c) => (
+                <option key={c.id} value={c.id}>{c.name} ({marksByHost.get(c.id) || 0} marks)</option>
+              ))}
+              {activeConcrete && !visibleConcretes.some((c) => c.id === activeConcrete.id) && (
+                <option value={activeConcrete.id}>{activeConcrete.name} ({marksByHost.get(activeConcrete.id) || 0} marks)</option>
+              )}
+              {(marksByHost.get('unhosted') || 0) > 0 && (
+                <option value="unhosted">Free / Unassigned ({marksByHost.get('unhosted')} marks)</option>
+              )}
+              {concretes.length > 1 && <option value="__joined">🔗 Joined members…</option>}
+            </select>
+          </label>
+          <input
+            className="member-search"
+            placeholder="Filter members…"
+            title="Narrow the Element dropdown and the join picker (scales to hundreds of members)"
+            value={memberSearch}
+            onChange={(e) => setMemberSearch(e.target.value)}
+          />
+
+          {joinMode && (
+            <div className="join-list" title="Tick members to join into one BBS (volumes + ratio combine)">
+              <div className="join-head">
+                <span>{joinedIds.length} members · {filteredRows.length} marks · {totalW.toFixed(1)} kg · {volStr} · {ratioStr}</span>
+                <span style={{ display: 'inline-flex', gap: 4 }}>
+                  <button className="ghost sm" onClick={() => setJoinedIds((concretes || []).map((c) => c.id))}>All</button>
+                  <button className="ghost sm" onClick={() => setJoinedIds([])}>None</button>
+                  <button className="ghost sm" onClick={() => setJoinedIds((prev) => (concretes || []).filter((c) => !prev.includes(c.id)).map((c) => c.id))} title="Invert selection">Invert</button>
+                </span>
+              </div>
+              {joinGroups.map((g) => {
+                const ids = g.members.map((c) => c.id);
+                const allIn = ids.every((id) => joinedSet.has(id));
+                const kindVol = g.members.filter((c) => joinedSet.has(c.id)).reduce((a, c) => a + concreteVolumeM3(c), 0);
                 return (
-                  <Fragment key={`gwrap-${g.id}`}>
-                    <tr className="bbs-group-row" onClick={() => toggleCollapse(g.id)}>
-                      <td colSpan={11}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                            <span>{isCollapsed ? '▶' : '▼'}</span>
-                            <strong>📦 {g.name}</strong>
-                            <span className="bbs-group-badge">{g.rows.length} rows · {g.totalBars} bars · {g.totalW.toFixed(1)} kg{g.concrete ? ' · ' + g.volM3.toFixed(3) + ' m³ · ' + (g.ratio == null ? 'n/a' : g.ratio.toFixed(1) + ' kg/m³') : ''}</span>
-                          </span>
-                          <span className="btnrow inline" onClick={(e) => e.stopPropagation()} style={{ gap: 4 }}>
-                            {g.concrete && (
-                              <button className="ghost sm" onClick={() => requestFit('concrete', g.id)} title={`Zoom 3D view to ${g.name}`}>🎯 Zoom</button>
-                            )}
-                            <button className="ghost sm" onClick={() => { setJoinMode(false); setElemFilter(g.id); }} title={`Filter table and BBS to ${g.name}`}>🔍 Pick only</button>
-                            <button className="ghost sm" onClick={() => downloadBbsCsv(g.rows.map((r) => bars[r._origIdx]), concretes, `BBS_${g.name.replace(/[\s\W]+/g, '_')}.csv`, { memberIds: g.concrete ? [g.id] : [] })} title={`Export BBS CSV with volume + ratio for ${g.name}`}>⤓ BBS CSV</button>
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                    {!isCollapsed && g.rows.map(renderRow)}
-                  </Fragment>
+                  <div key={g.kind} className="join-group">
+                    <button className="ghost sm" onClick={() => toggleKind(g.members)} title={allIn ? `Untick all ${g.kind}s` : `Tick all ${g.kind}s`}>
+                      {allIn ? '☑' : '☐'} {g.kind}s ({g.members.length}{kindVol > 0 ? ` · ${kindVol.toFixed(2)} m³ sel` : ''})
+                    </button>
+                    {g.members.map((c) => (
+                      <label key={c.id} className="chk" style={{ margin: 0, fontSize: 11 }}>
+                        <input
+                          type="checkbox"
+                          checked={joinedSet.has(c.id)}
+                          onChange={(e) => setJoinedIds((prev) => e.target.checked ? [...prev, c.id] : prev.filter((id) => id !== c.id))}
+                        />
+                        {c.name} ({marksByHost.get(c.id) || 0} · {concreteVolumeM3(c).toFixed(2)} m³)
+                      </label>
+                    ))}
+                  </div>
                 );
-              })
-            ) : (
-              sortedRows.map(renderRow)
-            )}
-          </tbody>
-        </table>
-      </div>
+              })}
+              {!joinGroups.length && <span className="hint">No members match “{memberSearch}”.</span>}
+            </div>
+          )}
+
+          {!joinMode && (
+            <label className="bbs-filter" title="How the table is grouped: under concrete-element headers (needs All Elements), under ▦ group headers (the Set column), or not at all">
+              <span>Group by:</span>
+              <select value={groupMode} onChange={(e) => { setGroupMode(e.target.value); setGoNonce((n) => n + 1); }}>
+                <option value="element">Element</option>
+                <option value="set">▦ Group</option>
+                <option value="none">None</option>
+              </select>
+            </label>
+          )}
+
+          <label className="bbs-filter" title="Sort rows: Mark uses natural order (B2 < B10). Applies within each group too.">
+            <span>Sort:</span>
+            <select value={sortKey} onChange={(e) => { setSortKey(e.target.value); setSortDir(1); }}>
+              <option value="none">Model order</option>
+              <option value="Bar_mark">Bar mark</option>
+              <option value="Dia">Diameter Ø</option>
+              <option value="Rebar_Type">Type</option>
+              <option value="_cut">Cut length</option>
+              <option value="Weight_kg">Weight</option>
+              <option value="setId">Group</option>
+            </select>
+          </label>
+          {sortKey !== 'none' && (
+            <button className="ghost sm" onClick={() => setSortDir((d) => (d === 1 ? -1 : 1))} title="Toggle ascending / descending">
+              {sortDir === 1 ? '↑ Asc' : '↓ Desc'}
+            </button>
+          )}
+
+          {multiSel.length > 1 && (
+            <button
+              className="sm"
+              style={{ background: '#166534', fontWeight: 700 }}
+              onClick={() => {
+                const r = groupBars(multiSel);
+                if (!r?.ok) alert(r?.msg || 'Group failed.');
+              }}
+              title="Make the selected bars a parametric group — then edit Dia, dims, type and lengths together in the green Set card (left Rebar tab). Undoable."
+            >
+              ▦ Group {multiSel.length}
+            </button>
+          )}
+          {(activeSetId || multiSetIds.length > 0) && (
+            <button
+              className="ghost sm"
+              onClick={() => {
+                if (multiSetIds.length === 1) ungroupSet(multiSetIds[0]);
+                else if (activeSetId) ungroupSet(activeSetId);
+                else ungroupBars(multiSel);
+              }}
+              title="Remove the selected bars from their group (dims stay, they just edit solo again). Undoable."
+            >
+              ▦ Ungroup{multiSetIds.length === 1 ? ` ${multiSetIds[0]}` : activeSetId ? ` ${activeSetId}` : ''}
+            </button>
+          )}
+          {multiSel.length > 1 && (
+            <span className="hint" title="Sort by Ø/Mark, then ▦ Group to edit them as one">{multiSel.length} selected</span>
+          )}
+
+          {activeConcrete && (
+            <button className="ghost sm" onClick={() => requestFit('concrete', activeConcrete.id)} title={`Zoom camera to ${activeConcrete.name}`}>
+              🎯 Zoom {activeConcrete.name}
+            </button>
+          )}
+
+          <span className="btnrow inline">
+            <button
+              className={deleteArmed ? 'danger sm' : 'ghost sm'}
+              style={deleteArmed ? { background: '#dc2626', fontWeight: 700 } : undefined}
+              onClick={() => setDeleteArmed((v) => !v)}
+              title={deleteArmed ? 'Delete mode ON: click any row to delete it · Esc to exit · Ctrl+Z undoes' : 'Delete mode: arm, then click rows to delete them (undoable)'}
+            >
+              {deleteArmed ? '🗑 Delete ON' : '🗑 Delete'}
+            </button>
+            <button className="ghost sm" onClick={() => setBars(autoAssignBarMarks(bars, { scopeByHost: joinMode || elemFilter !== 'all' }))} title="Detect and unify bar marks for all bars with identical shape, diameter, and length">
+              🏷️ Match Marks
+            </button>
+            <button style={{ background: '#059669', fontWeight: 600 }} onClick={() => downloadBbsCsv(exportBars, concretes, bbsFilename, { memberIds: exportMemberIds })} title={`Generate BBS Schedule CSV with concrete volumes + rebar ratio (${joinMode || elemFilter !== 'all' ? filterLabel : 'Entire Model'})`}>
+              ⤓ BBS Schedule CSV {(joinMode || elemFilter !== 'all') ? `(${filterLabel})` : ''}
+            </button>
+            <button onClick={() => downloadCsv(exportBars, rebarFilename)} title={`Export FreeCAD parametric template CSV (${elemFilter === 'all' ? 'Entire Model' : filterLabel})`}>
+              ⤓ rebar_scheduling.csv
+            </button>
+            <button onClick={() => insertFileRef.current?.click()} title="Insert / Append rebars from CSV into existing concrete elements (Defaults to XY plane)">+ Insert CSV</button>
+            <input ref={insertFileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, true)} />
+            <button onClick={() => fileRef.current?.click()} title="Import and replace all bars in model (Defaults to XY plane)">⤒ Replace CSV</button>
+            <input ref={fileRef} type="file" accept=".csv" hidden onChange={(e) => onImport(e, false)} />
+          </span>
+          {deleteArmed && <span className="hint">🗑 Delete mode: click a row to delete · Esc to exit · Ctrl+Z undoes</span>}
+        </div>
+      )}
+      {view === 'rows' ? (
+        <BbsTable
+          items={items}
+          grouped={groupedView}
+          collapsed={collapsed}
+          head={headCells}
+          cols={BBS_COLS}
+          renderRow={renderRow}
+          renderGroupRow={renderGroupRow}
+          onExpandGroup={expandGroup}
+          goNonce={goNonce}
+          jump={jump}
+          emptyText={rowPred ? `No row matches “${query}”.` : 'No rows.'}
+        />
+      ) : (
+        <BbsGroups
+          elementGroups={groups}
+          setGroups={setGroups}
+          query={groupQuery}
+          hostNameOf={hostNameOf}
+          onJump={jumpToGroup}
+          onZoom={(g) => requestFit('concrete', g.id)}
+          onPickOnly={(g) => { setJoinMode(false); setElemFilter(g.id); setView('rows'); }}
+          onSelectSet={selectSet}
+          onUngroupSet={ungroupSet}
+        />
+      )}
     </footer>
   );
 }

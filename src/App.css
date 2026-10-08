@@ -189,6 +189,42 @@ tr.bbs-group-row { background: #111e3b !important; font-weight: 600; color: #38b
 tr.bbs-group-row:hover { background: #16284f !important; }
 tr.bbs-group-row td { padding: 5px 8px; }
 .bbs-group-badge { background: #1e3a8a; color: #93c5fd; font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 500; }
+
+/* Bottom BBS panel (src/bbs/): a toolbar in two rows, a table of fixed-height rows that draws only what is on screen (ROW_H in
+   src/bbs/tableView.js must equal --bbs-row-h, which the table sets from it), and the Groups overview. */
+.bbstool.bbs-nav, .bbstool.bbs-tools { padding: 4px 12px; gap: 8px; }
+.bbstool .grow { flex: 1 1 auto; }
+.bbs-find { background: #0b1528; color: #e2e8f0; border: 1px solid #2b3d63; border-radius: 5px; padding: 3px 8px; font-size: 12px; width: 250px; max-width: 40vw; }
+.bbs-find:focus { outline: 1px solid #38bdf8; }
+.bbs-tools .bbs-filter select { max-width: 230px; } /* a long member name must not push the buttons onto a second line (the open list still shows it in full) */
+.bbs-info { cursor: help; padding: 0 4px; }
+.bbs-nav .seg button { padding: 3px 10px; }
+.bbs-table { table-layout: fixed; min-width: 940px; border-collapse: separate; border-spacing: 0; }
+.bbs-table th, .bbs-table td { box-sizing: border-box; height: var(--bbs-row-h, 28px); padding: 0 8px; overflow: hidden; text-overflow: ellipsis; line-height: 18px; }
+.bbs-table thead tr, .bbs-table tbody tr { height: var(--bbs-row-h, 28px); }
+.bbs-table button.sm { padding: 1px 6px; line-height: 16px; }
+.bbs-table input[type=checkbox] { margin: 0 4px 0 0; vertical-align: middle; }
+.bbs-table tbody tr.bbs-spacer, .bbs-table tbody tr.bbs-spacer:hover { background: transparent; cursor: default; }
+.bbs-table tr.bbs-spacer td { padding: 0; border: 0; height: auto; }
+.bbs-table tr.bbs-empty, .bbs-table tr.bbs-empty:hover { background: transparent; cursor: default; }
+.bbs-table tr.bbs-empty td { height: auto; padding: 14px 8px; color: #93a4c4; }
+.bbs-table tr.bbs-group-row td { background: #111e3b; border-top: 2px solid #243b6b; border-bottom: 1px solid #243b6b; padding: 0 8px; }
+.bbs-table tr.bbs-group-row:hover td { background: #16284f; }
+/* The pinned group header: a row of no height whose cell sticks under the column titles, with its content floating over the first row
+   of the body (BbsTable.jsx explains why). It has no room of its own, so the table's first screenful is rows, not a repeated header. */
+.bbs-table thead tr.bbs-group-row { height: 0; }
+.bbs-table thead tr.bbs-group-row td { position: sticky; top: var(--bbs-row-h, 28px); z-index: 2; height: 0; padding: 0; border: 0; overflow: visible; background: transparent; }
+.bbs-table thead tr.bbs-group-row:hover td { background: transparent; }
+.bbs-table thead tr.bbs-group-row .bbs-group-line { position: absolute; left: 0; right: 0; top: 0; height: var(--bbs-row-h, 28px); box-sizing: border-box; padding: 0 8px; background: #111e3b; border-top: 2px solid #243b6b; border-bottom: 1px solid #243b6b; }
+.bbs-table thead tr.bbs-group-row:hover .bbs-group-line { background: #16284f; }
+.bbs-group-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 100%; white-space: nowrap; }
+.bbs-group-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+.bbs-group-title strong { overflow: hidden; text-overflow: ellipsis; }
+.bbs-table th.num, .bbs-table td.num { text-align: right; }
+.bbs-table tr.bbs-section-row td { background: #0f1a33; color: #93c5fd; font-size: 11px; cursor: default; }
+.bbs-groups tbody tr:not(.bbs-section-row):not(.bbs-empty) { cursor: pointer; }
+.bbs-groups td.bbs-gact { text-align: right; }
+.bbs-groups td.bbs-gact button { margin-left: 4px; }
 .cbox.hidden { opacity: 0.55; }
 .measure-label { font-size: 11px; color: #a5f3fc; background: rgba(8,47,73,.9); border: 1px solid #22d3ee; padding: 2px 7px; border-radius: 6px; white-space: nowrap; pointer-events: none; }
 .measure-label.vector { background: rgba(14, 116, 144, 0.92); border-color: #06b6d4; color: #ffffff; font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,0.4); }
