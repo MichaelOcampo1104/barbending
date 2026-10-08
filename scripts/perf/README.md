@@ -45,6 +45,7 @@ are listed in `runs`): on a machine shared with other GPU users one window can w
 | `gen_project.mjs` | Synthetic project JSON (mixed bar types, grids) |
 | `cdp_bench.mjs` | Load time, memory, DOM size, draw calls, fps (idle / orbit / zoom / close-up), latencies |
 | `check_field.mjs` | Functional checks of the field renderer against the legacy renderer (parity, picking, fallback) |
+| `check_select.mjs` | Functional checks of the Box and Lasso selection tools: the toolbar and Shift+B / Shift+L, the exact rule (a shape in the gap of a distribution set or the empty corner of a diagonal bar selects nothing), one-shot, Ctrl adds, Esc, the outlines, perspective and orthographic (`--only toolbar\|box\|lasso\|persp`); `--only perf --project scripts/perf/out/p1m.json` times a selection at a million bars |
 | `check_views.mjs` | Functional checks of the true views and the orthographic camera: exact axes from the dropdown and the gizmo, parallel projection, seamless Persp/Ortho switching, orbit / wheel / pan / keys / Fit All, picking, LOD, section box, end-on bars (dots), Fit IFC and a loaded IFC model (`--only views\|ortho\|gizmo\|nav\|field\|section\|dots\|ifc`); all sections take about 13 minutes, so run them one by one or in the background |
 
 Set `EDGE_PATH` if Edge is not at `C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe`.
