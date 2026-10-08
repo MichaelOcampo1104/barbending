@@ -9,6 +9,8 @@
 //          under the cursor stays put); right-drag pans like the perspective camera; +/- keys zoom; Fit All fits.
 // field  : bars pick by click (the nearest one along the ray) and switch lines <-> tubes with the zoom.
 // section: the section box clips in the orthographic view.
+// dots   : a bar that points straight at the camera (Front / Back: along app Y, Left / Right: along X, Top / Bottom:
+//          vertical) is a zero-length line in the far-zoom renderer; it must still show as a dot of its colour.
 // ifc    : a loaded IFC model (public/sample-concrete.ifc): Fit IFC keeps the orthographic view and frames the
 //          model, perspective Fit IFC is unchanged, and the model stays drawn after zooming out / in and in Top.
 import fs from 'node:fs';
@@ -26,7 +28,7 @@ const arg = (name, dflt) => {
 };
 const base = (arg('url') || '').replace(/\/$/, '');
 const only = arg('only', '');
-if (!base) { console.error('usage: node scripts/perf/check_views.mjs --url <app base url> [--only views|ortho|gizmo|nav|field|section|ifc]'); process.exit(2); }
+if (!base) { console.error('usage: node scripts/perf/check_views.mjs --url <app base url> [--only views|ortho|gizmo|nav|field|section|dots|ifc]'); process.exit(2); }
 
 let failures = 0;
 const report = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${msg}`); if (!ok) failures += 1; };
@@ -62,9 +64,9 @@ async function settle(b, maxMs = 20000) {
   }
 }
 
-async function openProject(b, query) {
+async function openProject(b, query, project = makeProject()) {
   const file = path.join(outDir, 'check_views_project.json');
-  fs.writeFileSync(file, JSON.stringify(makeProject()));
+  fs.writeFileSync(file, JSON.stringify(project));
   await b.send('Page.navigate', { url: `${base}/?${query}` });
   let ready = false;
   for (let i = 0; i < 100 && !ready; i++) {
@@ -82,7 +84,7 @@ async function openProject(b, query) {
     await sleep(250);
   }
   for (let i = 0; i < 200; i++) {
-    if (await b.ev('!!(window.__barfield && window.__barfield.ready && window.__barfield.rows === 6)', 5000).catch(() => false)) break;
+    if (await b.ev('!!(window.__barfield && window.__barfield.ready && window.__barfield.rows === ${project.bars.length})', 5000).catch(() => false)) break;
     await sleep(250);
   }
   await sleep(800);
@@ -449,6 +451,151 @@ async function section() {
   }
 }
 
+// Straight bars along each axis, far apart, so that in each of the six views the end-on bars are isolated dots.
+// Along app Y: plane XY, rotation 90. Along app X: plane XY, rotation 0. Vertical: plane XZ, rotation 90.
+const DOT_BARS = [
+  { mark: 'Y1', dia: 32, plane: 'XY', rot: 90, pos: [500, 0, 1000], len: 3000 },
+  { mark: 'Y2', dia: 32, plane: 'XY', rot: 90, pos: [1500, 0, 1500], len: 3000 },
+  { mark: 'Y3', dia: 32, plane: 'XY', rot: 90, pos: [2500, 0, 2000], len: 3000 },
+  { mark: 'X1', dia: 25, plane: 'XY', rot: 0, pos: [0, 4000, 3000], len: 3000 },
+  { mark: 'X2', dia: 25, plane: 'XY', rot: 0, pos: [0, 5000, 3500], len: 3000 },
+  { mark: 'Z1', dia: 20, plane: 'XZ', rot: 90, pos: [6000, 0, 0], len: 2000 },
+  { mark: 'Z2', dia: 20, plane: 'XZ', rot: 90, pos: [7000, 1000, 0], len: 2000 },
+];
+const DOT_COLOR = { 32: [59, 130, 246], 25: [168, 85, 247], 20: [239, 68, 68] }; // the palette's blue, purple and red
+// Which bars are end-on in which view, and the scene axis code the line shader is told about (1 = X, 2 = Y, 3 = Z).
+const DOT_VIEWS = {
+  front: { marks: ['Y1', 'Y2', 'Y3'], axis: 3 }, back: { marks: ['Y1', 'Y2', 'Y3'], axis: 3 },
+  left: { marks: ['X1', 'X2'], axis: 1 }, right: { marks: ['X1', 'X2'], axis: 1 },
+  top: { marks: ['Z1', 'Z2'], axis: 2 }, bottom: { marks: ['Z1', 'Z2'], axis: 2 },
+};
+
+function makeDotsProject() {
+  const bars = DOT_BARS.map((d, k) => ({
+    Rebar_tag: k + 1, Bar_mark: d.mark, Rebar_Type: 'straight', Plane: d.plane, Dia: d.dia, 'Length of Bar': d.len,
+    Pos_x: d.pos[0], Pos_y: d.pos[1], Pos_z: d.pos[2], Pos_Rotation: d.rot, qty: 1, qty_x: 1, spacing_x: 150, qty_y: 1, spacing_y: 150,
+    Group: 'dots', bond_condition: 'poor', Visible: 1,
+  }));
+  return { v: 1, app: 'barbending', savedAt: Date.now(), bars, concretes: [], refLines: [], cover: 40, bond: 'poor', selectedBar: 0, selectedBars: [] };
+}
+
+// Pixels near (cx, cy) (canvas CSS px) that differ from the local background in the direction of `color`:
+// anti-aliasing blends a thin dash with the background, so this looks at hue and strength, not an exact colour.
+const dotProbe = (cx, cy, color) => `(() => {
+  const c = document.querySelector('canvas'); const k = c.width / c.clientWidth;
+  const t = document.createElement('canvas'); t.width = c.width; t.height = c.height;
+  const x = t.getContext('2d', { willReadFrequently: true }); x.drawImage(c, 0, 0);
+  const R = Math.round(5 * k), px = Math.round(${cx} * k), py = Math.round(${cy} * k);
+  const x0 = Math.max(0, px - R), y0 = Math.max(0, py - R), w = Math.min(t.width - x0, 2 * R + 1), h = Math.min(t.height - y0, 2 * R + 1);
+  const d = x.getImageData(x0, y0, w, h).data;
+  const bg = [d[0], d[1], d[2]]; const col = ${JSON.stringify(color)};
+  const cv = [col[0] - bg[0], col[1] - bg[1], col[2] - bg[2]]; const cn = Math.hypot(cv[0], cv[1], cv[2]);
+  let n = 0, best = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const pv = [d[i] - bg[0], d[i + 1] - bg[1], d[i + 2] - bg[2]]; const pn = Math.hypot(pv[0], pv[1], pv[2]);
+    if (pn < 0.25 * cn) continue;
+    const cos = (pv[0] * cv[0] + pv[1] * cv[1] + pv[2] * cv[2]) / (pn * cn);
+    if (cos > 0.85) { n++; best = Math.max(best, pn / cn); }
+  }
+  return { n, best };
+})()`;
+const endOnUniform = (b) => b.ev(`(() => { let v = null; window.__scene.traverse((o) => { if (v === null && o.userData && o.userData.barField === 'lines') v = o.material.uniforms.uEndOnAxis.value; }); return v; })()`);
+
+async function dots() {
+  const b = await launchBrowser({ instrument: INSTR });
+  try {
+    await openProject(b, 'autotest=dots', makeDotsProject());
+    const byMark = Object.fromEntries(DOT_BARS.map((d) => [d.mark, d]));
+    const startOf = (d) => [d.pos[0] / 1000, d.pos[2] / 1000, -d.pos[1] / 1000]; // app mm -> scene m (x, z up, -y)
+    const probeAll = async (marks) => {
+      const seen = [];
+      for (const m of marks) {
+        const d = byMark[m];
+        const [sx, sy] = await toScreen(b, startOf(d));
+        const r = await b.ev(dotProbe(sx, sy, DOT_COLOR[d.dia]));
+        seen.push(`${m} ${r.n > 0 ? 'dot' : 'MISSING'}`);
+      }
+      return seen;
+    };
+    const keepShot = async (name) => {
+      // A picture of a failure, next to the other rig output.
+      const shot = await b.send('Page.captureScreenshot', { format: 'png' });
+      fs.writeFileSync(path.join(outDir, name), Buffer.from(shot.data, 'base64'));
+    };
+    for (const [view, { marks, axis }] of Object.entries(DOT_VIEWS)) {
+      await chooseView(b, view);
+      await settle(b);
+      await b.ev(FIT);
+      await sleep(500);
+      await settle(b);
+      await sleep(400);
+      // Close: the bars are drawn as tubes, and an open tube seen end-on has no area.
+      const cam = await b.ev(CAM);
+      const tubesNear = await tubesDrawn(b);
+      const near = await probeAll(marks);
+      report(cam.ortho && tubesNear > 0 && near.every((t) => t.endsWith('dot')),
+        `dots: in the ${view} view end-on bars show as dots when drawn as tubes (${near.join(', ')}; ${cam.zoom.toFixed(0)} px/m, ${tubesNear} tube objects)`);
+      if (!near.every((t) => t.endsWith('dot'))) await keepShot(`check-dots-${view}-tubes.png`);
+      // Far: the bars are lines, and a line seen end-on has no length.
+      const R = await rectOf(b);
+      for (let i = 0; i < 10; i++) { await wheel(b, [R.x + R.w / 2, R.y + R.h / 2], 200); await sleep(40); }
+      await settle(b);
+      await sleep(700);
+      const camFar = await b.ev(CAM);
+      const tubesFar = await tubesDrawn(b);
+      const far = await probeAll(marks);
+      report(tubesFar === 0 && far.every((t) => t.endsWith('dot')),
+        `dots: and when drawn as lines (${far.join(', ')}; ${camFar.zoom.toFixed(0)} px/m, ${tubesFar} tube objects)`);
+      if (!far.every((t) => t.endsWith('dot'))) await keepShot(`check-dots-${view}-lines.png`);
+      const u = await endOnUniform(b);
+      report(u === axis, `dots: the line shader is told the camera looks along axis ${axis} (uEndOnAxis ${u})`);
+    }
+
+    // Selecting an end-on bar: a click on its dot picks it, and the selected bar (drawn by the classic mesh,
+    // whose tube is capped) is still there.
+    await chooseView(b, 'front');
+    await settle(b);
+    await b.ev(FIT);
+    await sleep(500);
+    await settle(b);
+    await sleep(400);
+    const R2 = await rectOf(b);
+    const y2 = byMark.Y2;
+    const [px, py] = await toScreen(b, startOf(y2));
+    await b.ev('window.__store.getState().clearBarSelection(); document.activeElement && document.activeElement.blur()');
+    await click(b, [R2.x + px, R2.y + py]);
+    await sleep(900);
+    const sel = JSON.parse(await b.ev('JSON.stringify(window.__store.getState().selectedBars)'));
+    report(sel.length === 1 && sel[0] === DOT_BARS.indexOf(y2), `dots: a click on the dot of Y2 selects that bar (selectedBars ${JSON.stringify(sel)})`);
+    await sleep(500);
+    const shown = await b.ev(dotProbe(px, py, DOT_COLOR[y2.dia]));
+    report(shown.n > 0, `dots: the selected end-on bar is still drawn (${shown.n} bar-coloured px at its dot)`);
+    if (shown.n === 0) await keepShot('check-dots-selected.png');
+    // The dash is only for the exact axis views: Iso, perspective and a slightly orbited orthographic view draw plain lines.
+    await chooseView(b, 'iso');
+    await settle(b);
+    report((await endOnUniform(b)) === 0, `dots: Iso (perspective) draws plain lines (uEndOnAxis ${await endOnUniform(b)})`);
+    await chooseView(b, 'front');
+    await settle(b);
+    await clickPill(b); // front, perspective
+    await settle(b);
+    report((await endOnUniform(b)) === 0 && !(await b.ev(CAM)).ortho, `dots: a perspective Front draws plain lines (uEndOnAxis ${await endOnUniform(b)})`);
+    await clickPill(b); // back to orthographic
+    await settle(b);
+    const R = await rectOf(b);
+    const c = [R.x + R.w / 2, R.y + R.h / 2];
+    await drag(b, c, [c[0] + 12, c[1]], 'middle'); // a few degrees of orbit
+    await sleep(600);
+    await settle(b);
+    const free = await b.ev(CAM);
+    report(free.ortho && (await viewName(b)) === 'free' && (await endOnUniform(b)) === 0,
+      `dots: an orbited orthographic view draws plain lines (view "${await viewName(b)}", uEndOnAxis ${await endOnUniform(b)})`);
+    report(b.consoleErrors.length === 0, `dots: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+  } finally {
+    b.close();
+  }
+}
+
 // Canvas snapshot and "how many pixels differ from it" (needs preserveDrawingBuffer, on under ?autotest).
 const SNAP = `(() => { const c = document.querySelector('canvas'); const t = document.createElement('canvas'); t.width = c.width; t.height = c.height;
   const x = t.getContext('2d', { willReadFrequently: true }); x.drawImage(c, 0, 0); window.__snap = x.getImageData(0, 0, t.width, t.height).data; return true; })()`;
@@ -552,7 +699,7 @@ async function ifc() {
   }
 }
 
-const sections = { views, ortho, gizmo, nav, field, section, ifc };
+const sections = { views, ortho, gizmo, nav, field, section, dots, ifc };
 try {
   for (const [name, fn] of Object.entries(sections)) {
     if (!only || only === name) await fn();
