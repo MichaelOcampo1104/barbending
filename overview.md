@@ -19,7 +19,7 @@ everything runs from static files.
 │ Concrete │  ghosts · IFC subsets · section  │ (after load)   │
 │ tabs     │  box · toolbar overlays          │                │
 ├──────────┴──────────────────────────────────┴────────────────┤
-│ BBS strip: rows · totals · export / import CSV               │
+│ BBS panel: find · groups · windowed table · export / import  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -32,6 +32,8 @@ everything runs from static files.
 | `src/bbs/shapes.js` | 6 shape generators → 3D polylines + cut lengths; `distCount`/`distOffsets` distribution grid; `applyTypeDefaults` for shape switching |
 | `src/bbs/calc.js` | `D²/162.2` unit weights, bend deductions |
 | `src/bbs/csv.js` | FreeCAD-compatible CSV export/import (`MASTER_HEADERS` superset) |
+| `src/bbs/tableView.js` | Pure logic of the bottom BBS panel's table (Node-tested): the flat item list of group headers and rows (`flattenItems`), the window of rows to draw (`windowRange`, `clampScrollTop`), where to scroll to a row (`revealTop`), the find box (`makeRowFilter`, `filterGroups`), ▦ group grouping (`groupBySet`) and the Groups list order (`orderGroups`) |
+| `src/bbs/BbsTable.jsx`, `BbsGroups.jsx` | The panel's windowed table (fixed 28 px rows, pinned group header, follows a selection made elsewhere) and its Groups overview (members and ▦ groups with totals, click to jump) |
 | `src/viewer/Scene.jsx` | Canvas, lights, grid, `RebarMesh` (tube per bar × distribution copies; now only the selected / just-edited rows, `BarField` draws the rest), `ConcreteMesh`, `DiveZoom` (stall-free wheel dives), `PickHandler`, `RegionSelect` (box / lasso select), `MeasureHandler` + `MeasureView` (ephemeral measure) |
 | `src/viewer/barfield/*` | Default bar renderer: worker-built chunked segments, line / instanced-tube LOD, row-state texture, ray picker, adaptive quality (`BarField.jsx` composes them) |
 | `src/viewer/CameraRig.jsx` | Owns the two cameras (perspective + orthographic) and their OrbitControls; keeps `state.camera` / `state.controls` on the active pair and switches projection from the store (`projection`) without changing what you look at |

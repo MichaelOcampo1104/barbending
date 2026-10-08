@@ -187,13 +187,40 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   The bounding-box prefilter uses `distOffsetExtents` (shapes.js) instead of building the distribution grid;
   keep its equivalence test against `distOffsets`.
 - Measured at 1M bars (25,000 rows x 40 copies): about 100-180 ms for a small lasso, a whole-view box or a big
-  lasso. The seconds the page stays busy after selecting thousands of rows are the selection-dependent UI (the
-  BBS table renders every row: 2.4 s for 3,206 rows, 3.7 s for 25,000, the same when the rows are set straight
-  in the store), not this module.
+  lasso. The seconds the page used to stay busy after selecting thousands of rows were the selection-dependent UI
+  (the old BBS table rendered every row: 2.4 s for 3,206 rows, 3.7 s for 25,000), not this module; the bottom panel
+  now draws only the rows on screen (next section).
 - The drag handlers sit on the canvas in the capture phase and disable the orbit controls while dragging; Esc is
   consumed (`preventDefault`) so the App's Esc cascade does not also clear the selection. The toolbar rows
   overlay the top of the canvas: a drag that starts on a toolbar button never reaches it, so keep browser-check
   shapes clear of the toolbar. Browser check: `scripts/perf/check_select.mjs`.
+
+## Bottom BBS panel (`BbsStrip` in `App.jsx`, `src/bbs/tableView.js`, `BbsTable.jsx`, `BbsGroups.jsx`)
+
+- The table is windowed: only the rows on screen (plus `OVERSCAN` each side) exist in the DOM, between two spacer rows. That only
+  works because EVERY row, group headers included, is exactly `ROW_H` (28 px) tall: `ROW_H` in `tableView.js` must equal
+  `--bbs-row-h`, which `BbsTable` sets from it on `.tblwrap`, and `App.css` enforces it (`table-layout: fixed`,
+  `border-collapse: separate`, `box-sizing: border-box`, fixed cell heights, `overflow: hidden`). A new column, button or badge in a
+  row must not wrap or grow it; a taller row would make the scroll maths drift without any error. `check_bbs.mjs` asserts 28 px.
+- The items are group headers and bar rows in one list (`flattenItems`; a collapsed group keeps only its header). The pinned group
+  header is a zero-height `thead` row whose content floats over the first row of the body (App.css), so at the top of the list it is
+  the first header itself, not a copy: `windowRange` gets the viewport minus the column titles only, and `revealTop` gets
+  `inset: ROW_H` in a grouped table (the row under the pinned header is not on screen).
+- Draw from `clampScrollTop(...)`, never from the stored `scrollTop`: the stored one is stale for a frame or two when the list gets
+  shorter (a find, Collapse all) and drawing from it shows an empty table.
+- Requests to move the table (a bar selected elsewhere, `⌖ Selection`, a jump from the Groups list) are only noted in `pendingRef` by
+  the request effects; one effect that runs after every render carries them out (it opens a collapsed group first and retries on the
+  next render). Do not call setState from those effects: the `react/set-state-in-effect` lint rule is on. A pointer-down inside the
+  table suppresses the automatic locate for 400 ms, so a click never moves the table under the pointer.
+- The find box narrows only what the table lists (`filterGroups` adds `shown` to each group); the totals, the CSV exports and the
+  group badges keep counting the whole Element scope. In the Groups list the same box matches group names and the names of the
+  members a ▦ group sits in (`orderGroups`).
+- Grouping is `groupMode` (`element` | `set` | `none`, `barbending.bbsGroupMode`); the Tools row is `barbending.bbsTools`; the panel
+  height is `barbending.bbsHeight` (default `BBS_DEFAULT_H` = 300; the old code read a missing key as `Number(null)` = 0 and came up
+  120 px tall).
+- Measured at 1M bars (25,000 rows): about 14 table rows and 500 DOM nodes in the panel. The left panel's two bar dropdowns
+  (Selected bar, Anchor bar) still list every bar, 50,000 `<option>` nodes at that size; they are not part of this module.
+- Browser check: `scripts/perf/check_bbs.mjs` (see `scripts/perf/README.md`).
 
 ## Standalone viewer (`src/standalone/`, the `⤓ Viewer` export)
 

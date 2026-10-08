@@ -76,6 +76,12 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
   EC2 lap lengths by Ø and good/poor bond, collinear placement, one undo.
 - **BBS table + CSV** — live cut lengths (bend deductions) and `D²/162`
   weights; one-click `rebar_scheduling.csv` export, CSV re-import.
+- **Big schedules** — the bottom panel draws only the rows on screen, so a million bars (25,000 rows) open, scroll and select
+  without a stall. **Find** narrows the table by mark, type, Ø (`ø16` or `d16`), ▦ group or member (several words must all
+  match); **Groups** lists every member and ▦ group with its totals, and a click jumps the table to it; **Collapse all /
+  Expand all**; the header of the group you are in stays pinned; a bar picked in the 3D view opens its group and scrolls the
+  table to its row (**⌖ Selection** brings it back); **⤢** makes the panel three quarters of the window; **Group by** Element,
+  ▦ Group or None; **▴ Tools** hides the filter and export buttons to give the table more room.
 - **Undo + save** — ↶ ↷ / Ctrl+Z / Ctrl+Y over bars, concrete and cover;
   💾 Save keeps your work in the browser and restores it on reload (IFC
   files reload by hand); ⤓/⤒ Project moves the project to another system
@@ -239,9 +245,10 @@ moves.
   `node scripts/perf/cdp_bench.mjs --url http://127.0.0.1:5188/ --project scripts/perf/out/p1m.json --expect 1002336 --budget p1m --enforce`.
   `node scripts/perf/check_field.mjs --url http://127.0.0.1:5188` checks placement, clipping, picking,
   edits, bulk changes and the fallback against the legacy renderer. See `scripts/perf/README.md`.
-- Still slow at very large scale (separate follow-ups): the BBS table and bar dropdown render every row
-  (the table takes seconds to render 25,000 rows), undo clones the whole bar list, Save uses
-  `localStorage` (about 5 MB), and Measure / Pick snapping scans every bar.
+- Still slow at very large scale (separate follow-ups): the left panel's two bar dropdowns (Selected bar,
+  Anchor bar) list every bar (50,000 options at 25,000 rows), undo clones the whole bar list, Save uses
+  `localStorage` (about 5 MB), and Measure / Pick snapping scans every bar. The BBS table is windowed and no
+  longer one of them.
 
 ## Troubleshooting
 
@@ -271,9 +278,9 @@ moves.
 
 ```
 src/
-  App.jsx            layout + panels + toolbar + BBS strip
+  App.jsx            layout + panels + toolbar + bottom BBS panel
   store.js           zustand state (bars, concrete, IFC meta, section)
-  bbs/               shapes, BBS math, FreeCAD-compatible CSV
+  bbs/               shapes, BBS math, FreeCAD-compatible CSV, the panel's windowed table (BbsTable, BbsGroups, tableView)
   viewer/            Scene, IFC model, FitIfc, SectionBox, planes, stencil mats,
                      CameraRig + cameraMath/cameraOps (perspective / orthographic views)
   ifc/               WASM loader session, control panel, units
