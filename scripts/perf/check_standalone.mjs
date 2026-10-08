@@ -718,6 +718,67 @@ async function sectionGizmo(b) {
   report(!back.attached && !back.helper && !back.enabled && back.grips, 'gizmo: back in Faces the gizmo is detached and the grips return');
 }
 
+// Brightness at the middle of a rectangle (canvas CSS px), and the share of its pixels within 25 of that brightness.
+const regionProbe = (x0, y0, x1, y1) => `(() => {
+  const c = document.getElementById('gl'); const k = c.width / c.clientWidth;
+  const t = document.createElement('canvas'); t.width = c.width; t.height = c.height;
+  const x = t.getContext('2d', { willReadFrequently: true }); x.drawImage(c, 0, 0);
+  const X0 = Math.round(${x0} * k), Y0 = Math.round(${y0} * k), W = Math.max(1, Math.round((${x1} - ${x0}) * k)), H = Math.max(1, Math.round((${y1} - ${y0}) * k));
+  const d = x.getImageData(X0, Y0, W, H).data;
+  const lum = (i) => (d[i] + d[i + 1] + d[i + 2]) / 3;
+  const mid = lum((Math.floor(H / 2) * W + Math.floor(W / 2)) * 4);
+  let close = 0;
+  for (let i = 0; i < d.length; i += 4) if (Math.abs(lum(i) - mid) <= 25) close++;
+  return { mid, share: close / (d.length / 4) };
+})()`;
+
+async function sectionSolid(b) {
+  // The +Z face of this box (z = -0.15) cuts the beam (z -0.4..0) through its depth: the cut face is the beam's cross section,
+  // x 0.5..2.0 and up 1.2..1.8 m. The box face is taller than the beam (up 1.1..1.9), so part of the face lies outside the concrete.
+  // No face of the box lies on a face of the beam (that would be a degenerate stencil case).
+  const box = { center: [1.25, 1.5, -0.25], size: [1.5, 0.8, 0.2], quat: [0, 0, 0, 1] };
+  await prep(b, { view: 'front', box, solidCut: false });
+  const rectOf2 = (p, q) => [Math.min(p[0], q[0]), Math.min(p[1], q[1]), Math.max(p[0], q[0]), Math.max(p[1], q[1])];
+  const at = (x, up) => toScreen(b, [x, up, -0.2]);
+  const inBeam = rectOf2(await at(0.6, 1.25), await at(1.9, 1.42)); // inside the cross section, clear of the bar at up 1.5
+  const outsideBeam = rectOf2(await at(0.6, 1.12), await at(1.9, 1.17)); // on the box face, below the beam
+  const probe = (r) => b.ev(regionProbe(...r));
+
+  const off = await probe(inBeam);
+  await b.ev('document.getElementById("sec-solid").click()');
+  await sleep(700);
+  const on = await probe(inBeam);
+  const out = await probe(outsideBeam);
+  report(on.mid > off.mid + 50 && on.share > 0.9, `solid: Solid cut fills the beam's cut face (brightness ${off.mid.toFixed(0)} -> ${on.mid.toFixed(0)}, ${(on.share * 100).toFixed(0)} % of it evenly filled)`);
+  report(out.mid < on.mid - 50, `solid: and only the cut face: the rest of the box face stays clear (brightness ${out.mid.toFixed(0)})`);
+
+  await b.ev('document.getElementById("sec-show").click()');
+  await sleep(500);
+  const noBox = await probe(inBeam);
+  report(near(noBox.mid, off.mid, 15), `solid: with 👁 Box off the caps are gone (brightness ${noBox.mid.toFixed(0)}) and the cut stays`);
+  await b.ev('document.getElementById("sec-show").click()');
+  await sleep(500);
+  await b.ev('document.getElementById("sec-solid").click()');
+  await sleep(700);
+  const offAgain = await probe(inBeam);
+  report(near(offAgain.mid, off.mid, 15), `solid: switching Solid cut off empties the cut face again (brightness ${offAgain.mid.toFixed(0)})`);
+
+  // In the perspective view the caps of several faces must not smear into each other: only the cut faces are filled.
+  const brightPixels = () => b.ev(`(() => {
+    const c = document.getElementById('gl'); const t = document.createElement('canvas'); t.width = c.width; t.height = c.height;
+    const x = t.getContext('2d', { willReadFrequently: true }); x.drawImage(c, 0, 0);
+    const d = x.getImageData(0, 0, t.width, t.height).data; let bright = 0;
+    for (let i = 0; i < d.length; i += 4) if ((d[i] + d[i + 1] + d[i + 2]) / 3 > ${Math.round(on.mid - 40)}) bright++;
+    return { bright, total: d.length / 4 };
+  })()`);
+  await prep(b, { view: 'iso', box, solidCut: false });
+  const isoOff = await brightPixels();
+  await prep(b, { view: 'iso', box, solidCut: true });
+  const isoOn = await brightPixels();
+  const filled = isoOn.bright - isoOff.bright;
+  report(filled > 200 && filled < isoOn.total * 0.2, `solid: in the Iso view the caps fill only the cut faces (${filled} more bright pixels of ${isoOn.total})`);
+}
+
 async function section() {
   const { file } = await writeViewer(makeProject(), 'viewer-section', 'Section check');
   const b = await launchBrowser();
@@ -726,6 +787,7 @@ async function section() {
     await sectionCore(b);
     await sectionFaces(b);
     await sectionGizmo(b);
+    await sectionSolid(b);
     report(b.consoleErrors.length === 0, `section: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
   } finally {
     b.close();

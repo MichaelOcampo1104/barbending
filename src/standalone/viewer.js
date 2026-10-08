@@ -101,6 +101,7 @@ async function main() {
 
   // ---- the concrete members (ghost boxes or exact meshes, like the app's default look) ----
   const concreteGroup = new THREE.Group();
+  const concreteGeoms = []; // the same geometries carry the solid-cut stencil marks
   const ghost = new THREE.MeshStandardMaterial({
     color: '#94a3b8', transparent: true, opacity: 0.25, roughness: 0.8, metalness: 0, depthWrite: false, side: THREE.DoubleSide, clippingPlanes: sectionPlanes,
   });
@@ -124,6 +125,7 @@ async function main() {
     }
     g.computeBoundingBox();
     box.union(g.boundingBox);
+    concreteGeoms.push(g);
     concreteGroup.add(new THREE.Mesh(g, ghost));
     concreteGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(g, 25), edgeMat));
   }
@@ -156,7 +158,9 @@ async function main() {
   const dirty = () => { needsRender = true; };
   ctlP.addEventListener('change', dirty);
   ctlO.addEventListener('change', dirty);
-  const section = createSectionBox({ scene, canvas, viewport, field: view, bounds: box, getCamera: () => cam, getOrbit: () => ctl, dirty });
+  const section = createSectionBox({
+    scene, canvas, viewport, concreteGroup, concreteGeoms, field: view, bounds: box, getCamera: () => cam, getOrbit: () => ctl, dirty,
+  });
 
   function resize() {
     const w = Math.max(viewport.clientWidth, 1);

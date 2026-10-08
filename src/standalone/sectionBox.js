@@ -7,13 +7,14 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import {
   sectionPlanes, updateSectionPlanes, updateSectionPlanesBox, closestAxisParam, isWorldPointInSectionBox,
 } from '../viewer/sectionPlanes.js';
-import { FACES, AXIS_COLORS, faceDragResult, testCutSize, boxFromBounds, pixelWorldSize } from '../viewer/sectionBoxMath.js';
+import { stencilMats, capMaterial } from '../viewer/stencilMats.js';
+import { FACES, AXIS_COLORS, capQuad, faceDragResult, testCutSize, boxFromBounds, pixelWorldSize } from '../viewer/sectionBoxMath.js';
 
 const BOX_COLOR = '#38bdf8';
 const mm = (m) => Math.round(m * 1000).toLocaleString('en-US');
 const $ = (id) => document.getElementById(id);
 
-export function createSectionBox({ scene, canvas, viewport, field, bounds, getCamera, getOrbit, dirty }) {
+export function createSectionBox({ scene, canvas, viewport, concreteGroup, concreteGeoms, field, bounds, getCamera, getOrbit, dirty }) {
   const state = { enabled: false, mode: 'faces', center: [0, 0, 0], size: [1, 1, 1], quat: [0, 0, 0, 1], solidCut: true, showBox: true };
   let boxReady = false; // false until the first box has been made from the model bounds
   const parts = []; // what the other parts of the box (grips, gizmo, caps) do when the state changes: (live) => void
@@ -159,6 +160,43 @@ export function createSectionBox({ scene, canvas, viewport, field, bounds, getCa
     } else if (gizmo.object) {
       gizmo.detach();
     }
+  });
+
+  // ---- Solid cut: the cut faces of the concrete are filled (the app's stencil technique and render order). For each plane i and each
+  // concrete mesh, back faces increment and front faces decrement the stencil where plane i clips the mesh (render orders 3i, 3i + 1);
+  // then a cap quad on the box face draws where the stencil is not zero (3i + 2) and clears the stencil. Rebar is not capped. The marks
+  // are children of the concrete group, so hiding the concrete hides them; the caps belong to the box, so they hide with 👁 Box. ----
+  const capGroup = new THREE.Group();
+  boxGroup.add(capGroup);
+  const caps = [0, 1, 2, 3, 4, 5].map((i) => {
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), capMaterial(i));
+    mesh.renderOrder = 3 * i + 2;
+    mesh.onAfterRender = (renderer) => renderer.clearStencil(); // without it the caps of one face accumulate into the next
+    capGroup.add(mesh);
+    return mesh;
+  });
+  const markGroups = concreteGeoms.map((geom) => {
+    const g = new THREE.Group();
+    for (let i = 0; i < 6; i++) {
+      const back = new THREE.Mesh(geom, stencilMats[i].back);
+      back.renderOrder = 3 * i;
+      const front = new THREE.Mesh(geom, stencilMats[i].front);
+      front.renderOrder = 3 * i + 1;
+      g.add(back, front);
+    }
+    g.visible = false;
+    concreteGroup.add(g);
+    return g;
+  });
+  parts.push((live) => {
+    capGroup.visible = live && state.solidCut;
+    caps.forEach((mesh, i) => {
+      const q = capQuad(i, state.size);
+      mesh.position.set(q.pos[0], q.pos[1], q.pos[2]);
+      mesh.rotation.set(q.rot[0], q.rot[1], q.rot[2]);
+      mesh.scale.set(q.args[0], q.args[1], 1);
+    });
+    for (const g of markGroups) g.visible = state.enabled && state.solidCut;
   });
 
   function syncPanel() {
