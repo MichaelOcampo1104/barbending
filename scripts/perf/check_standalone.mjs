@@ -24,6 +24,7 @@ const arg = (name, dflt) => {
 const base = (arg('url') || '').replace(/\/$/, '');
 const only = arg('only', '');
 const projectFile = arg('project', '');
+const bigFile = arg('big', '');
 const maxKb = Number(arg('max-kb', '0'));
 const templatePath = path.join(repo, 'public', 'viewer-template.html');
 if (!fs.existsSync(templatePath)) { console.error('public/viewer-template.html is missing: run "npm run build:viewer" first'); process.exit(2); }
@@ -265,7 +266,7 @@ async function waitFor(b, expr, timeoutMs = 20000) {
 async function importFile(b, filePath, which = 0) {
   const root = await b.send('DOM.getDocument', { depth: 0 });
   const q = await b.send('DOM.querySelectorAll', { nodeId: root.root.nodeId, selector: 'input[type=file]' });
-  await b.send('DOM.setFileInputFiles', { files: [filePath], nodeId: q.nodeIds[which] });
+  await b.send('DOM.setFileInputFiles', { files: [path.resolve(filePath)], nodeId: q.nodeIds[which] }); // the browser needs an absolute path
 }
 
 // Opens the app and imports a project file; waits until the store holds all its rows.
@@ -273,7 +274,8 @@ async function openApp(b, projectPath, rowCount, query = 'autotest=standalone') 
   await b.send('Page.navigate', { url: `${base}/?${query}` });
   if (!(await waitFor(b, '!!document.querySelector("canvas") && !!window.__store', 45000))) throw new Error('the app did not start at ' + base);
   await importFile(b, projectPath, 0);
-  if (!(await waitFor(b, `window.__store.getState().bars.length === ${rowCount}`, 120000))) throw new Error('the app did not take the project');
+  // Generous, and growing with the rows: the BBS table renders every row, so 25,000 rows keep the page busy for a minute or more.
+  if (!(await waitFor(b, `window.__store.getState().bars.length === ${rowCount}`, Math.max(120000, rowCount * 24)))) throw new Error('the app did not take the project');
   await sleep(800);
 }
 
@@ -794,7 +796,72 @@ async function section() {
   }
 }
 
-const sections = { viewer, section, export: exportCheck, roundtrip };
+// A million bars: the app exports the file (timed), the viewer opens it from file:// (timed) and orbits (frames drawn per second).
+async function scale() {
+  if (!bigFile) {
+    if (only) { console.error('scale needs --big <project.json> (node scripts/perf/gen_project.mjs 25000 40 p1m 7)'); process.exit(2); }
+    console.log('SKIP  scale (needs --big)');
+    return;
+  }
+  const rowCount = JSON.parse(fs.readFileSync(bigFile, 'utf8')).bars.length;
+  const exportedPath = path.join(outDir, 'standalone-scale.html');
+  fs.rmSync(exportedPath, { force: true });
+  let appTotals = null;
+
+  // 1. In the app: open the big project, ⤓ Viewer, check the time and the size.
+  const app = await launchBrowser();
+  try {
+    await openApp(app, bigFile, rowCount, 'autotest=standalone-scale');
+    await waitFor(app, '!!(window.__barfield && window.__barfield.ready)', 240000);
+    appTotals = await app.ev(`(() => { const e = document.querySelector('.bbstool strong'); return e ? e.textContent : null; })()`);
+    const { dl, ms } = await exportFromApp(app, 'One million bars');
+    report(!!dl && ms <= 3000, `scale: ⤓ Viewer on ${rowCount} rows took ${ms} ms to pack and download (budget 3000; this includes polling, so it is an upper bound)`);
+    const bytes = dl ? Buffer.byteLength(dl.text) : 0;
+    report(bytes > 0 && bytes <= 1800 * 1024, `scale: the file is ${(bytes / 1024).toFixed(0)} KB (budget 1800 KB)`);
+    if (dl) fs.writeFileSync(exportedPath, dl.text);
+    report(app.consoleErrors.length === 0, `scale: the app logged no errors${app.consoleErrors.length ? ': ' + app.consoleErrors[0] : ''}`);
+  } finally {
+    app.close();
+  }
+  if (!fs.existsSync(exportedPath)) return;
+
+  // 2. In a fresh browser: open the file from file:// (budget 3 s), the same totals, and the orbit rate (median of three windows).
+  const v = await launchBrowser();
+  try {
+    const ms = await openViewer(v, exportedPath, { autotest: 'nobuffer' });
+    report(ms <= 3000, `scale: the viewer opened ${rowCount} rows from file:// in ${ms} ms (budget 3000)`);
+    const totals = await v.ev('document.getElementById("stats").textContent');
+    report(!!appTotals && appTotals.replace(/^BBS · /, '') === totals, `scale: the viewer's totals equal the app's ("${totals}")`);
+    await settle(v);
+    const rect = await rectOf(v);
+    const cx = rect.x + rect.w / 2;
+    const cy = rect.y + rect.h / 2;
+    const rates = [];
+    for (let w = 0; w < 3; w++) {
+      await v.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy });
+      await v.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', buttons: 1, clickCount: 1 });
+      const f0 = await v.ev('window.__viewer.frames');
+      const t0 = Date.now();
+      while (Date.now() - t0 < 2500) {
+        const phase = ((Date.now() - t0) / 2500) * Math.PI * 4;
+        await v.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx + Math.sin(phase) * 250, y: cy + Math.cos(phase * 0.7) * 80, button: 'left', buttons: 1 });
+        await sleep(6);
+      }
+      const f1 = await v.ev('window.__viewer.frames');
+      const secs = (Date.now() - t0) / 1000;
+      await v.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', buttons: 0, clickCount: 1 });
+      rates.push((f1 - f0) / secs);
+      await sleep(500);
+    }
+    rates.sort((x, y) => x - y);
+    report(rates[1] >= 30, `scale: orbiting ${rowCount} rows draws ${rates.map((r) => r.toFixed(1)).join(' / ')} frames per second (median ${rates[1].toFixed(1)}, budget 30)`);
+    report(v.consoleErrors.length === 0, `scale: the viewer logged no errors${v.consoleErrors.length ? ': ' + v.consoleErrors[0] : ''}`);
+  } finally {
+    v.close();
+  }
+}
+
+const sections = { viewer, section, export: exportCheck, roundtrip, scale };
 const needsApp = new Set(['export', 'roundtrip', 'scale']);
 try {
   for (const [name, fn] of Object.entries(sections)) {
