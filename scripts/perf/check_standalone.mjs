@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { launchBrowser, sleep } from './lib/cdp.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { packViewerHtml, extractProjectFromHtml } from '../../src/standalone/pack.js';
+import { gzipBytes, toBase64 } from '../../src/standalone/codec.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..', '..');
@@ -357,7 +358,63 @@ async function exportCheck() {
   }
 }
 
-const sections = { viewer, export: exportCheck };
+async function roundtrip() {
+  const project = projectFile ? JSON.parse(fs.readFileSync(projectFile, 'utf8')) : makeProject();
+  const n = project.bars.length;
+  const importMs = Math.max(30000, n * 4); // generous: an import normally takes a few seconds
+  const srcPath = path.join(outDir, 'standalone-source.json');
+  fs.writeFileSync(srcPath, JSON.stringify(project));
+  const b = await launchBrowser();
+  try {
+    await openApp(b, srcPath, n);
+    const snap = async () => JSON.parse(await b.ev(`(() => { const s = window.__store.getState(); return JSON.stringify({ bars: s.bars, concretes: s.concretes, refLines: s.refLines, cover: s.cover, bond: s.bond }); })()`));
+    const original = await snap();
+    const { dl } = await exportFromApp(b, 'Round trip');
+    const exportedPath = path.join(outDir, 'standalone-roundtrip.html');
+    fs.writeFileSync(exportedPath, dl.text);
+
+    // ⤒ Project of the .html replaces the model: first empty the app (with other cover and bond), then open the file.
+    const emptyPath = path.join(outDir, 'standalone-empty.json');
+    fs.writeFileSync(emptyPath, JSON.stringify({ v: 1, app: 'barbending', bars: [], concretes: [], refLines: [], cover: 25, bond: 'good', selectedBar: 0, selectedBars: [] }));
+    await importFile(b, emptyPath, 0);
+    await waitFor(b, 'window.__store.getState().bars.length === 0', 20000);
+    await importFile(b, exportedPath, 0);
+    const took = await waitFor(b, `window.__store.getState().bars.length === ${n}`, importMs);
+    report(took && isDeepStrictEqual(await snap(), original), 'roundtrip: ⤒ Project of the exported .html gives back the same bars, concretes, reference lines, cover and bond');
+
+    // ⤒+ Insert appends it: twice the rows, fresh member ids.
+    await importFile(b, exportedPath, 1);
+    await waitFor(b, `window.__store.getState().bars.length === ${2 * n}`, importMs * 2);
+    const merged = await snap();
+    report(merged.bars.length === 2 * n && merged.concretes.length === 2 * original.concretes.length
+      && new Set(merged.concretes.map((c) => c.id)).size === merged.concretes.length,
+    `roundtrip: ⤒+ Insert of the exported .html appends the model (${merged.bars.length} rows, ${merged.concretes.length} members with distinct ids)`);
+
+    // Files that are not viewer files are refused with a plain alert and change nothing.
+    const plainHtml = path.join(outDir, 'standalone-not-a-viewer.html');
+    fs.writeFileSync(plainHtml, '<!doctype html><html><body>just a page</body></html>');
+    const newerHtml = path.join(outDir, 'standalone-newer.html');
+    const newerData = toBase64(await gzipBytes(new TextEncoder().encode(JSON.stringify({ viewerFormat: 99, v: 1, bars: [], concretes: [] }))));
+    fs.writeFileSync(newerHtml, `<script id="model-data" type="text/plain">${newerData}</script>`);
+    for (const [file, text] of [[plainHtml, 'Project open failed: not a barbending viewer file'], [newerHtml, 'Project open failed: made by a newer barbending viewer']]) {
+      await b.ev('window.__alerts = []; window.alert = (m) => { window.__alerts.push(String(m)); }');
+      await importFile(b, file, 0);
+      await waitFor(b, 'window.__alerts.length > 0', 10000);
+      const alerts = await b.ev('window.__alerts');
+      report(alerts.length === 1 && alerts[0] === text && (await snap()).bars.length === 2 * n, `roundtrip: ${path.basename(file)} is refused ("${alerts[0]}") and the model is untouched`);
+    }
+
+    // The .json path still works.
+    await importFile(b, srcPath, 0);
+    await waitFor(b, `window.__store.getState().bars.length === ${n}`, importMs);
+    report(isDeepStrictEqual(await snap(), original), 'roundtrip: ⤒ Project of the .json still works');
+    report(b.consoleErrors.length === 0, `roundtrip: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+  } finally {
+    b.close();
+  }
+}
+
+const sections = { viewer, export: exportCheck, roundtrip };
 const needsApp = new Set(['export', 'roundtrip', 'scale']);
 try {
   for (const [name, fn] of Object.entries(sections)) {

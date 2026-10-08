@@ -10,7 +10,7 @@ import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveB
 import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES, autoAssignBarMarks, concreteVolumeM3, rebarRatioKgM3, concreteVolumeSource } from './bbs/csv.js';
 import { lapLengthMm, barBond, lapBondFor } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
-import { packViewerHtml, cleanViewerTitle, viewerFileName, DEFAULT_VIEWER_TITLE } from './standalone/pack.js';
+import { packViewerHtml, cleanViewerTitle, viewerFileName, parseProjectFile, DEFAULT_VIEWER_TITLE } from './standalone/pack.js';
 import { loadViewerTemplate } from './standalone/exportViewer.js';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
 // IFC load so the main bundle stays light. See IfcPanel handlers.
@@ -2044,9 +2044,9 @@ function FileBar() {
     const f = e.target.files?.[0];
     if (!f) return;
     const rd = new FileReader();
-    rd.onload = () => {
+    rd.onload = async () => {
       try {
-        const d = JSON.parse(String(rd.result));
+        const d = await parseProjectFile(f.name, String(rd.result));
         if (!useStore.getState().importProject(d)) throw new Error('not a barbending project file (v1 with bars + concretes arrays)');
         console.info(`[save] opened project file: ${f.name}`);
       } catch (err) { alert('Project open failed: ' + err.message); }
@@ -2058,9 +2058,9 @@ function FileBar() {
     const f = e.target.files?.[0];
     if (!f) return;
     const rd = new FileReader();
-    rd.onload = () => {
+    rd.onload = async () => {
       try {
-        const d = JSON.parse(String(rd.result));
+        const d = await parseProjectFile(f.name, String(rd.result));
         const r = useStore.getState().appendProject(d);
         if (!r) throw new Error('not a barbending project file (v1 with bars + concretes arrays)');
         console.info(`[save] inserted project file: ${f.name} (+${r.bars} bars, +${r.concretes} members)`);
@@ -2096,14 +2096,14 @@ function FileBar() {
       >{building ? 'Building…' : '⤓ Viewer'}</button>
       <button
         className="hbtn" onClick={() => fileRef.current?.click()}
-        title="Open a project .json file — replaces current bars + concrete"
+        title="Open a project .json file, or a ⤓ Viewer .html file — replaces current bars + concrete"
       >⤒ Project</button>
-      <input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={onOpenFile} />
+      <input ref={fileRef} type="file" accept=".json,application/json,.html,text/html" hidden onChange={onOpenFile} />
       <button
         className="hbtn" onClick={() => insertRef.current?.click()}
-        title="Insert another project .json file alongside the current model (ids/tags remapped, undoable) — for coordination"
+        title="Insert another project .json (or ⤓ Viewer .html) file alongside the current model (ids/tags remapped, undoable) — for coordination"
       >⤒+ Insert</button>
-      <input ref={insertRef} type="file" accept=".json,application/json" hidden onChange={onInsertFile} />
+      <input ref={insertRef} type="file" accept=".json,application/json,.html,text/html" hidden onChange={onInsertFile} />
       {saveStamp && <span className="saveinfo">saved {new Date(saveStamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
     </>
   );
