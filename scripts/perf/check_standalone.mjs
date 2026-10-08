@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { launchBrowser, sleep } from './lib/cdp.mjs';
-import { packViewerHtml } from '../../src/standalone/pack.js';
+import { isDeepStrictEqual } from 'node:util';
+import { packViewerHtml, extractProjectFromHtml } from '../../src/standalone/pack.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..', '..');
@@ -248,7 +249,115 @@ async function viewer() {
   }
 }
 
-const sections = { viewer };
+// ---- sections that drive the real app (need --url) ----
+async function waitFor(b, expr, timeoutMs = 20000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    if (await b.ev(expr, 15000).catch(() => false)) return true;
+    await sleep(150);
+  }
+  return false;
+}
+
+// Gives one of the app's hidden file inputs (0 = ⤒ Project, 1 = ⤒+ Insert) a file, as a user picking it would.
+async function importFile(b, filePath, which = 0) {
+  const root = await b.send('DOM.getDocument', { depth: 0 });
+  const q = await b.send('DOM.querySelectorAll', { nodeId: root.root.nodeId, selector: 'input[type=file]' });
+  await b.send('DOM.setFileInputFiles', { files: [filePath], nodeId: q.nodeIds[which] });
+}
+
+// Opens the app and imports a project file; waits until the store holds all its rows.
+async function openApp(b, projectPath, rowCount, query = 'autotest=standalone') {
+  await b.send('Page.navigate', { url: `${base}/?${query}` });
+  if (!(await waitFor(b, '!!document.querySelector("canvas") && !!window.__store', 45000))) throw new Error('the app did not start at ' + base);
+  await importFile(b, projectPath, 0);
+  if (!(await waitFor(b, `window.__store.getState().bars.length === ${rowCount}`, 120000))) throw new Error('the app did not take the project');
+  await sleep(800);
+}
+
+const VIEWER_BUTTON = `Array.from(document.querySelectorAll('button')).find((x) => ['⤓ Viewer', 'Building…'].includes(x.textContent.trim()))`;
+const clickViewerButton = (b) => b.ev(`${VIEWER_BUTTON}.click()`);
+const viewerButtonState = (b) => b.ev(`(() => { const x = ${VIEWER_BUTTON}; return x ? { text: x.textContent.trim(), disabled: x.disabled } : null; })()`);
+
+// Clicks ⤓ Viewer with the title prompt answered and the download captured; returns the file ({ name, text }), the time it took and any alerts.
+async function exportFromApp(b, title) {
+  await b.ev(`(() => {
+    window.__dl = null; window.__alerts = [];
+    window.prompt = () => ${JSON.stringify(title)};
+    window.alert = (m) => { window.__alerts.push(String(m)); };
+    HTMLAnchorElement.prototype.click = function () {
+      const name = this.download;
+      fetch(this.href).then((r) => r.text()).then((text) => { window.__dl = { name, text }; });
+    };
+  })()`);
+  const t0 = Date.now();
+  await clickViewerButton(b);
+  await waitFor(b, '!!window.__dl || window.__alerts.length > 0', 60000);
+  return { dl: await b.ev('window.__dl'), ms: Date.now() - t0, alerts: await b.ev('window.__alerts') };
+}
+
+async function exportCheck() {
+  const project = projectFile ? JSON.parse(fs.readFileSync(projectFile, 'utf8')) : makeProject();
+  const srcPath = path.join(outDir, 'standalone-source.json');
+  fs.writeFileSync(srcPath, JSON.stringify(project));
+  const b = await launchBrowser();
+  try {
+    await openApp(b, srcPath, project.bars.length);
+    const appTotals = await b.ev(`(() => { const e = document.querySelector('.bbstool strong'); return e ? e.textContent : null; })()`);
+    report(!!appTotals && /^BBS · /.test(appTotals), `export: the app's BBS header reads "${appTotals}"`);
+
+    // The button reads "Building…" while it packs (the template fetch is slowed to make that visible), then the file arrives.
+    const TITLE = 'Check Tower — L3';
+    await b.ev(`(() => { const real = window.fetch.bind(window); window.__realFetch = real;
+      window.fetch = (u, ...r) => (String(u).includes('viewer-template') ? new Promise((res) => setTimeout(res, 700)).then(() => real(u, ...r)) : real(u, ...r)); })()`);
+    const pending = exportFromApp(b, TITLE);
+    pending.catch(() => {}); // a failure is reported where `pending` is awaited below, not as an unhandled rejection
+    await sleep(300);
+    const building = await viewerButtonState(b);
+    report(!!building && building.text === 'Building…' && building.disabled, `export: while packing the button reads "${building && building.text}" and is disabled`);
+    const { dl } = await pending;
+    const after = await viewerButtonState(b);
+    report(!!after && after.text === '⤓ Viewer' && !after.disabled, 'export: the button is back to "⤓ Viewer" when done');
+    report(!!dl && /^barbending-viewer-check-tower-l3-\d{8}-\d{4}\.html$/.test(dl.name), `export: the file is named ${dl && dl.name}`);
+    const exported = dl ? await extractProjectFromHtml(dl.text) : null;
+    report(!!exported && exported.title === TITLE && exported.viewerFormat === 1
+      && ['bars', 'concretes', 'refLines', 'cover', 'bond'].every((k) => isDeepStrictEqual(exported[k], project[k])),
+    'export: the file holds the title and the project (bars, concretes, reference lines, cover, bond)');
+    const kb = dl ? Buffer.byteLength(dl.text) / 1024 : 0;
+    report(!!dl && kb <= (maxKb || 800), `export: the file is ${kb.toFixed(0)} KB (budget ${maxKb || 800} KB)`);
+
+    // Cancelling the prompt exports nothing.
+    await b.ev(`(() => { window.fetch = window.__realFetch; window.__dl = null; window.__alerts = []; window.prompt = () => null; })()`);
+    await clickViewerButton(b);
+    await sleep(700);
+    report(!(await b.ev('window.__dl')) && (await b.ev('window.__alerts.length')) === 0, 'export: cancelling the title prompt exports nothing');
+
+    // No template (a 404, or a dev server answering with index.html): the alert names the fix and the button comes back.
+    const missing = 'The viewer template is missing: run "npm run build:viewer", then reload.';
+    for (const [what, answer] of [['a 404', "new Response('', { status: 404 })"], ['index.html in place of the template', "new Response('<!doctype html><div id=root></div>', { status: 200 })"]]) {
+      await b.ev(`(() => { window.__dl = null; window.__alerts = []; window.prompt = () => 'x';
+        window.fetch = (u, ...r) => (String(u).includes('viewer-template') ? Promise.resolve(${answer}) : window.__realFetch(u, ...r)); })()`);
+      await clickViewerButton(b);
+      await waitFor(b, 'window.__alerts.length > 0', 10000);
+      const alerts = await b.ev('window.__alerts');
+      report(alerts.length === 1 && alerts[0] === missing && !(await b.ev('window.__dl')), `export: with ${what} the alert says the template is missing`);
+      const st = await viewerButtonState(b);
+      report(!!st && st.text === '⤓ Viewer' && !st.disabled, 'export: and the button comes back');
+    }
+
+    // The exported file shows the same totals as the app's BBS header.
+    const file = path.join(outDir, 'standalone-export.html');
+    fs.writeFileSync(file, dl.text);
+    await openViewer(b, file);
+    const viewerTotals = await b.ev('document.getElementById("stats").textContent');
+    report(!!appTotals && appTotals.replace(/^BBS · /, '') === viewerTotals, `export: the viewer's totals equal the app's ("${viewerTotals}")`);
+    report(b.consoleErrors.length === 0, `export: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+  } finally {
+    b.close();
+  }
+}
+
+const sections = { viewer, export: exportCheck };
 const needsApp = new Set(['export', 'roundtrip', 'scale']);
 try {
   for (const [name, fn] of Object.entries(sections)) {

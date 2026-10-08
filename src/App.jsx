@@ -10,6 +10,8 @@ import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveB
 import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES, autoAssignBarMarks, concreteVolumeM3, rebarRatioKgM3, concreteVolumeSource } from './bbs/csv.js';
 import { lapLengthMm, barBond, lapBondFor } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
+import { packViewerHtml, cleanViewerTitle, viewerFileName, DEFAULT_VIEWER_TITLE } from './standalone/pack.js';
+import { loadViewerTemplate } from './standalone/exportViewer.js';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
 // IFC load so the main bundle stays light. See IfcPanel handlers.
 import './App.css';
@@ -2006,6 +2008,7 @@ function FileBar() {
   const saveStamp = useStore((s) => s.saveStamp);
   const fileRef = useRef(null);
   const insertRef = useRef(null);
+  const [building, setBuilding] = useState(false);
 
   const downloadFile = () => {
     const data = useStore.getState().exportProject();
@@ -2018,6 +2021,24 @@ function FileBar() {
     a.download = `barbending-project-${stamp}.json`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  // ⤓ Viewer: the whole model as ONE .html file that opens in any browser (src/standalone/). Cancelling the title prompt aborts.
+  const downloadViewer = async () => {
+    const raw = window.prompt('Title for the viewer file:', DEFAULT_VIEWER_TITLE);
+    if (raw === null) return;
+    const title = cleanViewerTitle(raw);
+    setBuilding(true);
+    try {
+      const template = await loadViewerTemplate({ url: `${import.meta.env.BASE_URL}viewer-template.html` });
+      const html = await packViewerHtml(template, useStore.getState()._projectData(), { title });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      a.download = viewerFileName(title, new Date());
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      console.info(`[save] exported viewer file: ${a.download} (${Math.round(html.length / 1024)} KB)`);
+    } catch (err) { alert(err && err.message ? err.message : String(err)); }
+    finally { setBuilding(false); }
   };
   const onOpenFile = (e) => {
     const f = e.target.files?.[0];
@@ -2069,6 +2090,10 @@ function FileBar() {
         className="hbtn" onClick={downloadFile}
         title="Download a project .json file (bars + concrete + cover) — reload it on any system via ⤒ Project"
       >⤓ Project</button>
+      <button
+        className="hbtn" onClick={downloadViewer} disabled={building}
+        title="Download the whole model as ONE .html file (3D view with a section box, and the BBS table) that opens in any browser with nothing installed — ⤒ Project opens it again"
+      >{building ? 'Building…' : '⤓ Viewer'}</button>
       <button
         className="hbtn" onClick={() => fileRef.current?.click()}
         title="Open a project .json file — replaces current bars + concrete"
