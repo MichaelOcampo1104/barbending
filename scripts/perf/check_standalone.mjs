@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { launchBrowser, sleep } from './lib/cdp.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { packViewerHtml, extractProjectFromHtml } from '../../src/standalone/pack.js';
+import { boxFromBounds, testCutSize } from '../../src/viewer/sectionBoxMath.js';
 import { gzipBytes, toBase64 } from '../../src/standalone/codec.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -67,7 +68,7 @@ async function openViewer(b, file, { autotest = true } = {}) {
   const t0 = Date.now();
   const query = autotest === 'nobuffer' ? '?autotest=nobuffer' : autotest ? '?autotest' : '';
   await b.send('Page.navigate', { url: pathToFileURL(file).href + query });
-  for (let i = 0; i < 600; i++) {
+  while (Date.now() - t0 < 60000) { // bounded in time: a frozen page must fail the run, not hold it up for an hour
     const ready = await b.ev(`(() => { const l = document.getElementById('loading'); return !!l && getComputedStyle(l).display === 'none'; })()`, 5000).catch(() => false);
     if (ready) return Date.now() - t0;
     await sleep(100);
@@ -414,7 +415,131 @@ async function roundtrip() {
   }
 }
 
-const sections = { viewer, export: exportCheck, roundtrip };
+const near = (a, b, tol) => Math.abs(a - b) <= tol;
+// The canvas rectangle in page pixels (for trusted mouse input).
+const rectOf = (b) => b.ev(`(() => { const r = document.getElementById('gl').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()`);
+
+// ---- the section box (viewer) ----
+// Amber pixels of the canvas (the Ø16 bar): count and horizontal extent, in canvas pixels. Amber by hue, not by brightness: at this zoom
+// the bar is a one-pixel line, and when its centre falls between two pixel rows each of them is only partly covered and dim.
+const AMBER = `(() => {
+  const c = document.getElementById('gl'); const t = document.createElement('canvas');
+  t.width = c.width; t.height = c.height;
+  const x = t.getContext('2d', { willReadFrequently: true }); x.drawImage(c, 0, 0);
+  const d = x.getImageData(0, 0, t.width, t.height).data;
+  let n = 0, x0 = 1e9, x1 = -1;
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    if (r > 60 && r > g * 1.08 && g > b * 1.2 && r - b > 25) { n++; const px = p % t.width; if (px < x0) x0 = px; if (px > x1) x1 = px; }
+  }
+  return { n, x0, x1 };
+})()`;
+
+async function sectionCore(b) {
+  const dpr = await b.ev('document.getElementById("gl").width / document.getElementById("gl").clientWidth');
+  const st = () => b.ev('JSON.parse(JSON.stringify(window.__viewer.section.state))');
+  const mm = (m) => Math.round(m * 1000).toLocaleString('en-US');
+  const bounds = await b.ev('window.__viewer.bounds');
+  await b.ev('window.__viewer.goView("front")');
+  await settle(b);
+  const sx = async (x) => (await toScreen(b, [x, 1.5, -0.2]))[0] * dpr; // the Ø16 bar's centre line, in canvas pixels
+
+  const uncut = await b.ev(AMBER);
+  report(uncut.n > 200 && near(uncut.x0, await sx(0), 3) && near(uncut.x1, await sx(3), 3), `section: the bar is drawn from x = 0 to 3 m (${uncut.x0}..${uncut.x1} px)`);
+
+  // Control for the "selects nothing" results further down: with no cut, a click at x = 0.2 m picks the Ø16 bar (row 0) and a click
+  // at the middle of the Ø20 bar picks that one (row 1), so those later results are the cut's doing and not a miss of the click.
+  const rect = await rectOf(b);
+  const at = async (x, up) => { const [px, py] = await toScreen(b, [x, up, -0.2]); return [rect.x + px, rect.y + py]; };
+  await b.ev('window.__viewer.select(null)');
+  await click(b, await at(0.2, 1.5));
+  await sleep(300);
+  const control1 = await b.ev('window.__viewer.selected');
+  await b.ev('window.__viewer.select(null)');
+  await click(b, await at(1.25, 1.3));
+  await sleep(300);
+  const control2 = await b.ev('window.__viewer.selected');
+  await b.ev('window.__viewer.select(null)');
+  report(control1 === 0 && control2 === 1, `section: with no cut a click at x = 0.2 m picks row ${control1} and a click on the Ø20 bar picks row ${control2}`);
+
+  // The header toggle turns Section on with the default box: the model bounds plus padding. The panel opens with the readout.
+  await b.ev('document.getElementById("section").click()');
+  await sleep(300);
+  const s1 = await st();
+  const want = boxFromBounds(bounds.min, bounds.max);
+  report(s1.enabled && s1.center.every((v, i) => near(v, want.center[i], 1e-9)) && s1.size.every((v, i) => near(v, want.size[i], 1e-9)),
+    `section: ◫ Section turns on with the model bounds plus padding (size ${s1.size.map((v) => v.toFixed(3)).join(' x ')} m)`);
+  report(await b.ev('!document.getElementById("sec-panel").hidden && document.getElementById("section").classList.contains("on")'), 'section: the panel opens and the header toggle lights');
+  const readout = await b.ev('document.getElementById("sec-size").textContent');
+  report(readout === `${mm(s1.size[0])} × ${mm(s1.size[1])} × ${mm(s1.size[2])} mm`, `section: the size readout shows "${readout}"`);
+
+  // Test cut: a third of each size around the same centre. The bar is cut at the box faces, to a pixel.
+  await b.ev('document.getElementById("sec-solid").click()'); // Solid cut off, so a cap does not hide the bar
+  await b.ev('document.getElementById("sec-test").click()');
+  await sleep(1200);
+  const s2 = await st();
+  const third = testCutSize(s1.size);
+  report(s2.size.every((v, i) => near(v, third[i], 1e-9)) && s2.center.every((v, i) => near(v, s1.center[i], 1e-9)),
+    `section: Test cut keeps the centre and shrinks each size to a third (${s2.size.map((v) => v.toFixed(3)).join(' x ')} m)`);
+  const planes = await b.ev('window.__viewer.section.planes.map((p) => p.constant)');
+  report(near(planes[0], s2.center[0] + s2.size[0] / 2, 1e-9) && near(planes[1], -(s2.center[0] - s2.size[0] / 2), 1e-9), 'section: the shared clipping planes follow the box');
+  // The bar is cut at the box faces, to a pixel. The box's own outline is drawn over the last pixel at each plane, so the box is hidden
+  // (👁 Box: it keeps cutting) for this measure; the first and last pixel the bar can have are the ones whose centres lie inside the planes.
+  const lo = Math.max(0, s2.center[0] - s2.size[0] / 2);
+  const hi = Math.min(3, s2.center[0] + s2.size[0] / 2);
+  const e0 = await sx(lo);
+  const e1 = await sx(hi);
+  await b.ev('document.getElementById("sec-show").click()');
+  await sleep(600);
+  const hid = await b.ev('({ visible: window.__viewer.section.boxGroup.visible, show: window.__viewer.section.state.showBox })');
+  const cut = await b.ev(AMBER);
+  const first = Math.ceil(e0 - 0.5);
+  const last = Math.floor(e1 - 0.5);
+  report(cut.n > 100 && near(cut.x0, first, 1) && near(cut.x1, last, 1), `section: the cut agrees with the planes to 1 px (bar ${cut.x0}..${cut.x1}, planes ${e0.toFixed(1)}..${e1.toFixed(1)}, so pixels ${first}..${last})`);
+  report(!hid.visible && !hid.show, 'section: 👁 Box hides the box, and the cut above is still there');
+  await b.ev('document.getElementById("sec-show").click()');
+  await sleep(300);
+
+  // Picking: the kept part of the bar can be clicked; the cut-away part and a bar cut away entirely cannot. (The kept part is clicked a
+  // quarter of the way in, not at the middle: in the Front view the two grips of the depth axis sit on the middle of the box, and a
+  // press on a grip drags the box instead of picking.)
+  await b.ev('window.__viewer.select(null)');
+  await click(b, await at(lo + 0.25 * (hi - lo), 1.5));
+  await sleep(300);
+  report((await b.ev('window.__viewer.selected')) === 0, 'section: a click on the kept part of the bar selects it');
+  await b.ev('window.__viewer.select(null)');
+  await click(b, await at(0.2, 1.5)); // x = 0.2 m is cut away (the window starts at 0.6 m)
+  await sleep(300);
+  report((await b.ev('window.__viewer.selected')) === null, 'section: a click on the cut-away part of the bar selects nothing');
+  await click(b, await at((lo + hi) / 2, 1.3)); // the Ø20 bar lies below the window: cut away entirely
+  await sleep(300);
+  report((await b.ev('window.__viewer.selected')) === null, 'section: a click on a bar that is cut away entirely selects nothing');
+
+  // Off restores the whole bar; on again keeps the last box.
+  await b.ev('document.getElementById("section").click()');
+  await sleep(1200);
+  const off = await b.ev(AMBER);
+  report(near(off.x0, uncut.x0, 1.5) && near(off.x1, uncut.x1, 1.5) && (await b.ev('document.getElementById("sec-panel").hidden')),
+    `section: switching Section off restores the whole bar (${off.x0}..${off.x1} px) and closes the panel`);
+  await b.ev('document.getElementById("section").click()');
+  await sleep(300);
+  const s3 = await st();
+  report(s3.enabled && s3.size.every((v, i) => near(v, s2.size[i], 1e-9)) && s3.center.every((v, i) => near(v, s2.center[i], 1e-9)), 'section: switching it on again keeps the last box');
+}
+
+async function section() {
+  const { file } = await writeViewer(makeProject(), 'viewer-section', 'Section check');
+  const b = await launchBrowser();
+  try {
+    await openViewer(b, file);
+    await sectionCore(b);
+    report(b.consoleErrors.length === 0, `section: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+  } finally {
+    b.close();
+  }
+}
+
+const sections = { viewer, section, export: exportCheck, roundtrip };
 const needsApp = new Set(['export', 'roundtrip', 'scale']);
 try {
   for (const [name, fn] of Object.entries(sections)) {

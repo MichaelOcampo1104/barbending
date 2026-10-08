@@ -19,7 +19,9 @@ import {
 import { switchProjection, setOrthoZoom } from '../viewer/cameraOps.js';
 import { enrichBar, concreteVolumeM3, rebarRatioKgM3 } from '../bbs/csv.js';
 import { rowAppBox } from '../viewer/regionSelect.js';
+import { sectionPlanes } from '../viewer/sectionPlanes.js';
 import { gunzipBytes, fromBase64 } from './codec.js';
+import { createSectionBox } from './sectionBox.js';
 
 const S = 0.001; // app mm -> scene metres (x, z up, -y)
 const ROW_H = 24;
@@ -99,8 +101,10 @@ async function main() {
 
   // ---- the concrete members (ghost boxes or exact meshes, like the app's default look) ----
   const concreteGroup = new THREE.Group();
-  const ghost = new THREE.MeshStandardMaterial({ color: '#94a3b8', transparent: true, opacity: 0.25, roughness: 0.8, metalness: 0, depthWrite: false, side: THREE.DoubleSide });
-  const edgeMat = new THREE.LineBasicMaterial({ color: '#475569', transparent: true, opacity: 0.85 });
+  const ghost = new THREE.MeshStandardMaterial({
+    color: '#94a3b8', transparent: true, opacity: 0.25, roughness: 0.8, metalness: 0, depthWrite: false, side: THREE.DoubleSide, clippingPlanes: sectionPlanes,
+  });
+  const edgeMat = new THREE.LineBasicMaterial({ color: '#475569', transparent: true, opacity: 0.85, clippingPlanes: sectionPlanes });
   const box = new THREE.Box3();
   for (const c of concretes) {
     if (c.visible === false) continue;
@@ -152,6 +156,7 @@ async function main() {
   const dirty = () => { needsRender = true; };
   ctlP.addEventListener('change', dirty);
   ctlO.addEventListener('change', dirty);
+  const section = createSectionBox({ scene, field: view, bounds: box, dirty });
 
   function resize() {
     const w = Math.max(viewport.clientWidth, 1);
@@ -338,6 +343,7 @@ async function main() {
     const hit = pickField(data, { origin: raycaster.ray.origin.toArray(), dir: raycaster.ray.direction.toArray() }, {
       fovRad: m.fovRad, viewportHeightPx: m.viewportHeightPx, tolPx: touch ? 14 : 7, rowStates: view.states, rowRadiusM: view.radiusM,
       worldPerPixel: m.pxPerMeter ? 1 / m.pxPerMeter : null,
+      accept: (p) => section.contains(p),
     });
     return hit ? hit.row : null;
   }
@@ -442,7 +448,7 @@ async function main() {
     window.__viewer = {
       rows, bars, view, data, scene, renderer, bounds: { min: box.min.toArray(), max: box.max.toArray() },
       get cam() { return cam; }, get ctl() { return ctl; }, get frames() { return frames; }, get selected() { return selected; },
-      select, goView, fitAll, switchTo, pick: pickAt,
+      select, goView, fitAll, switchTo, pick: pickAt, section,
     };
   }
 }
