@@ -3,6 +3,7 @@
 // the app's shared sectionPlanes, updated in place; the materials do the cutting (the bar field's clipped programs, the concrete
 // meshes). This module owns the box, its panel and, in later parts, the face grips, the move / rotate gizmo and the solid-cut caps.
 import * as THREE from 'three';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import {
   sectionPlanes, updateSectionPlanes, updateSectionPlanesBox, closestAxisParam, isWorldPointInSectionBox,
 } from '../viewer/sectionPlanes.js';
@@ -137,6 +138,29 @@ export function createSectionBox({ scene, canvas, viewport, field, bounds, getCa
     if (!drag && e.pointerType !== 'touch') canvas.style.cursor = gripAt(e) >= 0 ? 'grab' : '';
   });
 
+  // ---- Move and Rotate: three's TransformControls on the box group (the app uses the same gizmo through drei) ----
+  const gizmo = new TransformControls(getCamera(), canvas);
+  gizmo.size = 0.85; // as in the app
+  gizmo.enabled = false;
+  scene.add(gizmo.getHelper());
+  gizmo.addEventListener('change', dirty);
+  gizmo.addEventListener('dragging-changed', (e) => { const orbit = getOrbit(); if (orbit) orbit.enabled = !e.value; });
+  gizmo.addEventListener('objectChange', () => { // the gizmo moved or turned the group: the state, the planes and the panel follow
+    state.center = boxGroup.position.toArray();
+    state.quat = boxGroup.quaternion.toArray();
+    apply();
+  });
+  parts.push((live) => {
+    const on = live && state.mode !== 'faces';
+    gizmo.enabled = on;
+    if (on) {
+      gizmo.setMode(state.mode);
+      if (gizmo.object !== boxGroup) gizmo.attach(boxGroup);
+    } else if (gizmo.object) {
+      gizmo.detach();
+    }
+  });
+
   function syncPanel() {
     $('sec-panel').hidden = !state.enabled;
     $('section').classList.toggle('on', state.enabled);
@@ -200,6 +224,9 @@ export function createSectionBox({ scene, canvas, viewport, field, bounds, getCa
   api.grips = grips;
   api.gripWorld = (k) => { boxGroup.updateMatrixWorld(true); return grips[k].core.getWorldPosition(new THREE.Vector3()).toArray(); };
   api.update = update;
+  api.gizmo = gizmo;
+  api.gizmoBusy = () => gizmo.enabled && (gizmo.axis !== null || gizmo.dragging);
+  api.setCamera = (cam) => { if (gizmo.camera !== cam) gizmo.camera = cam; };
 
   apply();
   return api;

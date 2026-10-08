@@ -660,6 +660,64 @@ async function sectionFaces(b) {
   await b.ev('window.__viewer.section.set({ showBox: true })');
 }
 
+async function sectionGizmo(b) {
+  const box = { center: [1.25, 1.5, -0.2], size: [1.3, 0.6, 0.4], quat: [0, 0, 0, 1] };
+  await prep(b, { view: 'front', box });
+  const info = () => b.ev(`(() => { const s = window.__viewer.section; const g = s.gizmo; return {
+    mode: s.state.mode, attached: g.object === s.boxGroup, gizmoMode: g.mode, helper: g.getHelper().visible, enabled: g.enabled, grips: s.gripGroup.visible }; })()`);
+  const state = () => b.ev('JSON.parse(JSON.stringify(window.__viewer.section.state))');
+  const planes = () => b.ev('window.__viewer.section.planes.map((p) => p.constant)');
+
+  // Faces: the grips show and the gizmo is detached. Move and Rotate attach the gizmo to the box and hide the grips.
+  const faces = await info();
+  report(faces.mode === 'faces' && !faces.attached && !faces.helper && !faces.enabled && faces.grips, 'gizmo: in Faces the grips show and the gizmo is detached');
+  for (const [mode, label] of [['translate', 'Move'], ['rotate', 'Rotate']]) {
+    await b.ev(`document.querySelector('#sec-mode [data-mode=${mode}]').click()`);
+    await sleep(300);
+    const m = await info();
+    report(m.mode === mode && m.attached && m.gizmoMode === mode && m.helper && m.enabled && !m.grips, `gizmo: ${label} attaches the ${mode} gizmo to the box and hides the grips`);
+  }
+
+  // What the gizmo does to the box group is written back to the state and to the planes (the gizmo's own dragging is three.js's).
+  await b.ev(`document.querySelector('#sec-mode [data-mode=translate]').click()`);
+  await sleep(200);
+  const before = await state();
+  const planesBefore = await planes();
+  await b.ev(`(() => { const s = window.__viewer.section; s.boxGroup.position.x += 0.4; s.gizmo.dispatchEvent({ type: 'objectChange' }); })()`);
+  await sleep(300);
+  const moved = await state();
+  const planesMoved = await planes();
+  report(near(moved.center[0] - before.center[0], 0.4, 1e-9) && near(planesMoved[0] - planesBefore[0], 0.4, 1e-9) && near(planesMoved[1] - planesBefore[1], -0.4, 1e-9),
+    'gizmo: moving the box moves its centre and the cut with it');
+  await b.ev(`document.querySelector('#sec-mode [data-mode=rotate]').click()`);
+  await sleep(200);
+  await b.ev(`(() => { const s = window.__viewer.section; s.boxGroup.rotation.y = Math.PI / 4; s.gizmo.dispatchEvent({ type: 'objectChange' }); })()`);
+  await sleep(300);
+  const rot = await b.ev(`({ q: window.__viewer.section.state.quat, g: window.__viewer.section.boxGroup.quaternion.toArray(), n: window.__viewer.section.planes[0].normal.toArray() })`);
+  report(rot.q.every((v, i) => near(v, rot.g[i], 1e-12)) && near(rot.n[0], -Math.SQRT1_2, 1e-9) && near(rot.n[2], Math.SQRT1_2, 1e-9),
+    'gizmo: turning the box turns its rotation and the planes with it');
+
+  // A gizmo drag switches the orbit off and back on; a press on a gizmo handle is not a bar pick.
+  await b.ev(`window.__viewer.section.gizmo.dispatchEvent({ type: 'dragging-changed', value: true })`);
+  const locked = await b.ev('window.__viewer.ctl.enabled');
+  await b.ev(`window.__viewer.section.gizmo.dispatchEvent({ type: 'dragging-changed', value: false })`);
+  const freed = await b.ev('window.__viewer.ctl.enabled');
+  report(locked === false && freed === true, 'gizmo: a gizmo drag switches the orbit off and back on');
+  const busy = await b.ev(`(() => { const s = window.__viewer.section; s.gizmo.axis = 'X'; const on = s.gizmoBusy(); s.gizmo.axis = null; return [on, s.gizmoBusy()]; })()`);
+  report(busy[0] === true && busy[1] === false, 'gizmo: a press on a gizmo handle counts as busy, otherwise not');
+
+  // The gizmo follows the camera when the projection switches.
+  const cams = await b.ev(`(() => { const v = window.__viewer; const g = v.section.gizmo; const a = g.camera === v.cam; v.switchTo('persp'); const p = g.camera === v.cam && !!g.camera.isPerspectiveCamera;
+    v.switchTo('ortho'); return [a, p, g.camera === v.cam && !!g.camera.isOrthographicCamera]; })()`);
+  report(cams.every(Boolean), 'gizmo: the gizmo follows the camera when the projection switches');
+
+  // Back to Faces: the gizmo is detached again.
+  await b.ev(`document.querySelector('#sec-mode [data-mode=faces]').click()`);
+  await sleep(200);
+  const back = await info();
+  report(!back.attached && !back.helper && !back.enabled && back.grips, 'gizmo: back in Faces the gizmo is detached and the grips return');
+}
+
 async function section() {
   const { file } = await writeViewer(makeProject(), 'viewer-section', 'Section check');
   const b = await launchBrowser();
@@ -667,6 +725,7 @@ async function section() {
     await openViewer(b, file);
     await sectionCore(b);
     await sectionFaces(b);
+    await sectionGizmo(b);
     report(b.consoleErrors.length === 0, `section: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
   } finally {
     b.close();

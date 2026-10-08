@@ -194,6 +194,7 @@ async function main() {
     });
     cam = to.cam;
     ctl = to.ctl;
+    section.setCamera(cam);
     ctl.update();
     dirty();
   }
@@ -349,9 +350,9 @@ async function main() {
     return hit ? hit.row : null;
   }
   let down = null;
-  canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button }; });
+  canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, onGizmo: section.gizmoBusy() }; });
   canvas.addEventListener('pointerup', (e) => {
-    if (down && down.button === 0 && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5 && performance.now() - down.t < 700) {
+    if (down && down.button === 0 && !down.onGizmo && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5 && performance.now() - down.t < 700) {
       select(pickAt(e.clientX, e.clientY, e.pointerType === 'touch'));
     }
     down = null;
