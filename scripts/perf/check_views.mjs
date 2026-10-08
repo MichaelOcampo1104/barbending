@@ -520,7 +520,10 @@ const dotProbe = (cx, cy, color) => `(() => {
 const endOnUniform = (b) => b.ev(`(() => { let v = null; window.__scene.traverse((o) => { if (v === null && o.userData && o.userData.barField === 'lines') v = o.material.uniforms.uEndOnAxis.value; }); return v; })()`);
 
 async function dots() {
-  const b = await launchBrowser({ instrument: INSTR });
+  // The close-up half of this section needs the fitted view to be zoomed in far enough for tubes (bars about 2 px wide). That depends on
+  // the canvas height, which the bottom panel takes from (300 px by default now, 120 px on a fresh profile before): a taller window
+  // keeps the canvas as tall as the section was written for.
+  const b = await launchBrowser({ instrument: INSTR, height: 1080 });
   try {
     await openProject(b, 'autotest=dots', makeDotsProject());
     const byMark = Object.fromEntries(DOT_BARS.map((d) => [d.mark, d]));
