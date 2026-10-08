@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --open --host",
+    "predev": "npm run build:viewer",
     "build": "vite build",
+    "prebuild": "npm run build:viewer",
+    "build:viewer": "node scripts/build-viewer.mjs",
     "lint": "oxlint",
     "test": "node --test \"tests/**/*.test.mjs\"",
     "preview": "vite preview"

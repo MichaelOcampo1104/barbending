@@ -1,0 +1,101 @@
+<!doctype html>
+<!-- barbending standalone viewer, format 1, built @@BARBENDING_BUILD@@. Open this file in any recent browser; the barbending app opens it too (Project > Open). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>@@BARBENDING_TITLE@@</title>
+<style>
+:root { color-scheme: dark; --bg: #0b1220; --panel: #0d1730; --panel2: #111c33; --line: #243352; --text: #dbe4f5; --dim: #93a4c4; --accent: #1d4ed8; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 13px/1.35 system-ui, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+button { font: inherit; color: var(--text); background: rgba(22, 35, 63, .9); border: 1px solid #2b3d63; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button:hover { border-color: #60a5fa; }
+button.on { background: var(--accent); }
+input[type=search] { font: inherit; color: var(--text); background: #0b1528; border: 1px solid #2b3d63; border-radius: 6px; padding: 5px 8px; width: 100%; }
+#root { display: flex; flex-direction: column; height: 100%; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 12px; background: #111c33; border-bottom: 1px solid var(--line); }
+#head-title { display: flex; flex-direction: column; min-width: 0; margin-right: auto; }
+#title { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#meta { color: var(--dim); font-size: 12px; }
+#saved:not(:empty)::before { content: ' · '; }
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 6px 6px 0; }
+#legend { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; }
+.chip i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.chip.off { opacity: .4; }
+.chk { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); cursor: pointer; }
+main { flex: 1; min-height: 0; display: flex; }
+#viewport { position: relative; flex: 1; min-width: 0; }
+#gl { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+#pill { position: absolute; right: 12px; bottom: 34px; background: rgba(15, 23, 42, .85); }
+#info { position: absolute; left: 12px; bottom: 34px; max-width: min(460px, calc(100% - 24px)); background: rgba(15, 23, 42, .92); border: 1px solid #334155; border-radius: 8px; padding: 8px 12px; }
+#info .dim, .dim { color: var(--dim); }
+#hint { position: absolute; left: 12px; right: 12px; bottom: 8px; color: var(--dim); font-size: 11px; pointer-events: none; text-shadow: 0 0 4px #0b1220; }
+#panel { width: 500px; max-width: 58vw; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); }
+#panel.closed { display: none; }
+#panel-top { padding: 8px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
+#panel-count { color: var(--dim); font-size: 12px; white-space: nowrap; }
+.g { display: grid; grid-template-columns: 34px 66px 90px 30px 40px 60px 58px minmax(70px, 1fr); gap: 4px; align-items: center; padding: 0 8px; }
+.head { background: var(--panel2); border-bottom: 1px solid var(--line); height: 28px; font-weight: 600; color: var(--dim); font-size: 12px; }
+.head span { cursor: pointer; white-space: nowrap; user-select: none; }
+.head span:hover { color: var(--text); }
+.num { text-align: right; }
+#tbl-scroll { position: relative; flex: 1; overflow: auto; }
+#tbl-spacer { position: relative; }
+#tbl-rows { position: absolute; left: 0; right: 0; top: 0; }
+.r { height: 24px; border-bottom: 1px solid #16233f; cursor: pointer; white-space: nowrap; overflow: hidden; }
+.r span { overflow: hidden; text-overflow: ellipsis; }
+.r:hover { background: #14213d; }
+.r.sel { background: #1d4ed8; }
+#loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--bg); color: var(--dim); font-size: 15px; text-align: center; padding: 24px; z-index: 10; }
+#loading.err { color: #fca5a5; }
+@media (max-width: 820px) {
+  header { flex-wrap: nowrap; overflow-x: auto; gap: 8px; }
+  header > * { flex: 0 0 auto; }
+  #head-title { min-width: 220px; margin-right: 4px; }
+  #legend { flex-wrap: nowrap; }
+  main { flex-direction: column; }
+  #panel { width: 100%; max-width: none; height: 42%; border-left: 0; border-top: 1px solid var(--line); }
+  #hint { display: none; }
+  #info { bottom: 8px; }
+  #pill { bottom: 8px; }
+}
+</style>
+</head>
+<body>
+<div id="root">
+  <header>
+    <div id="head-title"><span id="title">barbending model</span><span id="meta"><span id="stats"></span><span id="saved"></span></span></div>
+    <div class="seg" id="views"></div>
+    <button id="fit" title="Fit the whole model in view (F)">Fit all</button>
+    <label class="chk"><input type="checkbox" id="concrete" checked> Concrete</label>
+    <div id="legend" title="Click a diameter to hide or show it"></div>
+    <button id="download" title="Download the project file (.json) to open in the barbending app">⤓ Project</button>
+    <button id="toggle-panel" class="on">BBS</button>
+  </header>
+  <main>
+    <section id="viewport">
+      <canvas id="gl" tabindex="0"></canvas>
+      <button id="pill" title="Switch between orthographic and perspective"></button>
+      <div id="info" hidden></div>
+      <div id="hint">drag = orbit · wheel = zoom · right-drag = pan · click a bar for its details · F = fit · Esc = deselect</div>
+    </section>
+    <aside id="panel">
+      <div id="panel-top"><input type="search" id="filter" placeholder="Filter by mark, type, Ø or member"><span id="panel-count"></span></div>
+      <div class="g head" id="tbl-head"></div>
+      <div id="tbl-scroll"><div id="tbl-spacer"><div id="tbl-rows"></div></div></div>
+    </aside>
+  </main>
+</div>
+<div id="loading">Loading model…<noscript> This viewer needs JavaScript.</noscript></div>
+<script id="model-data" type="text/plain">@@BARBENDING_DATA@@</script>
+<script>
+@@BARBENDING_SCRIPT@@
+</script>
+</body>
+</html>

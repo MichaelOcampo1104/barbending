@@ -35,3 +35,6 @@ inputs/P103-TCSJV-CP03-ZZ-S-STR-M3-PIM-0001.ifc
 
 # Performance rig output (generated projects, results, screenshots)
 scripts/perf/out/
+
+# Generated standalone-viewer template (npm run build:viewer)
+public/viewer-template.html
