@@ -527,12 +527,146 @@ async function sectionCore(b) {
   report(s3.enabled && s3.size.every((v, i) => near(v, s2.size[i], 1e-9)) && s3.center.every((v, i) => near(v, s2.center[i], 1e-9)), 'section: switching it on again keeps the last box');
 }
 
+// Puts the viewer in a known state: the view, then the section box (a given box, or the last / default one). Used by the checks of Tasks 7-9.
+async function prep(b, { view = 'front', box = null, solidCut = false, mode = 'faces', showBox = true } = {}) {
+  await b.ev('window.__viewer.section.set({ enabled: false })');
+  await b.ev(`window.__viewer.goView(${JSON.stringify(view)})`);
+  await settle(b);
+  await b.ev(`window.__viewer.section.set(${JSON.stringify({ enabled: true, solidCut, mode, showBox, ...(box || {}) })})`);
+  await sleep(400);
+}
+
+// Trusted mouse drag (page pixels), in steps.
+const MOUSE = { left: [0, 1], middle: [1, 4], right: [2, 2] };
+async function drag(b, from, to, button = 'left', steps = 12) {
+  const mod = MOUSE[button][1];
+  await b.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from[0], y: from[1] });
+  await b.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: from[0], y: from[1], button, buttons: mod, clickCount: 1 });
+  for (let i = 1; i <= steps; i++) {
+    await b.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from[0] + ((to[0] - from[0]) * i) / steps, y: from[1] + ((to[1] - from[1]) * i) / steps, button, buttons: mod });
+    await sleep(16);
+  }
+  await b.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: to[0], y: to[1], button, buttons: 0, clickCount: 1 });
+}
+
+async function sectionFaces(b) {
+  const box = { center: [1.25, 1.5, -0.2], size: [1.3, 0.6, 0.4], quat: [0, 0, 0, 1] };
+  const st = () => b.ev('JSON.parse(JSON.stringify(window.__viewer.section.state))');
+  const pose = () => b.ev('window.__viewer.cam.position.toArray().join(",")');
+  // Where a user presses to take grip k, in page pixels (dx: pixels to the right of the grip's centre).
+  const gripAt = async (k, dx = 0) => {
+    const rect = await rectOf(b);
+    const [px, py] = await toScreen(b, await b.ev(`window.__viewer.section.gripWorld(${k})`));
+    return [rect.x + px + dx, rect.y + py];
+  };
+
+  // A drag on the +X grip (index 1) changes the width by exactly the pointer's movement; the -X face stays; orbit is off during it.
+  await prep(b, { view: 'front', box });
+  let zoom = await b.ev('window.__viewer.cam.zoom');
+  const s0 = await st();
+  const pose0 = await pose();
+  let from = await gripAt(1);
+  await drag(b, from, [from[0] + 100, from[1]]);
+  await sleep(400);
+  const s1 = await st();
+  const dW = s1.size[0] - s0.size[0];
+  report(near(dW, 100 / zoom, 0.002), `faces: dragging the +X grip 100 px changes the width by ${dW.toFixed(4)} m (expected ${(100 / zoom).toFixed(4)})`);
+  report(near(s1.center[0] - s1.size[0] / 2, s0.center[0] - s0.size[0] / 2, 1e-9) && near(s1.center[0] - s0.center[0], dW / 2, 1e-9),
+    'faces: the -X face stays put and the centre moves by half the change');
+  report(s1.size[1] === s0.size[1] && s1.size[2] === s0.size[2], 'faces: the other two sizes are untouched');
+  report((await pose()) === pose0 && (await b.ev('window.__viewer.ctl.enabled')), 'faces: the camera did not orbit during the drag, and orbit is enabled again after it');
+
+  // The pick area is twice the visible grip: a press 11 px beside the centre (the cube is 14 px wide) still takes it.
+  from = await gripAt(1, 11);
+  await drag(b, from, [from[0] - 60, from[1]]);
+  await sleep(400);
+  const s2 = await st();
+  report(near(s2.size[0] - s1.size[0], -60 / zoom, 0.002), `faces: a press beside the visible grip still takes it (${(s2.size[0] - s1.size[0]).toFixed(4)} m, expected ${(-60 / zoom).toFixed(4)})`);
+
+  // A face never gets thinner than 50 mm, and the opposite face still does not move.
+  from = await gripAt(1);
+  await drag(b, from, [from[0] - (s2.size[0] + 0.5) * zoom, from[1]], 'left', 20);
+  await sleep(400);
+  const s3 = await st();
+  report(s3.size[0] === 0.05 && near(s3.center[0] - s3.size[0] / 2, s0.center[0] - s0.size[0] / 2, 1e-9), `faces: the width stops at 50 mm (${s3.size[0]} m) and the -X face has not moved`);
+
+  // A grip keeps its size on screen: one grip unit is one pixel in the orthographic view whatever the zoom ...
+  await prep(b, { view: 'front', box });
+  zoom = await b.ev('window.__viewer.cam.zoom');
+  const unit = () => b.ev('window.__viewer.section.grips[1].root.scale.x * window.__viewer.cam.zoom');
+  const u0 = await unit();
+  const rect = await rectOf(b);
+  await b.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: rect.x + rect.w / 2, y: rect.y + rect.h / 2, deltaX: 0, deltaY: -300 });
+  await settle(b);
+  const u1 = await unit();
+  const z1 = await b.ev('window.__viewer.cam.zoom');
+  report(near(u0, 1, 1e-6) && near(u1, 1, 1e-6) && z1 > zoom * 1.1, `faces: a grip keeps its screen size when the zoom changes (${zoom.toFixed(0)} -> ${z1.toFixed(0)} px/m; pixels per grip unit ${u0.toFixed(4)}, ${u1.toFixed(4)})`);
+  // ... and about 14 px wide in the perspective view, measured through the real projection.
+  await prep(b, { view: 'iso', box });
+  const px14 = await b.ev(`(() => { const v = window.__viewer; const g = v.section.grips[3]; const cv = document.getElementById('gl'); const V = v.cam.position.constructor;
+    v.cam.updateMatrixWorld(true);
+    const c0 = new V().setFromMatrixPosition(g.core.matrixWorld);
+    const right = new V().setFromMatrixColumn(v.cam.matrixWorld, 0);
+    const a = c0.clone().project(v.cam);
+    const c = c0.clone().addScaledVector(right, g.root.scale.x * 14).project(v.cam);
+    return Math.hypot((c.x - a.x) * cv.clientWidth / 2, (c.y - a.y) * cv.clientHeight / 2); })()`);
+  report(near(px14, 14, 0.7), `faces: in the perspective view a grip is ${px14.toFixed(2)} px wide (14 px)`);
+
+  // A box turned 30 degrees about the vertical: the +X face moves along its own normal, by the pointer's movement along that line.
+  const ang = Math.PI / 6;
+  await prep(b, { view: 'front', box: { ...box, quat: [0, Math.sin(ang / 2), 0, Math.cos(ang / 2)] } });
+  zoom = await b.ev('window.__viewer.cam.zoom');
+  const r0 = await st();
+  from = await gripAt(1);
+  await drag(b, from, [from[0] + 100, from[1]]);
+  await sleep(400);
+  const r1 = await st();
+  const dR = r1.size[0] - r0.size[0];
+  const N = [Math.cos(ang), 0, -Math.sin(ang)];
+  report(near(dR, 100 / (zoom * Math.cos(ang)), 0.003) && [0, 1, 2].every((i) => near(r1.center[i] - r0.center[i], (N[i] * dR) / 2, 1e-9)),
+    `faces: on a box turned 30 degrees the +X face moves along its normal by ${dR.toFixed(4)} m (expected ${(100 / (zoom * Math.cos(ang))).toFixed(4)})`);
+
+  // Touch: pointer events with pointerType "touch" (synthetic here; not tried on a real phone) take a grip the same way.
+  await prep(b, { view: 'front', box });
+  zoom = await b.ev('window.__viewer.cam.zoom');
+  const t0 = await st();
+  const [gx, gy] = await gripAt(1);
+  const widthAfterTouch = await b.ev(`(() => {
+    const cv = document.getElementById('gl');
+    const fire = (type, x, y) => cv.dispatchEvent(new PointerEvent(type, { pointerId: 7, pointerType: 'touch', isPrimary: true, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+    fire('pointerdown', ${gx}, ${gy});
+    for (let i = 1; i <= 8; i++) fire('pointermove', ${gx} + i * 10, ${gy});
+    fire('pointerup', ${gx} + 80, ${gy});
+    return window.__viewer.section.state.size[0];
+  })()`);
+  report(near(widthAfterTouch - t0.size[0], 80 / zoom, 0.002) && (await b.ev('window.__viewer.ctl.enabled')), `faces: a touch drag of 80 px changes the width by ${(widthAfterTouch - t0.size[0]).toFixed(4)} m (expected ${(80 / zoom).toFixed(4)})`);
+
+  // A press well outside the pick area is not a grip: the camera orbits and the box is left alone.
+  await prep(b, { view: 'front', box });
+  const n0 = await st();
+  const poseN = await pose();
+  from = await gripAt(1, 30);
+  await drag(b, from, [from[0] + 40, from[1] + 40]);
+  await sleep(500);
+  report(isDeepStrictEqual((await st()).size, n0.size) && (await pose()) !== poseN, 'faces: a press outside the pick area orbits the camera and leaves the box alone');
+
+  // With 👁 Box off the grips are gone.
+  await prep(b, { view: 'front', box, showBox: false });
+  const h0 = await st();
+  from = await gripAt(1);
+  await drag(b, from, [from[0] + 60, from[1]]);
+  await sleep(400);
+  report(isDeepStrictEqual((await st()).size, h0.size), 'faces: with 👁 Box off the grips cannot be grabbed');
+  await b.ev('window.__viewer.section.set({ showBox: true })');
+}
+
 async function section() {
   const { file } = await writeViewer(makeProject(), 'viewer-section', 'Section check');
   const b = await launchBrowser();
   try {
     await openViewer(b, file);
     await sectionCore(b);
+    await sectionFaces(b);
     report(b.consoleErrors.length === 0, `section: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
   } finally {
     b.close();

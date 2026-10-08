@@ -156,7 +156,7 @@ async function main() {
   const dirty = () => { needsRender = true; };
   ctlP.addEventListener('change', dirty);
   ctlO.addEventListener('change', dirty);
-  const section = createSectionBox({ scene, field: view, bounds: box, dirty });
+  const section = createSectionBox({ scene, canvas, viewport, field: view, bounds: box, getCamera: () => cam, getOrbit: () => ctl, dirty });
 
   function resize() {
     const w = Math.max(viewport.clientWidth, 1);
@@ -290,6 +290,7 @@ async function main() {
         dirty(); // too soon after the last level-of-detail pass: look again next frame
       }
     }
+    section.update(cam, viewport.clientHeight || 800);
     renderer.render(scene, cam);
     frames += 1;
     $('pill').textContent = `${VIEW_LABELS[viewFromForward([fwd.x, fwd.y, fwd.z])] || 'Free'} · ${ortho ? 'Orthographic' : 'Perspective'}`;
