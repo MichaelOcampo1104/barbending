@@ -195,6 +195,29 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   overlay the top of the canvas: a drag that starts on a toolbar button never reaches it, so keep browser-check
   shapes clear of the toolbar. Browser check: `scripts/perf/check_select.mjs`.
 
+## Standalone viewer (`src/standalone/`, the `⤓ Viewer` export)
+
+- `⤓ Viewer` writes ONE `.html` file: a generated template (`public/viewer-template.html`, git-ignored, built by `npm run build:viewer`,
+  which `predev` and `prebuild` run) with the title and the gzipped, base64-encoded `_projectData()` filled in by `packViewerHtml`
+  (`pack.js`). The same file is a project save: `⤒ Project` / `⤒+ Insert` read `.html` through `parseProjectFile` →
+  `extractProjectFromHtml`. The viewer is vanilla JS on three.js (`viewer.js`, `sectionBox.js`), bundled by `scripts/build-viewer.mjs`
+  (Vite library mode, IIFE) together with the app's own pure modules (`buildField`, `FieldView`, `pickField`, `cameraMath`,
+  `sectionPlanes`, `stencilMats`, `csv.js`, ...), so geometry and numbers cannot drift from the app.
+- Rules that keep it working: the template has exactly two tokens the app fills in (`@@BARBENDING_TITLE@@`, `@@BARBENDING_DATA@@`, once
+  each) and two build-time tokens; the viewer script must not contain any of them, so never import `pack.js` into the viewer (it imports
+  `codec.js` only). The build checks the tokens, the two script elements and the script size (800 KB). The dev server does not watch
+  `src/standalone/`: after changing it run `npm run build:viewer` and reload. A dev server answers an unknown path with `index.html` and
+  status 200, which is why `loadViewerTemplate` looks for the tokens, not the status.
+- Test hooks (`window.__viewer`) and a readable canvas exist only with `?autotest` (`?autotest=nobuffer` for fps runs); a visitor's page has neither.
+- Section box: the pure maths is `src/viewer/sectionBoxMath.js`, shared with the app's `SectionBox.jsx` (change it in one place and run
+  `tests/standalone/sectionBoxMath.test.mjs` and `check_views.mjs --only section`). `FACES` (the grips) is in the order -X, +X, -Y, +Y,
+  -Z, +Z; the clipping planes and `capQuad` are in the order +X, -X, +Y, -Y, +Z, -Z. The viewer keeps the app's technique: the shared
+  `sectionPlanes` mutated in place, `FieldView.setClipping`, stencil marks and cap quads at render orders `3i`, `3i + 1`, `3i + 2`,
+  `renderer.clearStencil()` after each cap, `stencil: true` on the renderer. Face grips keep a constant size on screen (`pixelWorldSize`)
+  with a doubled hit area; a press on a grip is caught in the capture phase on the viewport so OrbitControls and the bar picker never see it.
+- Browser check: `scripts/perf/check_standalone.mjs` (sections `viewer`, `section`, `export`, `roundtrip`, `scale`; the first two need only
+  the built template, the others `--url`).
+
 ## Dev servers & the stale-tab problem
 
 - `:5173` dev (`npm run dev`, started with `CHOKIDAR_USEPOLLING=1` — native

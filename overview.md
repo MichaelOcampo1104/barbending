@@ -46,6 +46,10 @@ everything runs from static files.
 | `src/viewer/SectionBox.jsx` | Revit-style section box: push/pull faces, move/rotate gizmos, stencil cap quads, size tag |
 | `src/viewer/sectionPlanes.js` | 6 shared world-space clip planes (mutated in place), box math, state migration |
 | `src/viewer/stencilMats.js` | Shared stencil mark + cap materials (created once) |
+| `src/viewer/sectionBoxMath.js` | Pure section-box maths shared by `SectionBox.jsx` and the standalone viewer: the faces, cap quads, the face-drag result, the Test cut size, the default box from bounds, the world size of a pixel (constant-size grips) |
+| `src/standalone/pack.js`, `codec.js` | The single-file viewer format: fill the template with the title and the gzipped base64 project (`packViewerHtml`), read it back (`extractProjectFromHtml`, `parseProjectFile`) |
+| `src/standalone/exportViewer.js` | Fetches the generated viewer template for `⤓ Viewer` (and recognises a dev server's `index.html` fallback) |
+| `src/standalone/viewer.js`, `sectionBox.js`, `template.html` | The viewer inside the exported file: vanilla JS on three.js reusing the app's pure modules, its section box (grips, move / rotate gizmo, solid-cut caps) and the page shell; `scripts/build-viewer.mjs` bundles them into `public/viewer-template.html` |
 | `src/ifc/session.js` | WASM loader singleton, `loadIfc`/`unloadIfc`, `collectStoreys`, index-aware `subsetBox` |
 | `src/ifc/IfcPanel.jsx` | Right-rail outliner (levels → types → elements), search, opacity, units, property editor |
 | `src/ifc/units.js` | Unit choice table (static-safe import) |
@@ -77,6 +81,11 @@ disarms (Esc too). Orthographic and perspective share the code, which only needs
 (rebar, concrete, IFC ghost/highlight) cut live. Solid-cut mode adds stencil
 mark children (no colour/depth writes) + cap quads filled where stencil ≠ 0,
 cleared per face via imperative `onAfterRender`.
+
+**Viewer export:** `⤓ Viewer` → title prompt → `loadViewerTemplate` (fetch `viewer-template.html`) → `packViewerHtml(template,
+_projectData(), { title })` (gzip + base64 into the template's data element) → download one `.html`. Opening it: the page's script
+reads the data (`DecompressionStream`), rebuilds the rows with `enrichBar` and the field with `buildField` / `FieldView`, and renders on
+demand; `⤒ Project` in the app reads the same data back with `extractProjectFromHtml`.
 
 ## Key conventions
 

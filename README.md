@@ -22,6 +22,9 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
 > update, check the stamp — a stale tab is the #1 cause. Hard-refresh with
 > **`Ctrl+Shift+R`**, then reload your IFC file (models live in memory only).
 
+> `npm run dev` and `npm run build` first run `npm run build:viewer`, which writes `public/viewer-template.html` (the page behind
+> **⤓ Viewer**; git-ignored). After changing `src/standalone/` run it again: the dev server does not rebuild it.
+
 ## Features
 
 - **Scratch concrete** — Beam/Slab/Column boxes with size + position.
@@ -77,6 +80,11 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
   💾 Save keeps your work in the browser and restores it on reload (IFC
   files reload by hand); ⤓/⤒ Project moves the project to another system
   as a `.json` file.
+- **Share as one file** — **⤓ Viewer** writes the whole model as ONE `.html` file that opens in any recent browser with nothing
+  installed (no app, no server, no internet): 3D bars and concrete, orbit / zoom / pan, the six true orthographic views, click a bar
+  for its details, the sortable BBS table, a diameter legend, and a **section box** (push / pull faces, Move, Rotate, Fit box, Test
+  cut, Solid cut). The file is also a save: **⤒ Project** and **⤒+ Insert** open it again in the app. The IFC model is not in it,
+  and reference lines are kept in the file but not drawn.
 
 ## Typical workflows
 
@@ -89,6 +97,8 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
 4. **Coordination:** ⤒ Project opens one `.json` (replaces model), then
    **⤒+ Insert** merges another alongside it — concrete ids remap on clash,
    tags renumber, hosts follow (undoable).
+5. **Share a finished model:** ⤓ Viewer → type a title → send the `.html` file; whoever opens it sees the model and the schedule in
+   their browser. Open it in the app again with ⤒ Project.
 
 ## DXF plan → BBS importer (CLI)
 
@@ -243,6 +253,7 @@ moves.
 | Levels section empty | Large models (>1000 elements) fall back to type-level control |
 | Section caps look wrong / slow | Toggle **Solid cut** off (hollow view); caps add per-plane passes |
 | Ghost too faint / too solid | Ghost ◧ / Solid ◼ toggle + opacity slider in the IFC rail |
+| ⤓ Viewer says the template is missing | `npm run build:viewer`, then reload (`npm run dev` / `npm run build` do it for you) |
 
 ## Limits (honest)
 
@@ -252,6 +263,7 @@ moves.
 - Section box is axis-aligned by default with a rotate gizmo; cut faces are
   flat fills (no hatch), capped via stencil (needs a stencil-capable GPU —
   universal on real hardware).
+- The viewer `.html` is read-only: no IFC model, no measuring, no editing; the section box is not saved in the file.
 - BBS math is straight/hook/bend-deduction lengths + unit weights, not a full
   BS 8666 scheduler (shape codes, laps beyond the FreeCAD fields).
 
@@ -265,6 +277,7 @@ src/
   viewer/            Scene, IFC model, FitIfc, SectionBox, planes, stencil mats,
                      CameraRig + cameraMath/cameraOps (perspective / orthographic views)
   ifc/               WASM loader session, control panel, units
+  standalone/        single-file viewer export (⤓ Viewer): pack, viewer, section box, page template
 public/web-ifc.wasm  IFC parser (must match bundled web-ifc version)
 agent.md             contributor/agent conventions · overview.md  architecture
 ```

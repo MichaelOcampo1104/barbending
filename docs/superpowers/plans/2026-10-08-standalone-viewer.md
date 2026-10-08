@@ -743,7 +743,7 @@ async function openViewer(b, file, { autotest = true } = {}) {
   const t0 = Date.now();
   const query = autotest === 'nobuffer' ? '?autotest=nobuffer' : autotest ? '?autotest' : '';
   await b.send('Page.navigate', { url: pathToFileURL(file).href + query });
-  for (let i = 0; i < 600; i++) {
+  while (Date.now() - t0 < 60000) { // bounded in time: a frozen page must fail the run, not hold it up for an hour
     const ready = await b.ev(`(() => { const l = document.getElementById('loading'); return !!l && getComputedStyle(l).display === 'none'; })()`, 5000).catch(() => false);
     if (ready) return Date.now() - t0;
     await sleep(100);
@@ -844,7 +844,7 @@ async function viewer() {
     await b.ev(`(() => { const f = document.getElementById('filter'); f.value = ${JSON.stringify(mark)}; f.dispatchEvent(new Event('input')); })()`);
     await sleep(300);
     const count = await b.ev('document.getElementById("panel-count").textContent');
-    report(/^\d+ of \d+ rows$/.test(count), `viewer: filtering by "${mark}" narrows the table (${count})`);
+    report(/^[\d,]+ of [\d,]+ rows$/.test(count), `viewer: filtering by "${mark}" narrows the table (${count})`);
     await b.ev(`(() => { const f = document.getElementById('filter'); f.value = ''; f.dispatchEvent(new Event('input')); })()`);
     await b.ev('window.__viewer.select(null)');
 
@@ -1744,7 +1744,7 @@ async function waitFor(b, expr, timeoutMs = 20000) {
 async function importFile(b, filePath, which = 0) {
   const root = await b.send('DOM.getDocument', { depth: 0 });
   const q = await b.send('DOM.querySelectorAll', { nodeId: root.root.nodeId, selector: 'input[type=file]' });
-  await b.send('DOM.setFileInputFiles', { files: [filePath], nodeId: q.nodeIds[which] });
+  await b.send('DOM.setFileInputFiles', { files: [path.resolve(filePath)], nodeId: q.nodeIds[which] }); // the browser needs an absolute path
 }
 
 // Opens the app and imports a project file; waits until the store holds all its rows.
@@ -1752,7 +1752,8 @@ async function openApp(b, projectPath, rowCount, query = 'autotest=standalone') 
   await b.send('Page.navigate', { url: `${base}/?${query}` });
   if (!(await waitFor(b, '!!document.querySelector("canvas") && !!window.__store', 45000))) throw new Error('the app did not start at ' + base);
   await importFile(b, projectPath, 0);
-  if (!(await waitFor(b, `window.__store.getState().bars.length === ${rowCount}`, 120000))) throw new Error('the app did not take the project');
+  // Generous, and growing with the rows: the BBS table renders every row, so 25,000 rows keep the page busy for a minute or more.
+  if (!(await waitFor(b, `window.__store.getState().bars.length === ${rowCount}`, Math.max(120000, rowCount * 24)))) throw new Error('the app did not take the project');
   await sleep(800);
 }
 
@@ -2154,7 +2155,8 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
 const rectOf = (b) => b.ev(`(() => { const r = document.getElementById('gl').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()`);
 
 // ---- the section box (viewer) ----
-// Amber pixels of the canvas (the Ø16 bar): count and horizontal extent, in canvas pixels.
+// Amber pixels of the canvas (the Ø16 bar): count and horizontal extent, in canvas pixels. Amber by hue, not by brightness: at this zoom
+// the bar is a one-pixel line, and when its centre falls between two pixel rows each of them is only partly covered and dim.
 const AMBER = `(() => {
   const c = document.getElementById('gl'); const t = document.createElement('canvas');
   t.width = c.width; t.height = c.height;
@@ -2163,7 +2165,7 @@ const AMBER = `(() => {
   let n = 0, x0 = 1e9, x1 = -1;
   for (let i = 0, p = 0; i < d.length; i += 4, p++) {
     const r = d[i], g = d[i + 1], b = d[i + 2];
-    if (r > 140 && g > 105 && g < 210 && b < 100 && r > g * 1.1) { n++; const px = p % t.width; if (px < x0) x0 = px; if (px > x1) x1 = px; }
+    if (r > 60 && r > g * 1.08 && g > b * 1.2 && r - b > 25) { n++; const px = p % t.width; if (px < x0) x0 = px; if (px > x1) x1 = px; }
   }
   return { n, x0, x1 };
 })()`;
@@ -2216,19 +2218,20 @@ async function sectionCore(b) {
     `section: Test cut keeps the centre and shrinks each size to a third (${s2.size.map((v) => v.toFixed(3)).join(' x ')} m)`);
   const planes = await b.ev('window.__viewer.section.planes.map((p) => p.constant)');
   report(near(planes[0], s2.center[0] + s2.size[0] / 2, 1e-9) && near(planes[1], -(s2.center[0] - s2.size[0] / 2), 1e-9), 'section: the shared clipping planes follow the box');
-  const cut = await b.ev(AMBER);
+  // The bar is cut at the box faces, to a pixel. The box's own outline is drawn over the last pixel at each plane, so the box is hidden
+  // (👁 Box: it keeps cutting) for this measure; the first and last pixel the bar can have are the ones whose centres lie inside the planes.
   const lo = Math.max(0, s2.center[0] - s2.size[0] / 2);
   const hi = Math.min(3, s2.center[0] + s2.size[0] / 2);
   const e0 = await sx(lo);
   const e1 = await sx(hi);
-  report(cut.n > 100 && near(cut.x0, e0, 1.5) && near(cut.x1, e1, 1.5), `section: the cut agrees with the planes to 1 px (bar ${cut.x0}..${cut.x1}, planes ${e0.toFixed(1)}..${e1.toFixed(1)})`);
-
-  // 👁 Box hides the box but the cut stays.
   await b.ev('document.getElementById("sec-show").click()');
   await sleep(600);
   const hid = await b.ev('({ visible: window.__viewer.section.boxGroup.visible, show: window.__viewer.section.state.showBox })');
-  const still = await b.ev(AMBER);
-  report(!hid.visible && !hid.show && near(still.x0, cut.x0, 1) && near(still.x1, cut.x1, 1), `section: 👁 Box hides the box but the cut stays (bar ${still.x0}..${still.x1} px)`);
+  const cut = await b.ev(AMBER);
+  const first = Math.ceil(e0 - 0.5);
+  const last = Math.floor(e1 - 0.5);
+  report(cut.n > 100 && near(cut.x0, first, 1) && near(cut.x1, last, 1), `section: the cut agrees with the planes to 1 px (bar ${cut.x0}..${cut.x1}, planes ${e0.toFixed(1)}..${e1.toFixed(1)}, so pixels ${first}..${last})`);
+  report(!hid.visible && !hid.show, 'section: 👁 Box hides the box, and the cut above is still there');
   await b.ev('document.getElementById("sec-show").click()');
   await sleep(300);
 
