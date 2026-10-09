@@ -56,6 +56,8 @@ async function openApp(b, projectPath, rowCount) {
 // The free rows sit 50 m away from every member: the app hosts a bar that lies inside a member's volume by itself.
 const DIAS = [12, 16, 20, 25];
 const MEMBERS = 6;
+// S5 (rows 160-199) is a group "drawn from a face sketch": its bars carry the sketch, which group editing has to ask about before dropping.
+const SKETCH_SPEC = JSON.stringify({ p1: [0, 0, 1000], p2: [3000, 0, 1000], axis: 'x', planeCoord: 0, cover: 40 });
 function makeFixture() {
   const bars = [];
   for (let i = 0; i < 400; i += 1) {
@@ -66,6 +68,7 @@ function makeFixture() {
     };
     if (i < MEMBERS * 60) bar.host = `c${1 + Math.floor(i / 60)}`;
     if (i < 200) bar.setId = `S${1 + Math.floor(i / 40)}`;
+    if (i >= 160 && i < 200) bar.setSpec = SKETCH_SPEC;
     bars.push(bar);
   }
   const concretes = Array.from({ length: MEMBERS }, (_, k) => ({ id: `c${k + 1}`, name: `Member c${k + 1}`, lx: 3000, ly: 4000, lz: 600, x: 0, y: 0, z: 800 + k * 700 }));
@@ -117,11 +120,42 @@ const setSelect = (b, label, value) => b.ev(`(() => { const l = Array.from(docum
 const scrollTo = async (b, top) => { await b.ev(`document.querySelector('.tblwrap').scrollTop = ${top}`); await sleep(250); };
 const settle = (ms = 350) => sleep(ms);
 
+// ---- group editing helpers ----
+const storeEv = (b, expr) => b.ev(`(() => { const s = window.__store.getState(); return ${expr}; })()`);
+const groupCounts = (b) => storeEv(b, `s.bars.reduce((m, x) => { if (x.setId) m[x.setId] = (m[x.setId] || 0) + 1; return m; }, {})`);
+const pastDepth = (b) => storeEv(b, 's.past.length');
+// The centre of any element that is on the page (the Set card is outside the table, so pageXY does not do).
+const viewXY = (b, expr) => b.ev(`(() => { const e = ${expr}; if (!e) return null; const r = e.getBoundingClientRect(); if (!r.width || r.top < 0 || r.bottom > window.innerHeight) return null; return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+// A line of the Groups list, by the group's name, and a button of that line by the start of its label.
+const lineEl = (name) => `Array.from(document.querySelectorAll('.bbs-groups tbody tr')).find((r) => { const v = r.querySelector('.bbs-gname-view > strong, .bbs-gname-view > span'); return v && v.title === ${JSON.stringify(`▦ ${name}`)}; })`;
+const pencilOf = (name) => `(${lineEl(name)} || document.createElement('i')).querySelector('.bbs-pencil')`;
+const lineBtn = (name, label) => `Array.from((${lineEl(name)} || document.createElement('i')).querySelectorAll('button')).find((x) => x.textContent.trim().startsWith(${JSON.stringify(label)}))`;
+const pressKey = async (b, key, vk) => {
+  await b.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: vk, ...(key === 'Enter' ? { text: '\r' } : {}) });
+  await b.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: vk });
+};
+const typeKeys = async (b, text) => {
+  for (const ch of text) {
+    const code = /[a-z]/i.test(ch) ? `Key${ch.toUpperCase()}` : /[0-9]/.test(ch) ? `Digit${ch}` : '';
+    const vk = ch.toUpperCase().charCodeAt(0);
+    await b.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, code, text: ch, windowsVirtualKeyCode: vk });
+    await b.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, code, windowsVirtualKeyCode: vk });
+  }
+};
+// The rename box is open and its text selected: type the new name (replacing it) and press Enter.
+const typeName = async (b, text) => { await b.send('Input.insertText', { text }); await pressKey(b, 'Enter', 13); };
+// The confirm / alert dialogs the page opens are answered by the check: `answer` is what the user clicks, `seen` what was asked.
+const dlg = { answer: true, seen: [] };
+
 async function fixture() {
   const project = makeFixture();
   const file = path.join(outDir, 'check_bbs_fixture.json');
   fs.writeFileSync(file, JSON.stringify(project));
   const b = await launchBrowser({ width: 1600, height: 900 });
+  b.on('Page.javascriptDialogOpening', (p) => {
+    dlg.seen.push({ type: p.type, message: p.message });
+    b.send('Page.handleJavaScriptDialog', { accept: dlg.answer }).catch(() => {});
+  });
   try {
     await openApp(b, file, project.bars.length);
     await settle(1200);
@@ -282,6 +316,8 @@ async function fixture() {
     const jumpMember = { mode: await modeOf(b), top: await firstClear(b) };
     report(jumpMember.mode === 'element' && jumpMember.top && jumpMember.top.pinned.includes('Member c5') && jumpMember.top.mark === 'M0241', `fixture: a click on Member c5 pins its header at the top, grouped by Element, its first row M0241 under it (${JSON.stringify(jumpMember)})`);
 
+    await groupEditing(b);
+
     // One member picked in the Element dropdown: its rows only, as a plain list (the member is the whole scope, so no group headers).
     await setSelect(b, 'Element', 'c2');
     await settle(500);
@@ -357,6 +393,174 @@ async function fixture() {
     b.close();
   }
 }
+// Group editing through the real buttons, trusted clicks and keys: rename (Groups list, group header, Set card), add bars, remove bars, a
+// group left with one bar, a face-sketch group that asks first, a collapsed group that stays collapsed. Every step is undone at the end.
+async function groupEditing(b) {
+  const depth0 = await pastDepth(b);
+  const start = await groupCounts(b);
+  report(JSON.stringify(start) === JSON.stringify({ S1: 40, S2: 40, S3: 40, S4: 40, S5: 40 }), `groups: the fixture starts with five groups of 40 (${JSON.stringify(start)})`);
+  dlg.seen.length = 0;
+  dlg.answer = true;
+
+  // Rename in the Groups list: the pencil opens a focused box, Enter saves, one undo step.
+  await clickButton(b, 'Groups');
+  await settle();
+  await setFind(b, 'S2');
+  await settle();
+  await click(b, await pageXY(b, pencilOf('S2')));
+  await settle(250);
+  const boxFocused = await b.ev(`!!document.activeElement && document.activeElement.matches('.bbs-rename input')`);
+  await typeName(b, 'Roof ties');
+  await settle(500);
+  const c1 = await groupCounts(b);
+  const stillList = await b.ev(`!!document.querySelector('.bbs-groups')`);
+  await setFind(b, '');
+  await settle();
+  const names1 = await b.ev(`Array.from(document.querySelectorAll('.bbs-groups .bbs-gname-view > span')).map((e) => e.title)`);
+  report(boxFocused && stillList && c1['Roof ties'] === 40 && c1.S2 === undefined && names1.includes('▦ Roof ties') && !names1.includes('▦ S2') && (await pastDepth(b)) === depth0 + 1,
+    `groups: the pencil in the Groups list opens a focused box and Enter renames S2 to "Roof ties" for its 40 bars, in one undo step, without jumping to the group`);
+
+  // A name that another group has is refused with the reason and the box stays open; keys typed in it reach no shortcut; Esc cancels.
+  await setFind(b, 'roof');
+  await settle();
+  await click(b, await pageXY(b, pencilOf('Roof ties')));
+  await settle(250);
+  await typeKeys(b, 's1');
+  await pressKey(b, 'Enter', 13);
+  await settle(300);
+  const refusal = await b.ev(`(document.querySelector('.bbs-rename-err') || {}).textContent || ''`);
+  const stillOpen = await b.ev(`!!document.querySelector('.bbs-rename input')`);
+  const depthRefused = await pastDepth(b);
+  await typeKeys(b, 'cfb');
+  const afterKeys = await storeEv(b, '({ bars: s.bars.length, tool: s.selectTool })');
+  await pressKey(b, 'Escape', 27);
+  await settle(300);
+  const closed = !(await b.ev(`!!document.querySelector('.bbs-rename input')`));
+  const c2 = await groupCounts(b);
+  report(stillOpen && /already called .S1./.test(refusal) && depthRefused === depth0 + 1 && c2['Roof ties'] === 40 && c2.S1 === 40, `groups: renaming to "s1" is refused with its reason and nothing changes ("${refusal}")`);
+  report(closed && afterKeys.bars === 400 && afterKeys.tool === null && c2['Roof ties'] === 40, 'groups: keys typed in the rename box reach no shortcut (400 bars, no tool armed) and Esc cancels the edit');
+
+  // Add: the selected bars that are not in the group join it; the button says how many and "Remove" is disabled.
+  await b.ev('window.__store.getState().setSelectedBars([200, 201, 202])');
+  await setFind(b, 'S1');
+  await settle();
+  const addLabel = await b.ev(`${lineBtn('S1', '+ Add')}.textContent.trim()`);
+  const rmDisabled = await b.ev(`${lineBtn('S1', '− Remove')}.disabled`);
+  await click(b, await pageXY(b, lineBtn('S1', '+ Add')));
+  await settle(500);
+  const c3 = await groupCounts(b);
+  const joined = await storeEv(b, `[200, 201, 202].every((i) => s.bars[i].setId === 'S1')`);
+  const after = { add: await b.ev(`${lineBtn('S1', '+ Add')}.disabled`), rm: await b.ev(`${lineBtn('S1', '− Remove')}.textContent.trim()`) };
+  report(addLabel === '+ Add 3' && rmDisabled && c3.S1 === 43 && joined && after.add && after.rm === '− Remove 3', `groups: "+ Add 3" puts the 3 selected free bars in S1 (43 bars) and the line then offers "− Remove 3" only ("${addLabel}", then "${after.rm}")`);
+
+  // A bar added from another group moves over.
+  await b.ev('window.__store.getState().setSelectedBars([41])'); // a bar of "Roof ties"
+  await settle();
+  await click(b, await pageXY(b, lineBtn('S1', '+ Add')));
+  await settle(500);
+  const c4 = await groupCounts(b);
+  report(c4.S1 === 44 && c4['Roof ties'] === 39, `groups: a bar added from another group moves over (S1 ${c4.S1}, Roof ties ${c4['Roof ties']})`);
+
+  // Remove: only the selected bars of the group leave, with their own dimensions.
+  await b.ev('window.__store.getState().setSelectedBars([200, 201])');
+  await settle();
+  await click(b, await pageXY(b, lineBtn('S1', '− Remove')));
+  await settle(500);
+  const c5 = await groupCounts(b);
+  const solo = await storeEv(b, `[200, 201].map((i) => [s.bars[i].setId === undefined, s.bars[i].Dia])`);
+  report(c5.S1 === 42 && solo[0][0] && solo[1][0] && solo[0][1] === 12 && solo[1][1] === 16, `groups: "− Remove 2" takes the 2 selected bars out of S1 (42 left) and they keep their own diameters (${JSON.stringify(solo)})`);
+
+  // A group left with one bar is dissolved.
+  await setFind(b, 'S3');
+  await b.ev('window.__store.getState().setSelectedBars(Array.from({ length: 39 }, (_, i) => 80 + i))');
+  await settle();
+  await click(b, await pageXY(b, lineBtn('S3', '− Remove')));
+  await settle(500);
+  const c6 = await groupCounts(b);
+  report(c6.S3 === undefined && (await storeEv(b, 's.bars[119].setId === undefined')), 'groups: taking 39 of the 40 bars of S3 out dissolves it (a group needs two): the last bar is free too');
+
+  // A face-sketch group asks first: Cancel changes nothing, OK makes it an ordinary group.
+  await setFind(b, 'S5');
+  await b.ev('window.__store.getState().setSelectedBars([160])');
+  await settle();
+  dlg.answer = false;
+  await click(b, await pageXY(b, lineBtn('S5', '− Remove')));
+  await settle(500);
+  const asked = dlg.seen.filter((d) => d.type === 'confirm');
+  const c7 = await groupCounts(b);
+  const kept = await storeEv(b, `s.bars.slice(160, 200).filter((x) => x.setSpec).length`);
+  report(asked.length === 1 && /S5 was drawn from a face sketch/.test(asked[0].message) && c7.S5 === 40 && kept === 40, `groups: removing a bar from the face-sketch group S5 asks first, and Cancel changes nothing (${asked.length} question)`);
+  dlg.answer = true;
+  await click(b, await pageXY(b, lineBtn('S5', '− Remove')));
+  await settle(500);
+  const c8 = await groupCounts(b);
+  const kept2 = await storeEv(b, `s.bars.slice(160, 200).filter((x) => x.setSpec).length`);
+  report(c8.S5 === 39 && kept2 === 0 && (await storeEv(b, 's.bars[160].setId === undefined')), 'groups: OK removes it; S5 (39 bars) is an ordinary group now, and no bar keeps the sketch');
+
+  // The pencil on a group header in the table renames it without toggling it, and a collapsed group stays collapsed.
+  await setFind(b, '');
+  await clickText(b, '.bbs-groups .bbs-gname', '▦ S4');
+  await settle(700);
+  const pinXY = await b.ev(`(() => { const p = document.querySelector('.tblwrap thead .bbs-group-line'); if (!p) return null; const r = p.getBoundingClientRect(); return [r.left + r.width * 0.6, r.top + r.height / 2]; })()`);
+  await click(b, pinXY); // a click on the pinned header, away from its buttons, collapses S4
+  await settle(400);
+  const collapsedBefore = await b.ev(`Array.from(document.querySelectorAll('.tblwrap tbody tr.bbs-group-row')).some((r) => r.textContent.includes('▦ S4') && r.textContent.startsWith('▶'))`);
+  await click(b, await viewXY(b, `document.querySelector('.tblwrap thead .bbs-group-line .bbs-pencil')`));
+  await settle(250);
+  await typeName(b, 'Slab mat');
+  await settle(600);
+  const c9 = await groupCounts(b);
+  // a renamed group sorts after the S-numbered ones, far from where it was: narrow the table to it to see its header
+  await setFind(b, 'slab mat');
+  await settle(500);
+  const collapsedAfter = await b.ev(`Array.from(document.querySelectorAll('.tblwrap tbody tr.bbs-group-row')).some((r) => r.textContent.includes('▦ Slab mat') && r.textContent.startsWith('▶'))`);
+  await setFind(b, '');
+  report(collapsedBefore && c9['Slab mat'] === 40 && c9.S4 === undefined && collapsedAfter, `groups: the pencil on a group header renames S4 to "Slab mat", the click does not toggle the group, and it stays collapsed (collapsed before: ${collapsedBefore}, "Slab mat" ${c9['Slab mat']}, S4 ${c9.S4}, collapsed after: ${collapsedAfter})`);
+  await clickButton(b, '⊞ Expand all');
+
+  // The Set card on the left: the same pencil, and + Add selected / − Remove selected for the active bar's group.
+  await b.ev('window.__store.getState().selectBar(121)'); // in "Slab mat" (rows 120-159)
+  await settle(500);
+  const cardName = await b.ev(`(document.querySelector('.cbox .bbs-gname-view > strong') || {}).title || ''`);
+  await click(b, await viewXY(b, `document.querySelector('.cbox .bbs-pencil')`));
+  await settle(250);
+  await typeName(b, 'Top mat');
+  await settle(500);
+  const c10 = await groupCounts(b);
+  report(cardName === 'Slab mat' && c10['Top mat'] === 40 && c10['Slab mat'] === undefined, `groups: the Set card shows the group's name and its pencil renames it ("${cardName}" to "Top mat")`);
+  const cardBtn = (label) => `Array.from(document.querySelectorAll('.cbox button')).find((x) => x.textContent.trim().startsWith(${JSON.stringify(label)}))`;
+  const cardState = { add: await b.ev(`${cardBtn('+ Add selected')}.disabled`), rm: await b.ev(`${cardBtn('− Remove selected')}.textContent.trim()`) };
+  await click(b, await viewXY(b, cardBtn('− Remove selected')));
+  await settle(500);
+  const c11 = await groupCounts(b);
+  report(cardState.add && cardState.rm === '− Remove selected (1)' && c11['Top mat'] === 39, `groups: the Set card's "− Remove selected (1)" takes the active bar out of its group (39 left; "+ Add selected (0)" was disabled)`);
+  await b.ev('window.__store.getState().setSelectedBars([121, 150])'); // 121 is free now, 150 is in "Top mat" and is the active bar
+  await settle(500);
+  const addLabel2 = await b.ev(`${cardBtn('+ Add selected')}.textContent.trim()`);
+  await click(b, await viewXY(b, cardBtn('+ Add selected')));
+  await settle(500);
+  const c12 = await groupCounts(b);
+  report(addLabel2 === '+ Add selected (1)' && c12['Top mat'] === 40, `groups: the Set card's "${addLabel2}" brings the free bar back (40 bars)`);
+
+  // The find box knows the new name.
+  await clickButton(b, 'Rows');
+  await setFind(b, 'top mat');
+  await settle(500);
+  const found = ((await nav(b)).match(/\d+ of \d+ rows match/) || [''])[0];
+  report(found === '40 of 400 rows match', `groups: the find box finds the renamed group by its new name (${found})`);
+  await setFind(b, '');
+
+  // Undo every step.
+  let steps = 0;
+  while ((await pastDepth(b)) > depth0 && steps < 40) { await b.ev('window.__store.getState().undo()'); steps += 1; }
+  const end = await groupCounts(b);
+  const sketch = await storeEv(b, `s.bars.slice(160, 200).filter((x) => x.setSpec).length`);
+  report(JSON.stringify(end) === JSON.stringify(start) && sketch === 40, `groups: undoing the ${steps} steps brings back the five groups of 40 and the sketch of S5`);
+  report(dlg.seen.length === 2 && dlg.seen.every((d) => d.type === 'confirm'), `groups: the only questions asked were the two about the face-sketch group (${dlg.seen.map((d) => d.type).join(', ')})`);
+  await setSelect(b, 'Group by', 'element'); // the checks that follow expect the table grouped by member
+  await settle();
+}
+
 const clickText = (b, selector, text) => b.ev(`(() => { const e = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find((x) => x.textContent.includes(${JSON.stringify(text)})); if (!e) return false; e.click(); return true; })()`);
 
 // The million-bar project plus 200 members and 500 ▦ groups, so that there is something to navigate.
@@ -427,6 +631,20 @@ async function scale() {
     report(findMs >= 0 && findMs <= BUDGET.findMs && found.dataMarks.length === 1 && found.dataMarks[0] === 'B12345', `scale: find "B12345" lists one row of ${rows} after ${findMs} ms (budget ${BUDGET.findMs} ms)`);
     await b.ev(setFindJs(''));
     await settle();
+
+    // Group editing at this size: rename the last of the 500 groups, add 30 bars of S1 to it, take them out again. Any change to the bars costs
+    // 0.3-0.6 s here whatever it is (the status bar, the viewport bar and this panel each derive all 25,000 rows again, and undo takes a
+    // snapshot), so the budget is relative to a plain edit of one bar measured first; the time runs until the next frame after the change.
+    const editMs = await timed(b, `window.__store.getState().updateBar(5, { Dia: 13 })`, `window.__store.getState().bars[5].Dia === 13`);
+    const groupBudget = Math.round(editMs * 2 + 400); // generous: this catches a pass that goes quadratic, not 30% of noise
+    const renameMs = await timed(b, `window.__store.getState().renameGroup('S500', 'Last set')`, `window.__store.getState().bars[24999].setId === 'Last set'`);
+    const addMs = await timed(b, `(() => { const s = window.__store.getState(); s.setSelectedBars(Array.from({ length: 30 }, (_, i) => i)); s.addToGroup('Last set'); })()`, `window.__store.getState().bars[0].setId === 'Last set'`);
+    const afterAdd = await storeEv(b, `[s.bars.filter((x) => x.setId === 'Last set').length, s.bars.filter((x) => x.setId === 'S1').length]`);
+    const removeMs = await timed(b, `window.__store.getState().removeFromGroup('Last set')`, `window.__store.getState().bars[0].setId === undefined`);
+    const afterRemove = await storeEv(b, `[s.bars.filter((x) => x.setId === 'Last set').length, s.bars.filter((x) => !x.setId).length]`);
+    report(renameMs >= 0 && renameMs <= groupBudget, `scale: renaming a group of 50 bars among 25,000 rows takes ${renameMs} ms (a plain edit of one bar: ${editMs} ms; budget ${groupBudget} ms)`);
+    report(addMs >= 0 && addMs <= groupBudget && afterAdd[0] === 80 && afterAdd[1] === 20, `scale: adding 30 bars to a group takes ${addMs} ms (budget ${groupBudget} ms): the group has ${afterAdd[0]} bars, the group they came from ${afterAdd[1]}`);
+    report(removeMs >= 0 && removeMs <= groupBudget && afterRemove[0] === 50 && afterRemove[1] === 30, `scale: taking 30 bars out of a group takes ${removeMs} ms (budget ${groupBudget} ms): ${afterRemove[0]} left in it, ${afterRemove[1]} bars in no group`);
 
     // A bar picked in the 3D view while every group is collapsed: its group opens and the table scrolls to it.
     await clickButton(b, '⊟ Collapse all');
