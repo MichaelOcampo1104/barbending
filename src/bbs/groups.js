@@ -35,7 +35,7 @@ export function checkGroupName(raw, bars, from = null) {
   const name = String(raw ?? '').replace(/\s+/g, ' ').trim();
   if (!name) return { ok: false, msg: 'A group needs a name.' };
   if (name.length > GROUP_NAME_MAX) return { ok: false, msg: `Keep the name to ${GROUP_NAME_MAX} characters or fewer.` };
-  if (/[\u0000-\u001f\u007f]/.test(name)) return { ok: false, msg: 'The name cannot contain control characters.' };
+  if (/\p{Cc}/u.test(name)) return { ok: false, msg: 'The name cannot contain control characters.' };
   const lower = name.toLowerCase();
   for (const id of groupIds(bars)) {
     if (id !== from && String(id).toLowerCase() === lower) return { ok: false, msg: `Another group is already called “${id}”.` };
