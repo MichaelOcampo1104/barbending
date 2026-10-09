@@ -220,6 +220,22 @@ tr.bbs-group-row td { padding: 5px 8px; }
 .bbs-group-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 100%; white-space: nowrap; }
 .bbs-group-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
 .bbs-group-title strong { overflow: hidden; text-overflow: ellipsis; }
+/* Renaming a group in place (src/bbs/GroupName.jsx): the name, a pencil, and a box that replaces them while editing. */
+.bbs-gname-view { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.bbs-gname-view > strong, .bbs-gname-view > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.sm.bbs-pencil { padding: 0 4px; opacity: 0.7; flex: 0 0 auto; }
+.bbs-gname-view:hover .bbs-pencil, button.sm.bbs-pencil:focus-visible { opacity: 1; }
+.bbs-rename { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.bbs-rename input { flex: 0 1 190px; width: 190px; min-width: 60px; background: #0b1528; color: #e2e8f0; border: 1px solid #38bdf8; border-radius: 4px; padding: 1px 6px; font-size: 12px; height: 22px; box-sizing: border-box; }
+.bbs-rename-err { color: #fca5a5; font-size: 11px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.bbs-rename.wrap { flex-wrap: wrap; flex: 1 1 auto; }
+.bbs-rename.wrap .bbs-rename-err { white-space: normal; flex: 1 1 100%; }
+.bbs button:disabled, .cbox button:disabled { opacity: 0.4; cursor: default; }
+/* the Set card's title: the name gives way (an ellipsis) before the bar count or the buttons do */
+.crow.setrow { flex-wrap: wrap; align-items: center; row-gap: 4px; }
+.crow .setname { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; flex: 1 1 auto; white-space: nowrap; }
+.crow .setname > strong { flex: 0 0 auto; }
+.crow .setbtns { display: inline-flex; gap: 4px; flex: 0 0 auto; }
 .bbs-table th.num, .bbs-table td.num { text-align: right; }
 .bbs-table tr.bbs-section-row td { background: #0f1a33; color: #93c5fd; font-size: 11px; cursor: default; }
 .bbs-groups tbody tr:not(.bbs-section-row):not(.bbs-empty) { cursor: pointer; }

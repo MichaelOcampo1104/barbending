@@ -217,3 +217,18 @@ test('removeFromGroupRows drops the face sketch when a sketch group changes', ()
   assert.equal(r2.bars[8].setSpec, undefined);
   assert.equal(big[4].setSpec, SKETCH, 'the input is not changed');
 });
+
+test('group edits are linear in the number of bars: 200,000 bars, 99,500 added, removed and the group renamed in well under 1.5 s', () => {
+  const n = 200000;
+  const bars = Array.from({ length: n }, (_, i) => (i < 1000 ? { Bar_mark: `B${i}`, setId: 'S1' } : { Bar_mark: `B${i}` }));
+  const idxs = Array.from({ length: (n - 1000) / 2 }, (_, i) => 1000 + i * 2); // every other free bar
+  const t0 = performance.now();
+  const added = addToGroupRows(bars, idxs, 'S1');
+  const removed = removeFromGroupRows(added.bars, idxs, 'S1');
+  const renamed = renameGroupRows(removed.bars, 'S1', 'Roof');
+  const ms = performance.now() - t0;
+  assert.equal(added.added, idxs.length);
+  assert.equal(removed.removed, idxs.length);
+  assert.equal(renamed.count, 1000);
+  assert.ok(ms < 1500, `took ${ms.toFixed(0)} ms`);
+});

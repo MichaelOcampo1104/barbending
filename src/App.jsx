@@ -14,7 +14,10 @@ import { packViewerHtml, cleanViewerTitle, viewerFileName, parseProjectFile, DEF
 import { loadViewerTemplate } from './standalone/exportViewer.js';
 import BbsTable from './bbs/BbsTable.jsx';
 import BbsGroups from './bbs/BbsGroups.jsx';
+import GroupName from './bbs/GroupName.jsx';
 import { flattenItems, makeRowFilter, filterGroups, groupBySet } from './bbs/tableView.js';
+import { selectionStats } from './bbs/groups.js';
+import { addSelectedToGroup, removeSelectedFromGroup } from './bbs/groupCommands.js';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
 // IFC load so the main bundle stays light. See IfcPanel handlers.
 import './App.css';
@@ -83,16 +86,34 @@ const FIELDS_BY_TYPE = DIM_FIELDS_BY_TYPE;
 // alone evens out over the current extent; spacing alone rebuilds the full
 // sketch extent. Dims mirror the single-bar editor for the set's type
 // (values shown = active bar, applied to every member).
-function SetCard({ setId, count, dia, type, dimFields, dimBar, onDim, gridSp, setGridSp, gridCount, setGridCount, stepHint, onGridApply, setLenA, setSetLenA, setLenB, setSetLenB, lenMode, setLenMode, onDia, onLengths, onType, onOrient, onRotate, onSelect, onDelete, onUngroup, hasSketch }) {
+function SetCard({ setId, count, dia, type, dimFields, dimBar, onDim, gridSp, setGridSp, gridCount, setGridCount, stepHint, onGridApply, setLenA, setSetLenA, setLenB, setSetLenB, lenMode, setLenMode, onDia, onLengths, onType, onOrient, onRotate, onSelect, onDelete, onUngroup, hasSketch, onRename, onAdd, onRemove, addable, removable }) {
   return (
     <div className="cbox sel" style={{ borderColor: '#4ade80', marginBottom: 8 }}>
-      <div className="crow">
-        <strong>▦ Set {setId} · {count} bars</strong>
-        <span style={{ display: 'inline-flex', gap: 4 }}>
+      <div className="crow setrow">
+        <span className="setname">
+          <strong>▦ Set</strong>
+          <GroupName prefix="" name={setId} onRename={onRename} wrap />
+          <strong>· {count} bars</strong>
+        </span>
+        <span className="setbtns">
           <button className="ghost sm" onClick={onSelect} title="Select every bar in this set">Select</button>
           <button className="ghost sm" onClick={onUngroup} title="Ungroup — bars keep their dims, they just edit solo again (undoable)">Ungroup</button>
           <button className="danger sm" onClick={onDelete} title="Delete the whole set (undoable)">🗑</button>
         </span>
+      </div>
+      <div className="btnrow inline" style={{ margin: '4px 0' }}>
+        <button
+          className="sm"
+          disabled={!addable}
+          onClick={onAdd}
+          title={addable ? `Add the ${addable} selected bar${addable > 1 ? 's' : ''} that ${addable > 1 ? 'are' : 'is'} not in this group to it (a bar in another group moves over). Undoable.` : 'Select bars that are not in this group (Ctrl-click, Shift-click, Box / Lasso) to add them to it.'}
+        >+ Add selected ({addable})</button>
+        <button
+          className="sm"
+          disabled={!removable}
+          onClick={onRemove}
+          title={removable ? `Take the ${removable} selected bar${removable > 1 ? 's' : ''} of this group out of it. They keep their dimensions; a group needs at least 2 bars. Undoable.` : 'Select bars of this group to take them out of it.'}
+        >− Remove selected ({removable})</button>
       </div>
       <div className="distnote" style={{ margin: '4px 0' }}>Parametric group — edits below apply to all {count} members in one undo step.{hasSketch ? '' : ' (ad-hoc group: grid re-spread needs a face-sketch — use uniform/taper lengths + Move).'}</div>
       <div className="grid3">
@@ -245,6 +266,7 @@ function BarEditor() {
   const setSpecOf = useStore((s) => s.setSpecOf);
   const groupBars = useStore((s) => s.groupBars);
   const ungroupSet = useStore((s) => s.ungroupSet);
+  const renameGroup = useStore((s) => s.renameGroup);
   const [hostId, setHostId] = useState(null);
   const [gridSp, setGridSp] = useState('');
   const [gridCount, setGridCount] = useState('');
@@ -260,6 +282,9 @@ function BarEditor() {
   const extra = FIELDS_BY_TYPE[bar.Rebar_Type] || [];
   const multi = (selectedBars || []).filter((i) => i >= 0 && i < bars.length);
   const multiOn = multi.length > 1;
+  // How many of the selected bars are in the active bar's group (they can be taken out) and how many are not (they can be added).
+  const inActiveSet = bar.setId ? (selectionStats(bars, selectedBars).bySet.get(bar.setId) || 0) : 0;
+  const notInActiveSet = bar.setId ? multi.length - inActiveSet : 0;
 
   return (
     <div className="panel">
@@ -343,6 +368,11 @@ function BarEditor() {
           onRotate={(d) => rotateSet(bar.setId, d)}
           onSelect={() => selectSet(bar.setId)}
           onUngroup={() => ungroupSet(bar.setId)}
+          onRename={(to) => renameGroup(bar.setId, to)}
+          onAdd={() => addSelectedToGroup(bar.setId)}
+          onRemove={() => removeSelectedFromGroup(bar.setId)}
+          addable={notInActiveSet}
+          removable={inActiveSet}
           onDelete={() => { if (window.confirm(`Delete set ${bar.setId} (${setIndices(bar.setId).length} bars)? (Ctrl+Z undoes)`)) removeBars(setIndices(bar.setId)); }}
         />
       )}
@@ -1415,6 +1445,7 @@ function ViewportBar() {
 // Column widths of the BBS table, in px (the last one takes the rest): row actions, #, Mark, Type, Shape, Ø, Bars, Cut, Wt, Bond, Set.
 const BBS_COLS = [104, 56, 96, 190, 60, 48, 64, 84, 76, 72, null];
 const BBS_DEFAULT_H = 300; // px, until the user drags the panel's top edge (then their height is remembered)
+const shortGroupName = (id) => (String(id).length > 18 ? `${String(id).slice(0, 17)}…` : String(id)); // a renamed group can be 40 characters long
 
 function BbsStrip() {
   const bars = useStore((s) => s.bars);
@@ -1430,6 +1461,7 @@ function BbsStrip() {
   const groupBars = useStore((s) => s.groupBars);
   const ungroupBars = useStore((s) => s.ungroupBars);
   const ungroupSet = useStore((s) => s.ungroupSet);
+  const renameGroup = useStore((s) => s.renameGroup);
   const duplicateBar = useStore((s) => s.duplicateBar);
   const removeBar = useStore((s) => s.removeBar);
   const requestFit = useStore((s) => s.requestFit);
@@ -1670,8 +1702,24 @@ function BbsStrip() {
     [shownGroups, shownFlat],
   );
   const selSet = useMemo(() => new Set(selectedBars || []), [selectedBars]);
+  // The selection counted per group, for the + Add / − Remove buttons of the group headers and the Groups list.
+  const selStats = useMemo(() => selectionStats(bars, selectedBars), [bars, selectedBars]);
 
   const toggleCollapse = (gid) => setCollapsed((c) => ({ ...c, [gid]: !c[gid] }));
+  // Rename a ▦ group; the table keeps it collapsed or open (its key in `collapsed` is the group's id, which just changed).
+  const renameSetGroup = (from, to) => {
+    const r = renameGroup(from, to);
+    if (r.ok && r.changed) {
+      setCollapsed((c) => {
+        if (!c[`set:${from}`]) return c;
+        const next = { ...c };
+        delete next[`set:${from}`];
+        next[`set:${r.name}`] = true;
+        return next;
+      });
+    }
+    return r;
+  };
   const collapseAll = () => setCollapsed(Object.fromEntries((shownGroups || []).map((g) => [g.id, true])));
   const expandAll = () => setCollapsed({});
   const expandGroup = (gid) => setCollapsed((c) => (c[gid] ? { ...c, [gid]: false } : c));
@@ -1809,6 +1857,9 @@ function BbsStrip() {
     const open = !collapsed[g.id];
     const isSet = g.kind === 'set';
     const match = rowPred && g.shown && g.shown.length !== g.rows.length ? ` · ${g.shown.length} match` : '';
+    // the selected bars that are in this ▦ group (can be taken out) and that are not (can be added)
+    const removable = isSet && g.setId ? (selStats.bySet.get(g.setId) || 0) : 0;
+    const addable = isSet && g.setId ? selStats.total - removable : 0;
     return (
       <tr
         key={`g:${g.id}${pinned ? ':pin' : ''}`}
@@ -1820,7 +1871,9 @@ function BbsStrip() {
           <div className="bbs-group-line">
             <span className="bbs-group-title">
               <span>{open ? '▼' : '▶'}</span>
-              <strong>{isSet ? `▦ ${g.name}` : `📦 ${g.name}`}</strong>
+              {isSet && g.setId
+                ? <GroupName name={g.name} onRename={(to) => renameSetGroup(g.setId, to)} />
+                : <strong>{isSet ? `▦ ${g.name}` : `📦 ${g.name}`}</strong>}
               <span className="bbs-group-badge">
                 {g.rows.length} rows · {g.totalBars} bars · {g.totalW.toFixed(1)} kg
                 {g.concrete ? ` · ${g.volM3.toFixed(3)} m³ · ${g.ratio == null ? 'n/a' : `${g.ratio.toFixed(1)} kg/m³`}` : ''}
@@ -1831,6 +1884,18 @@ function BbsStrip() {
               {isSet ? (
                 g.setId && (
                   <>
+                    <button
+                      className="ghost sm"
+                      disabled={!addable}
+                      onClick={() => addSelectedToGroup(g.setId)}
+                      title={addable ? `Add the ${addable} selected bar${addable > 1 ? 's' : ''} that ${addable > 1 ? 'are' : 'is'} not in ${g.name} to it (a bar in another group moves over). Undoable.` : `Select bars that are not in ${g.name} (Ctrl-click, Shift-click, Box / Lasso) to add them to it.`}
+                    >+ Add{addable ? ` ${addable}` : ''}</button>
+                    <button
+                      className="ghost sm"
+                      disabled={!removable}
+                      onClick={() => removeSelectedFromGroup(g.setId)}
+                      title={removable ? `Take the ${removable} selected bar${removable > 1 ? 's' : ''} of ${g.name} out of it. They keep their dimensions; a group needs at least 2 bars. Undoable.` : `Select bars of ${g.name} to take them out of it.`}
+                    >− Remove{removable ? ` ${removable}` : ''}</button>
                     <button className="ghost sm" onClick={() => selectSet(g.setId)} title={`Select every bar of ${g.name} (the Set card opens on the left)`}>▦ Select</button>
                     <button className="ghost sm" onClick={() => ungroupSet(g.setId)} title={`Dissolve ${g.name}: its bars stay, they just edit one by one again (undoable)`}>Ungroup</button>
                   </>
@@ -2045,9 +2110,9 @@ function BbsStrip() {
                 else if (activeSetId) ungroupSet(activeSetId);
                 else ungroupBars(multiSel);
               }}
-              title="Remove the selected bars from their group (dims stay, they just edit solo again). Undoable."
+              title="Dissolve this whole group: its bars keep their dims and edit solo again. Undoable. (To take only some bars out of it, select them and use − Remove on the group.)"
             >
-              ▦ Ungroup{multiSetIds.length === 1 ? ` ${multiSetIds[0]}` : activeSetId ? ` ${activeSetId}` : ''}
+              ▦ Ungroup{multiSetIds.length === 1 ? ` ${shortGroupName(multiSetIds[0])}` : activeSetId ? ` ${shortGroupName(activeSetId)}` : ''}
             </button>
           )}
           {multiSel.length > 1 && (
@@ -2111,6 +2176,10 @@ function BbsStrip() {
           onPickOnly={(g) => { setJoinMode(false); setElemFilter(g.id); setView('rows'); }}
           onSelectSet={selectSet}
           onUngroupSet={ungroupSet}
+          onRenameSet={renameSetGroup}
+          onAddToSet={addSelectedToGroup}
+          onRemoveFromSet={removeSelectedFromGroup}
+          selStats={selStats}
         />
       )}
     </footer>
