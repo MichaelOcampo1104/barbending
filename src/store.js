@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { defaultBar, defaultBarForHost, resolveBarHost, genBarPoints, barMainLength, barSpliceEnds, distToBar, barOverlapsBoxes, buildFaceBar, buildSlopedFaceRows, applyTypeDefaults } from './bbs/shapes.js';
 import { lapLengthMm, lapBondFor } from './bbs/calc.js';
+import { renameGroupRows, addToGroupRows, removeFromGroupRows } from './bbs/groups.js';
 import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
 import { isAxisView } from './viewer/cameraMath.js';
 
@@ -1184,5 +1185,25 @@ export const useStore = create((set, get) => ({
         return next;
       }),
     }));
+  },
+  // Editing a group (rules in bbs/groups.js): the group's id is its name, so a rename gives every member the new id; bars can be added to a
+  // group (they move over from any other) or taken out of it. Each is one undo step; they return the result (ok, msg, counts, the groups
+  // that were dissolved or lost their face sketch) for the panel's messages. The bars default to the current multi-selection.
+  renameGroup: (from, to) => {
+    const r = renameGroupRows(get().bars, from, to);
+    if (r.ok && r.changed) set((state) => withHist(state, { bars: r.bars }));
+    return r;
+  },
+  addToGroup: (setId, idxs) => {
+    const s = get();
+    const r = addToGroupRows(s.bars, idxs ?? s.selectedBars ?? [s.selectedBar], setId);
+    if (r.ok) set((state) => withHist(state, { bars: r.bars }));
+    return r;
+  },
+  removeFromGroup: (setId, idxs) => {
+    const s = get();
+    const r = removeFromGroupRows(s.bars, idxs ?? s.selectedBars ?? [s.selectedBar], setId);
+    if (r.ok) set((state) => withHist(state, { bars: r.bars }));
+    return r;
   },
 }));
