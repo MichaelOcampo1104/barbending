@@ -82,6 +82,13 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
   Expand all**; the header of the group you are in stays pinned; a bar picked in the 3D view opens its group and scrolls the
   table to its row (**⌖ Selection** brings it back); **⤢** makes the panel three quarters of the window; **Group by** Element,
   ▦ Group or None; **▴ Tools** hides the filter and export buttons to give the table more room.
+- **Editing ▦ groups** — a ▦ group (bars that edit together in the green Set card) has a pencil ✏️ next to its name, in the Set card,
+  on its header in the table and in the Groups list: type a name and press Enter (Esc cancels). The name replaces "S8" everywhere,
+  the CSV included; a name another group already has is refused. To change which bars are in a group, select them (rows, Ctrl /
+  Shift, Box / Lasso) and press **+ Add** on the group (a bar from another group moves over) or **− Remove** to take the selected
+  ones out; they keep their dimensions. A group needs two bars, so one that would be left with a single bar is dissolved, and a
+  group drawn from a face sketch asks first, because afterwards it can no longer re-spread from that sketch. Each change is one
+  undo step.
 - **Undo + save** — ↶ ↷ / Ctrl+Z / Ctrl+Y over bars, concrete and cover;
   💾 Save keeps your work in the browser and restores it on reload (IFC
   files reload by hand); ⤓/⤒ Project moves the project to another system

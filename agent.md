@@ -222,6 +222,31 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   (Selected bar, Anchor bar) still list every bar, 50,000 `<option>` nodes at that size; they are not part of this module.
 - Browser check: `scripts/perf/check_bbs.mjs` (see `scripts/perf/README.md`).
 
+## Editing ▦ groups (`src/bbs/groups.js`, `groupCommands.js`, `GroupName.jsx`)
+
+- A ▦ group is only the bars that share a `setId`; that id is also the group's NAME ("S8" when it was made, whatever the user renamed
+  it to). There is no group record and no separate label, so a rename is `setId` replaced on every member (undoable, nothing new in
+  the project or CSV format), and everything that shows the id shows the name: the Set column, the group headers, the Groups list,
+  the Set card, the find box, sorting (S-numbered groups first, in natural order, then the renamed ones A to Z), the `setId` CSV column.
+  New groups still mint `S{max+1}` from the S-numbered ids only (`groupBars`, `addFaceBars`), so a renamed group never blocks a number.
+- The rules are pure functions in `groups.js` (Node-tested, one pass over the rows, untouched rows shared with the input):
+  `checkGroupName` (trimmed, 1 to 40 characters, no control characters, not another group's name in any letter case),
+  `renameGroupRows`, `addToGroupRows` (a bar already in another group moves over), `removeFromGroupRows`, `selectionStats`. Two
+  invariants: a group has at least two bars (a group that would keep one is dissolved), and a group drawn from a face sketch (its
+  bars carry `setSpec`) loses the sketch as soon as its membership changes, because `respreadSet` would bring removed bars back or
+  retire added ones; the helpers report such groups in `sketchLost`. The store's `renameGroup` / `addToGroup` / `removeFromGroup` apply
+  them as one undo step. `groupCommands.js` is the dialogue (it acts on the live selection, asks first for a face-sketch group with
+  `window.confirm`, says why with `window.alert` when there is nothing to do) shared by the three places that show the buttons: the
+  table's ▦ group header, the Groups list and the Set card. Joining a group changes nothing but membership: the bar keeps its own Ø and
+  dimensions, and the next group edit (Dia (all), type, lengths) applies to it too.
+- `GroupName.jsx` is the in-place rename (pencil, box, Enter saves, Esc or clicking away cancels, a refused name stays open with the
+  reason). It sits inside rows that react to clicks, so it stops every event; do not remove that: the pencil on a header would
+  collapse it and on a Groups line would jump to the group. Renaming through `renameSetGroup` in `BbsStrip` moves the group's
+  collapsed flag to its new id (the flag is keyed `set:<id>`); a rename from the Set card does not, so a collapsed group opens.
+- Not handled (existing behavior): `appendProject` (⤒+ Insert) does not remap `setId`, so an inserted group with the same name as
+  one in the model merges with it. At 1M bars any change to the bars costs 0.3-0.6 s (the status bar, the viewport bar and the
+  panel each run `enrichBar` over all 25,000 rows again, and undo snapshots them), group edits included.
+
 ## Standalone viewer (`src/standalone/`, the `⤓ Viewer` export)
 
 - `⤓ Viewer` writes ONE `.html` file: a generated template (`public/viewer-template.html`, git-ignored, built by `npm run build:viewer`,
