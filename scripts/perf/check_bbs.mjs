@@ -1,5 +1,5 @@
 // Browser checks for the bottom BBS panel (headless Edge on the real GPU, trusted mouse and key events).
-// usage: node scripts/perf/check_bbs.mjs --url <app base url> [--only fixture|scale] [--big <project.json>]
+// usage: node scripts/perf/check_bbs.mjs --url <app base url> [--only fixture|scale|export] [--big <project.json>]
 // fixture: a 400-row project (6 members, 5 ▦ groups, 40 free rows). The table draws only what is on screen (fixed 28 px rows) and still
 //          reaches the last row; the header of the group you are in stays pinned; a click, Ctrl-click and Shift-click select without moving
 //          the table; the find box narrows by mark, group, member, Ø; Collapse all / Expand all; the Groups overview lists members and
@@ -10,6 +10,9 @@
 //          the end, jump to a group, find, follow a selection. On this machine the old table kept the page blocked for about 20 s while
 //          loading that project, held 1.2 million DOM nodes and took 1.2-1.4 s to select a row; now the panel holds about 500 nodes and a
 //          selection takes 0.2-0.4 s (the scene and the left panel's dropdowns, not the table).
+// export : the concrete volumes of a BBS export: every ⤓ BBS CSV button (header, schedule, group rows) opens the panel first; a volume
+//          typed there goes into that file only (the file's total and ratio follow it, the app's totals do not change); a refused box keeps
+//          Export off; Escape writes nothing; a ▦ group's own bars go out at once. Each file is read back from the blob it is downloaded as.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +28,7 @@ const arg = (name, dflt) => {
 const base = (arg('url') || '').replace(/\/$/, '');
 const only = arg('only', '');
 const bigFile = arg('big', '');
-if (!base) { console.error('usage: node scripts/perf/check_bbs.mjs --url <app base url> [--only fixture|scale] [--big project.json]'); process.exit(2); }
+if (!base) { console.error('usage: node scripts/perf/check_bbs.mjs --url <app base url> [--only fixture|scale|export] [--big project.json]'); process.exit(2); }
 
 let failures = 0;
 const report = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${msg}`); if (!ok) failures += 1; };
@@ -657,7 +660,148 @@ async function scale() {
   }
 }
 
-const sections = { fixture, scale };
+// ---- the concrete volumes of a BBS export ----
+// Every BBS CSV button opens a panel before the file goes out, when the file has concrete volumes in it. A volume typed there is for that
+// file only; a blank box keeps the computed volume; Escape writes nothing; a ▦ group's own bars (no member) go out at once. The check reads
+// each file back from the blob the app hands to the download.
+const csvCount = (b) => b.ev('window.__csvs.length');
+const lastCsv = (b) => b.ev('window.__csvs[window.__csvs.length - 1].text()').then((t) => t.replace(/^\uFEFF/, ''));
+const panelOpen = (b) => b.ev(`!!document.querySelector('.volpanel')`);
+const panelRows = (b) => b.ev(`Array.from(document.querySelectorAll('.volpanel tbody tr')).map((r) => Array.from(r.children).map((c) => c.textContent.trim()))`);
+const panelBoxes = (b) => b.ev(`Array.from(document.querySelectorAll('.volpanel tbody input')).map((i) => i.value)`);
+const panelTotal = (b) => b.ev(`document.querySelector('.volpanel-total').textContent.trim()`);
+const panelErrors = (b) => b.ev(`Array.from(document.querySelectorAll('.volpanel .volpanel-err')).map((e) => e.textContent)`);
+const panelExportOn = (b) => b.ev(`(() => { const e = document.querySelector('.volpanel-go'); return !!e && !e.disabled; })()`);
+const boxXY = (b, i) => viewXY(b, `document.querySelectorAll('.volpanel tbody input')[${i}]`);
+const typeInBox = async (b, i, text) => {
+  const pt = await boxXY(b, i);
+  if (!pt) throw new Error(`export: the box of row ${i + 1} is not on screen`);
+  await click(b, pt);
+  await b.send('Input.insertText', { text });
+};
+// A button found by the start of its title (the schedule's and the group rows' titles carry their scope).
+const clickTitled = (b, prefix) => b.ev(`(() => { const e = Array.from(document.querySelectorAll('button')).find((x) => x.title.startsWith(${JSON.stringify(prefix)})); if (!e) return false; e.click(); return true; })()`);
+const clickHeaderCsv = (b) => b.ev(`(() => { const e = Array.from(document.querySelectorAll('button.hbtn')).find((x) => x.textContent.trim() === '⤓ BBS CSV'); if (!e) return false; e.click(); return true; })()`);
+const ctrlZ = async (b) => {
+  for (const type of ['keyDown', 'keyUp']) await b.send('Input.dispatchKeyEvent', { type, key: 'z', code: 'KeyZ', windowsVirtualKeyCode: 90, modifiers: 2 });
+};
+
+async function exportVolumes() {
+  const project = makeFixture();
+  const file = path.join(outDir, 'check_bbs_fixture.json');
+  fs.writeFileSync(file, JSON.stringify(project));
+  const b = await launchBrowser({ width: 1600, height: 900 });
+  try {
+    await openApp(b, file, project.bars.length);
+    await settle(1200);
+    await b.ev(`(() => { window.__csvs = []; const make = URL.createObjectURL.bind(URL); URL.createObjectURL = (blob) => { window.__csvs.push(blob); return make(blob); }; return true; })()`);
+
+    // The header's button: all six members, every box blank, and the total the file would carry (six boxes of 7.2 m³ in the fixture).
+    await clickHeaderCsv(b);
+    await settle(400);
+    const rows0 = await panelRows(b);
+    const total0 = await panelTotal(b);
+    report(await panelOpen(b) && rows0.length === 6 && rows0[0].join('|') === 'Member c1|7.200|box||7.200' && (await panelBoxes(b)).every((v) => v === '') && (await panelExportOn(b)) && total0.startsWith('Total concrete 43.200 m³'),
+      `export: the header's ⤓ BBS CSV opens the panel with ${rows0.length} members, every box blank, the total 43.200 m³ (${total0.slice(0, 30)}…)`);
+
+    // 5 m³ typed for c1 is what the file carries for c1; its total and ratio follow; the app's own total does not change.
+    await typeInBox(b, 0, '5');
+    await settle(200);
+    const total1 = await panelTotal(b);
+    await pressKey(b, 'Enter', 13);
+    await settle(500);
+    const t1 = await lastCsv(b);
+    const block1 = t1.slice(t1.indexOf('Concrete volumes\n')).split('\n');
+    const schedTotal = t1.split('\n').find((l) => l.startsWith('Total,')).split(',')[2];
+    const steel1 = Number(block1[9].split(',')[1]);
+    const total = [5, 7.2, 7.2, 7.2, 7.2, 7.2].reduce((s, v) => s + v, 0);
+    const appTotal = await b.ev(`document.body.textContent.includes('43.200 m³ concrete')`);
+    report(!(await panelOpen(b)) && (await csvCount(b)) === 1 && total1.startsWith('Total concrete 41.000 m³') && t1.startsWith('Bar Bending Schedule')
+      && block1[0] === 'Concrete volumes' && block1[1] === 'Member,Volume (m3),Source' && block1[2] === 'Member c1,5.000,typed' && block1[3] === 'Member c2,7.200,box'
+      && block1[7] === 'Member c6,7.200,box' && block1[8] === `Total concrete (m3),${total.toFixed(3)}` && block1[9] === `Total steel (kg),${schedTotal}`
+      && block1[10] === `Rebar ratio (kg/m3),${(steel1 / total).toFixed(2)}` && appTotal,
+      `export: the typed 5 m³ is written for c1; the file's total ${block1[8].split(',')[1]} m³ and ratio ${block1[10].split(',')[1]} kg/m³ follow it; the app still shows 43.200 m³`);
+
+    // Escape writes nothing, and the next panel starts with blank boxes again.
+    await clickHeaderCsv(b);
+    await settle(400);
+    const fresh = (await panelBoxes(b)).every((v) => v === '');
+    await typeInBox(b, 1, '3');
+    await pressKey(b, 'Escape', 27);
+    await settle(300);
+    report(fresh && !(await panelOpen(b)) && (await csvCount(b)) === 1, 'export: Escape closes the panel and writes nothing; the next panel starts with blank boxes');
+
+    // A refused box gives its reason, keeps Export off, and Enter does not write the file.
+    await clickHeaderCsv(b);
+    await settle(400);
+    await typeInBox(b, 2, '0');
+    await settle(200);
+    const errs = await panelErrors(b);
+    const off = !(await panelExportOn(b));
+    await pressKey(b, 'Enter', 13);
+    await settle(300);
+    report(errs.length === 1 && errs[0] === 'Must be above 0' && off && (await panelOpen(b)) && (await csvCount(b)) === 1,
+      `export: a box with 0 says "${errs[0]}", keeps Export off, and Enter writes nothing`);
+    await pressKey(b, 'Escape', 27);
+    await settle(300);
+
+    // Keys typed in the panel stay in it: Ctrl+Z in a box does not undo the last edit of the schedule.
+    await b.ev(`window.__store.getState().updateBar(0, { Dia: 20 })`);
+    await settle(200);
+    const depth = await pastDepth(b);
+    await clickHeaderCsv(b);
+    await settle(400);
+    await click(b, await boxXY(b, 0));
+    await ctrlZ(b);
+    await settle(300);
+    const dia = await storeEv(b, 's.bars[0].Dia');
+    report((await pastDepth(b)) === depth && dia === 20 && (await panelOpen(b)), `export: Ctrl+Z in a box undoes nothing (${depth} undo steps before and after; bar 1 still Ø${dia})`);
+    await pressKey(b, 'Escape', 27);
+    await settle(300);
+
+    // A member's own ⤓ BBS CSV in the table (grouped by element) lists that member only.
+    await setSelect(b, 'Group by', 'element');
+    await settle(300);
+    await setFind(b, 'Member c2');
+    await settle(400);
+    const memberOk = await clickTitled(b, 'Export BBS CSV with volume + ratio for Member c2');
+    await settle(400);
+    const memberRows = await panelRows(b);
+    report(memberOk && memberRows.length === 1 && memberRows[0][0] === 'Member c2', `export: the ⤓ BBS CSV of the Member c2 group opens the panel with that member only (${memberRows.map((r) => r[0]).join(', ')})`);
+    await pressKey(b, 'Escape', 27);
+    await settle(300);
+    await setFind(b, '');
+    await settle(200);
+
+    // A ▦ group's own ⤓ BBS CSV writes at once: no panel, no member, the ratio n/a.
+    await setSelect(b, 'Group by', 'set');
+    await settle(300);
+    await setFind(b, 'S1');
+    await settle(400);
+    const before7 = await csvCount(b);
+    const setOk = await clickTitled(b, 'Export BBS CSV with volume + ratio for S1');
+    await settle(500);
+    const block7 = (await lastCsv(b)).split('\n');
+    const tail7 = block7.slice(block7.indexOf('Concrete volumes'));
+    report(setOk && !(await panelOpen(b)) && (await csvCount(b)) === before7 + 1 && tail7.length === 5 && tail7[4] === 'Rebar ratio (kg/m3),n/a',
+      "export: the ▦ group S1's ⤓ BBS CSV writes at once, with no member and the ratio n/a");
+    await setFind(b, '');
+    await settle(200);
+
+    // The schedule's own ⤓ BBS Schedule CSV asks too, with every member in the schedule.
+    const schedOk = await clickTitled(b, 'Generate BBS Schedule CSV with concrete volumes + rebar ratio (Entire Model)');
+    await settle(400);
+    const schedRows = await panelRows(b);
+    report(schedOk && (await panelOpen(b)) && schedRows.length === 6, "export: the schedule's ⤓ BBS Schedule CSV opens the panel with all 6 members");
+    await pressKey(b, 'Escape', 27);
+    await settle(300);
+    report(b.consoleErrors.length === 0, `export: no errors logged${b.consoleErrors.length ? ': ' + b.consoleErrors[0] : ''}`);
+  } finally {
+    b.close();
+  }
+}
+
+const sections = { fixture, scale, export: exportVolumes };
 try {
   for (const [name, fn] of Object.entries(sections)) {
     if (!only || only === name) await fn();
