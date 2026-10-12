@@ -4,12 +4,15 @@
 // viewer   : opens from file:// within budget, the totals line has the app's format, a click picks, the table sorts / filters / zooms,
 //            the six views are orthographic, end-on bars show as dots, the legend hides a diameter, ⤓ Project hands back the data,
 //            the test hooks exist only with ?autotest, a damaged file shows a plain message, an empty project opens.
+// typed    : ⤓ Viewer's volume panel: a volume typed there goes into that file only; the viewer shows it beside the computed totals with
+//            the rebar ratio on it; its ⤓ Project and the app leave it out; a file exported with nothing typed carries none.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { launchBrowser, sleep } from './lib/cdp.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { packViewerHtml, extractProjectFromHtml } from '../../src/standalone/pack.js';
+import { enrichBar, concreteVolumeM3 } from '../../src/bbs/csv.js';
 import { boxFromBounds, testCutSize } from '../../src/viewer/sectionBoxMath.js';
 import { gzipBytes, toBase64 } from '../../src/standalone/codec.js';
 
@@ -283,21 +286,53 @@ const VIEWER_BUTTON = `Array.from(document.querySelectorAll('button')).find((x) 
 const clickViewerButton = (b) => b.ev(`${VIEWER_BUTTON}.click()`);
 const viewerButtonState = (b) => b.ev(`(() => { const x = ${VIEWER_BUTTON}; return x ? { text: x.textContent.trim(), disabled: x.disabled } : null; })()`);
 
-// Clicks ⤓ Viewer with the title prompt answered and the download captured; returns the file ({ name, text }), the time it took and any alerts.
-async function exportFromApp(b, title) {
-  await b.ev(`(() => {
-    window.__dl = null; window.__alerts = [];
-    window.prompt = () => ${JSON.stringify(title)};
-    window.alert = (m) => { window.__alerts.push(String(m)); };
-    HTMLAnchorElement.prototype.click = function () {
-      const name = this.download;
-      fetch(this.href).then((r) => r.text()).then((text) => { window.__dl = { name, text }; });
-    };
-  })()`);
+// The volume panel of ⤓ Viewer (ExportVolumes.jsx), read and driven as a user would.
+const panelOpen = (b) => b.ev(`!!document.querySelector('.volpanel')`);
+const panelRows = (b) => b.ev(`Array.from(document.querySelectorAll('.volpanel tbody tr')).map((r) => Array.from(r.children).map((c) => c.textContent.trim()))`);
+const panelTotal = (b) => b.ev(`(() => { const e = document.querySelector('.volpanel-total'); return e ? e.textContent.trim() : null; })()`);
+const panelBoxXY = (b, row) => b.ev(`(() => { const e = document.querySelectorAll('.volpanel tbody input')[${row}]; if (!e) return null; const r = e.getBoundingClientRect(); return r.width ? [r.left + r.width / 2, r.top + r.height / 2] : null; })()`);
+// A volume typed into a box of the panel (row = the member's place in the list): a click into the box, then the text.
+async function typeInPanel(b, row, text) {
+  const pt = await panelBoxXY(b, row);
+  if (!pt) throw new Error(`the volume panel's box ${row} is not on screen`);
+  await click(b, pt);
+  await b.send('Input.insertText', { text });
+}
+// A key pressed as a user would (trusted key events).
+const pressKey = async (b, key, vk) => {
+  await b.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: vk, ...(key === 'Enter' ? { text: '\r' } : {}) });
+  await b.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: vk });
+};
+
+// The title prompt answered, the alerts kept, and the download read back as text (the anchor click is replaced, as CAPTURE_DOWNLOADS does).
+const armViewerExport = (b, title) => b.ev(`(() => {
+  window.__dl = null; window.__alerts = [];
+  window.prompt = () => ${JSON.stringify(title)};
+  window.alert = (m) => { window.__alerts.push(String(m)); };
+  HTMLAnchorElement.prototype.click = function () {
+    const name = this.download;
+    fetch(this.href).then((r) => r.text()).then((text) => { window.__dl = { name, text }; });
+  };
+})()`);
+
+// Clicks ⤓ Viewer with the title prompt answered. A model with concrete members shows the volume panel first: `typed` (a list of [row, text])
+// is typed into its boxes, then Export is pressed. Returns the file ({ name, text }), the time from Export to the download, the time the panel
+// took to open (null without a panel) and any alerts.
+async function exportFromApp(b, title, { typed = [] } = {}) {
+  await armViewerExport(b, title);
   const t0 = Date.now();
   await clickViewerButton(b);
+  await waitFor(b, '!!window.__dl || window.__alerts.length > 0 || !!document.querySelector(".volpanel")', 120000);
+  let panelMs = null;
+  let tExport = Date.now();
+  if (await panelOpen(b)) {
+    panelMs = Date.now() - t0;
+    for (const [row, text] of typed) await typeInPanel(b, row, text);
+    tExport = Date.now();
+    await b.ev(`document.querySelector('.volpanel-go').click()`);
+  }
   await waitFor(b, '!!window.__dl || window.__alerts.length > 0', 60000);
-  return { dl: await b.ev('window.__dl'), ms: Date.now() - t0, alerts: await b.ev('window.__alerts') };
+  return { dl: await b.ev('window.__dl'), ms: Date.now() - tExport, panelMs, alerts: await b.ev('window.__alerts') };
 }
 
 async function exportCheck() {
@@ -316,17 +351,16 @@ async function exportCheck() {
       window.fetch = (u, ...r) => (String(u).includes('viewer-template') ? new Promise((res) => setTimeout(res, 700)).then(() => real(u, ...r)) : real(u, ...r)); })()`);
     const pending = exportFromApp(b, TITLE);
     pending.catch(() => {}); // a failure is reported where `pending` is awaited below, not as an unhandled rejection
-    await sleep(300);
-    const building = await viewerButtonState(b);
-    report(!!building && building.text === 'Building…' && building.disabled, `export: while packing the button reads "${building && building.text}" and is disabled`);
+    const packing = await waitFor(b, `(() => { const x = document.querySelector('.volpanel-go'); return !!x && x.disabled && x.textContent.includes('Building'); })()`, 10000);
+    report(packing, 'export: while packing, the volume panel stays up and its button reads "Building…" and is disabled');
     const { dl } = await pending;
     const after = await viewerButtonState(b);
     report(!!after && after.text === '⤓ Viewer' && !after.disabled, 'export: the button is back to "⤓ Viewer" when done');
     report(!!dl && /^barbending-viewer-check-tower-l3-\d{8}-\d{4}\.html$/.test(dl.name), `export: the file is named ${dl && dl.name}`);
     const exported = dl ? await extractProjectFromHtml(dl.text) : null;
-    report(!!exported && exported.title === TITLE && exported.viewerFormat === 1
+    report(!!exported && exported.title === TITLE && exported.viewerFormat === 1 && !('typedVolumes' in exported)
       && ['bars', 'concretes', 'refLines', 'cover', 'bond'].every((k) => isDeepStrictEqual(exported[k], project[k])),
-    'export: the file holds the title and the project (bars, concretes, reference lines, cover, bond)');
+    'export: the file holds the title and the project (bars, concretes, reference lines, cover, bond), and no typed volumes');
     const kb = dl ? Buffer.byteLength(dl.text) / 1024 : 0;
     report(!!dl && kb <= (maxKb || 800), `export: the file is ${kb.toFixed(0)} KB (budget ${maxKb || 800} KB)`);
 
@@ -341,10 +375,8 @@ async function exportCheck() {
     for (const [what, answer] of [['a 404', "new Response('', { status: 404 })"], ['index.html in place of the template', "new Response('<!doctype html><div id=root></div>', { status: 200 })"]]) {
       await b.ev(`(() => { window.__dl = null; window.__alerts = []; window.prompt = () => 'x';
         window.fetch = (u, ...r) => (String(u).includes('viewer-template') ? Promise.resolve(${answer}) : window.__realFetch(u, ...r)); })()`);
-      await clickViewerButton(b);
-      await waitFor(b, 'window.__alerts.length > 0', 10000);
-      const alerts = await b.ev('window.__alerts');
-      report(alerts.length === 1 && alerts[0] === missing && !(await b.ev('window.__dl')), `export: with ${what} the alert says the template is missing`);
+      const r = await exportFromApp(b, 'x');
+      report(r.alerts.length === 1 && r.alerts[0] === missing && !r.dl && !(await panelOpen(b)), `export: with ${what} the alert says the template is missing, and the panel closes`);
       const st = await viewerButtonState(b);
       report(!!st && st.text === '⤓ Viewer' && !st.disabled, 'export: and the button comes back');
     }
@@ -814,7 +846,8 @@ async function scale() {
     await openApp(app, bigFile, rowCount, 'autotest=standalone-scale');
     await waitFor(app, '!!(window.__barfield && window.__barfield.ready)', 240000);
     appTotals = await app.ev(`(() => { const e = document.querySelector('.bbstool strong'); return e ? e.textContent : null; })()`);
-    const { dl, ms } = await exportFromApp(app, 'One million bars');
+    const { dl, ms, panelMs } = await exportFromApp(app, 'One million bars');
+    if (panelMs != null) console.log(`INFO  scale: the volume panel opened ${panelMs} ms after the click (not budgeted)`);
     report(!!dl && ms <= 3000, `scale: ⤓ Viewer on ${rowCount} rows took ${ms} ms to pack and download (budget 3000; this includes polling, so it is an upper bound)`);
     const bytes = dl ? Buffer.byteLength(dl.text) : 0;
     report(bytes > 0 && bytes <= 1800 * 1024, `scale: the file is ${(bytes / 1024).toFixed(0)} KB (budget 1800 KB)`);
@@ -861,7 +894,103 @@ async function scale() {
   }
 }
 
-const sections = { viewer, section, export: exportCheck, roundtrip, scale };
+// ⤓ Viewer's volume panel: a volume typed there goes into that file and only into it. The viewer shows it beside the computed totals, with the
+// rebar ratio on the typed concrete; its ⤓ Project leaves it out; a file exported with nothing typed carries no typed figure.
+async function typedVolumes() {
+  const project = makeProject();
+  project.concretes.push({ id: 'c2', name: 'Slab S2', lx: 2000, ly: 300, lz: 400, x: 0, y: 0, z: 2000 });
+  const concretes = project.concretes;
+  // The figures the viewer shows, worked out here with the same functions (the steel sums the rows in the same order as the viewer does).
+  const enriched = project.bars.map((bar) => enrichBar(bar, concretes));
+  const kg = enriched.reduce((s, e) => s + (e.Weight_kg || 0), 0);
+  const bars = enriched.reduce((s, e) => s + (e._copies || 1), 0);
+  const computedM3 = concretes.reduce((s, c) => s + concreteVolumeM3(c), 0);
+  const typedM3 = concretes.reduce((s, c) => s + (c.id === 'c1' ? 1.2 : concreteVolumeM3(c)), 0);
+  const expectStats = `${project.bars.length} rows · ${bars} bars · ${kg.toFixed(1)} kg · ${computedM3.toFixed(3)} m³ concrete · ${(kg / computedM3).toFixed(1)} kg/m³`;
+  const expectTyped = `typed ${typedM3.toFixed(3)} m³ · ${(kg / typedM3).toFixed(1)} kg/m³`;
+  const srcPath = path.join(outDir, 'standalone-typed-source.json');
+  fs.writeFileSync(srcPath, JSON.stringify(project));
+
+  const b = await launchBrowser();
+  let typedDl = null;
+  let plainDl = null;
+  try {
+    await openApp(b, srcPath, project.bars.length);
+
+    // 1. The panel lists both members with their volumes and where each comes from; Escape closes it and writes no file.
+    await armViewerExport(b, 'Typed check');
+    await clickViewerButton(b);
+    await waitFor(b, '!!document.querySelector(".volpanel")', 20000);
+    const rows = await panelRows(b);
+    const total = await panelTotal(b);
+    const heading = await b.ev(`document.querySelector('.volpanel h3').textContent`);
+    report(rows.length === 2 && rows[0].join('|') === 'Beam B1|0.840|box||0.840' && rows[1].join('|') === 'Slab S2|0.240|box||0.240'
+      && total.startsWith('Total concrete 1.080 m³') && heading === 'Concrete volumes for this viewer file',
+    `typed: ⤓ Viewer opens its volume panel with both members (${rows.map((r) => `${r[0]} ${r[1]}`).join(', ')})`);
+    await pressKey(b, 'Escape', 27);
+    await sleep(400);
+    report(!(await panelOpen(b)) && !(await b.ev('window.__dl')) && (await viewerButtonState(b)).text === '⤓ Viewer', 'typed: Escape closes the panel and writes no file');
+
+    // 2. 1.2 m³ typed for Beam B1, exported with Enter: the file holds that volume and nothing else, and the panel's total follows it.
+    await armViewerExport(b, 'Typed check');
+    await clickViewerButton(b);
+    await waitFor(b, '!!document.querySelector(".volpanel")', 20000);
+    await typeInPanel(b, 0, '1.2');
+    await sleep(150);
+    const totalTyped = await panelTotal(b);
+    await pressKey(b, 'Enter', 13);
+    await waitFor(b, '!!window.__dl || window.__alerts.length > 0', 60000);
+    typedDl = await b.ev('window.__dl');
+    const typedFile = typedDl ? await extractProjectFromHtml(typedDl.text) : null;
+    report(!!typedFile && isDeepStrictEqual(typedFile.typedVolumes, { c1: 1.2 }) && typedFile.title === 'Typed check' && !(await panelOpen(b)),
+      `typed: the file holds the volume typed for Beam B1 and nothing else (${JSON.stringify(typedFile && typedFile.typedVolumes)})`);
+    report(!!totalTyped && totalTyped.startsWith('Total concrete 1.440 m³'), `typed: the panel's total follows the typed volume (${(totalTyped || '').slice(0, 26)})`);
+
+    // 3. A file exported with nothing typed (the viewer checks below open it).
+    const plain = await exportFromApp(b, 'Plain check');
+    plainDl = plain.dl;
+    const plainFile = plainDl ? await extractProjectFromHtml(plainDl.text) : null;
+    report(!!plainFile && !('typedVolumes' in plainFile), 'typed: a file exported with nothing typed carries no typed volumes');
+  } finally {
+    b.close();
+  }
+  if (!typedDl || !plainDl) { report(false, 'typed: the two files were not written, so the viewer checks cannot run'); return; }
+
+  // 4. The typed file in the viewer: the totals line is the computed one; the typed figures sit beside it, with the rebar ratio on the typed
+  // concrete; the tooltip names the typed member and not the others.
+  const v = await launchBrowser();
+  try {
+    const typedPath = path.join(outDir, 'standalone-typed.html');
+    fs.writeFileSync(typedPath, typedDl.text);
+    await openViewer(v, typedPath);
+    const stats = await v.ev('document.getElementById("stats").textContent');
+    const typedText = await v.ev('document.getElementById("typed").textContent');
+    const tip = await v.ev('document.getElementById("typed").title');
+    report(stats === expectStats, `typed: the viewer's totals line is the computed one ("${stats}")`);
+    report(typedText === expectTyped && tip.includes('Beam B1: 1.200 m³ typed (computed 0.840 m³)') && !tip.includes('Slab S2'),
+      `typed: the viewer shows "${typedText}" beside it, and its tooltip names the typed member`);
+
+    // 5. ⤓ Project in the viewer writes the project alone: no typed volumes, no format, no title.
+    await v.ev(CAPTURE_DOWNLOADS);
+    await v.ev(`document.getElementById('download').click()`);
+    await waitFor(v, '!!window.__dl', 15000);
+    const json = JSON.parse((await v.ev('window.__dl')).text);
+    report(!('typedVolumes' in json) && !('viewerFormat' in json) && !('title' in json) && isDeepStrictEqual(json.bars, project.bars) && isDeepStrictEqual(json.concretes, project.concretes),
+      'typed: ⤓ Project in the viewer writes the project alone, without the typed volumes');
+
+    // 6. The file with nothing typed: no typed item, and the same totals line.
+    const plainPath = path.join(outDir, 'standalone-plain.html');
+    fs.writeFileSync(plainPath, plainDl.text);
+    await openViewer(v, plainPath);
+    report((await v.ev('document.getElementById("typed").textContent')) === '' && (await v.ev('document.getElementById("stats").textContent')) === expectStats,
+      'typed: a file with nothing typed shows no typed item, and the same totals line');
+    report(v.consoleErrors.length === 0, `typed: no errors logged${v.consoleErrors.length ? ': ' + v.consoleErrors[0] : ''}`);
+  } finally {
+    v.close();
+  }
+}
+
+const sections = { viewer, section, export: exportCheck, roundtrip, scale, typed: typedVolumes };
 const needsApp = new Set(['export', 'roundtrip', 'scale']);
 try {
   for (const [name, fn] of Object.entries(sections)) {
