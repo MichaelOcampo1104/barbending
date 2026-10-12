@@ -101,7 +101,9 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
 - **Share as one file** — **⤓ Viewer** writes the whole model as ONE `.html` file that opens in any recent browser with nothing
   installed (no app, no server, no internet): 3D bars and concrete, orbit / zoom / pan, the six true orthographic views, click a bar
   for its details, the sortable BBS table, a diameter legend, and a **section box** (push / pull faces, Move, Rotate, Fit box, Test
-  cut, Solid cut). The file is also a save: **⤒ Project** and **⤒+ Insert** open it again in the app. The IFC model is not in it,
+  cut, Solid cut). Its ⤓ Viewer asks for the concrete volumes first, as the BBS export does: a volume typed there is shown in the
+  file beside the computed totals, with the rebar ratio on it (only for that file). The file is also a save: **⤒ Project** and
+  **⤒+ Insert** open it again in the app. The IFC model is not in it,
   and reference lines are kept in the file but not drawn.
 
 ## Typical workflows

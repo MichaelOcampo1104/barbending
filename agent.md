@@ -247,15 +247,17 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   one in the model merges with it. At 1M bars any change to the bars costs 0.3-0.6 s (the status bar, the viewport bar and the
   panel each run `enrichBar` over all 25,000 rows again, and undo snapshots them), group edits included.
 
-## BBS export: concrete volumes (`csv.js`, `exportCommands.js`, `ExportVolumes.jsx`, `volumeOverride.js`)
+## Concrete volumes in the exports (`csv.js`, `exportCommands.js`, `ExportVolumes.jsx`, `volumeOverride.js`, `modelTotals.js`)
 
 - The BBS CSV is `toBbsBenchmarkCsv` = `bbsSchedule` (the bar table and the per-diameter summary; it returns `steelKg`) followed by
   the concrete block, `concreteBlock(concretes, memberIds, volumesM3, steelKg)`: one row per member in scope (`concreteBlockRows`:
   `volumeM3`, `source` = mesh / box / typed, and `computedM3` / `computedSource`), the total, and the rebar ratio. The bar rows and the
   summary are unchanged; the block keeps its first two columns (Member, Volume (m3)) and Source comes after them.
-- Every BBS CSV button calls `startBbsExport` (`exportCommands.js`). A file with a member in scope opens the panel (`ExportVolumes.jsx`,
-  driven by the store's `volumeExport`, UI state that `_projectData` never saves); a file without one (a ▦ group's own bars, the unhosted
-  filter) is written at once. The panel's Export calls `finishBbsExport` with the typed volumes as a Map.
+- Every export that writes concrete volumes goes through `exportCommands.js`: the ⤓ BBS CSV buttons (`startBbsExport`) and ⤓ Viewer
+  (`startViewerExport`, after its title prompt). A file with a member in scope opens the panel (`ExportVolumes.jsx`, driven by the store's
+  `volumeExport`, UI state that `_projectData` never saves); a file without one (a ▦ group's own bars, the unhosted filter, a model with no
+  concrete) is written at once. The panel's Export calls `finishVolumeExport` with the typed volumes as a Map; a viewer file stays on the
+  panel ("Building…") until it is packed.
 - A typed volume is for that file only. `concreteVolumeM3` (the Concrete tab, the header total, the viewer) stays the computed volume, so
   the app and the file can show different totals on purpose. Do not write typed values into the concretes to make them agree.
 - The box rules are in `volumeOverride.js` (pure, Node-tested): blank keeps the computed volume; a number above 0 is taken with a dot or a
@@ -267,6 +269,13 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   extra pass over 25,000 rows (not measured).
 - The heading used to read "Concrete volumes (Lx*Ly*Lz)" although a mesh member was written with its mesh volume. It now reads "Concrete
   volumes", and Source says which volume each row carries.
+- The viewer's totals line and the panel's figures come from one function, `totalsOf` (`modelTotals.js`, over `rowsOf`): the viewer calls it
+  with its rows and the file's typed volumes, the panel with the same rows built from the bars. Keep them in step by changing only that.
+- ⤓ Viewer's typed volumes are written as the optional key `typedVolumes` (member id → m³), beside the project data. `viewerFormat` stays 1,
+  and `_applyProject` / `appendProject` read only the fields they know, so the app ignores the key. The viewer shows them as a second item
+  under the title (`#typed`, with the ratio on the typed concrete), and only when there are some; the computed totals line stays word for
+  word the app's BBS header. `VIEWER_FIELDS` (`viewerFields.js`) lists the keys the viewer's ⤓ Project leaves out: a new viewer-only key
+  goes there, or it leaks into the project .json.
 
 ## Standalone viewer (`src/standalone/`, the `⤓ Viewer` export)
 
@@ -281,6 +290,8 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   `codec.js` only). The build checks the tokens, the two script elements and the script size (800 KB). The dev server does not watch
   `src/standalone/`: after changing it run `npm run build:viewer` and reload. A dev server answers an unknown path with `index.html` and
   status 200, which is why `loadViewerTemplate` looks for the tokens, not the status.
+- The volumes typed in ⤓ Viewer's panel (see the concrete-volumes section above) ride along as `typedVolumes`; `VIEWER_FIELDS` in
+  `viewerFields.js` lists the viewer-only keys that ⤓ Project strips.
 - Test hooks (`window.__viewer`) and a readable canvas exist only with `?autotest` (`?autotest=nobuffer` for fps runs); a visitor's page has neither.
 - Section box: the pure maths is `src/viewer/sectionBoxMath.js`, shared with the app's `SectionBox.jsx` (change it in one place and run
   `tests/standalone/sectionBoxMath.test.mjs` and `check_views.mjs --only section`). `FACES` (the grips) is in the order -X, +X, -Y, +Y,
