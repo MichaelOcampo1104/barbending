@@ -247,6 +247,27 @@ the FreeCAD macros in `C:\Users\Michael Ocampo\AppData\Local\Programs\FreeCAD 1.
   one in the model merges with it. At 1M bars any change to the bars costs 0.3-0.6 s (the status bar, the viewport bar and the
   panel each run `enrichBar` over all 25,000 rows again, and undo snapshots them), group edits included.
 
+## BBS export: concrete volumes (`csv.js`, `exportCommands.js`, `ExportVolumes.jsx`, `volumeOverride.js`)
+
+- The BBS CSV is `toBbsBenchmarkCsv` = `bbsSchedule` (the bar table and the per-diameter summary; it returns `steelKg`) followed by
+  the concrete block, `concreteBlock(concretes, memberIds, volumesM3, steelKg)`: one row per member in scope (`concreteBlockRows`:
+  `volumeM3`, `source` = mesh / box / typed, and `computedM3` / `computedSource`), the total, and the rebar ratio. The bar rows and the
+  summary are unchanged; the block keeps its first two columns (Member, Volume (m3)) and Source comes after them.
+- Every BBS CSV button calls `startBbsExport` (`exportCommands.js`). A file with a member in scope opens the panel (`ExportVolumes.jsx`,
+  driven by the store's `volumeExport`, UI state that `_projectData` never saves); a file without one (a ▦ group's own bars, the unhosted
+  filter) is written at once. The panel's Export calls `finishBbsExport` with the typed volumes as a Map.
+- A typed volume is for that file only. `concreteVolumeM3` (the Concrete tab, the header total, the viewer) stays the computed volume, so
+  the app and the file can show different totals on purpose. Do not write typed values into the concretes to make them agree.
+- The box rules are in `volumeOverride.js` (pure, Node-tested): blank keeps the computed volume; a number above 0 is taken with a dot or a
+  comma (a comma is a decimal point, so "1,000" means 1.000); zero, negatives, text and "1,234.5" are refused with a reason, and the panel
+  keeps Export off.
+- The panel stops clicks and keys at its root, as `GroupName` does. The app's own key handler already ignores text boxes; the stop is for
+  the listeners that do not check.
+- Opening the panel runs `bbsSchedule` once more over the bars for the steel total; Export runs it again. At a million bars that is one
+  extra pass over 25,000 rows (not measured).
+- The heading used to read "Concrete volumes (Lx*Ly*Lz)" although a mesh member was written with its mesh volume. It now reads "Concrete
+  volumes", and Source says which volume each row carries.
+
 ## Standalone viewer (`src/standalone/`, the `⤓ Viewer` export)
 
 - `⤓ Viewer` writes ONE `.html` file: a generated template (`public/viewer-template.html`, git-ignored, built by `npm run build:viewer`,

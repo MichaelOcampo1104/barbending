@@ -89,6 +89,11 @@ npx vite preview --port 5174 --host   # → http://localhost:5174/
   ones out; they keep their dimensions. A group needs two bars, so one that would be left with a single bar is dissolved, and a
   group drawn from a face sketch asks first, because afterwards it can no longer re-spread from that sketch. Each change is one
   undo step.
+- **Concrete volumes in the BBS CSV** — the file's concrete block lists each member with its volume (its exact mesh when it has
+  one, else Lx·Ly·Lz) and where that volume comes from (a Source column: mesh, box or typed). Every ⤓ BBS CSV button (the header,
+  the schedule, a group row) first opens a panel with a box per member: type a volume in m³ (12.5 or 12,5) to use it in that
+  file only, or leave the box blank for the computed volume. The total and the rebar ratio in the file follow the volumes it
+  carries; the Concrete tab, the header and the viewer keep the computed ones, and nothing is saved in the project.
 - **Undo + save** — ↶ ↷ / Ctrl+Z / Ctrl+Y over bars, concrete and cover;
   💾 Save keeps your work in the browser and restores it on reload (IFC
   files reload by hand); ⤓/⤒ Project moves the project to another system

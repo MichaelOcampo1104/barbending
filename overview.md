@@ -31,7 +31,9 @@ everything runs from static files.
 | `src/store.js` | zustand store: bars, concretes, selection, IFC meta, section box |
 | `src/bbs/shapes.js` | 6 shape generators → 3D polylines + cut lengths; `distCount`/`distOffsets` distribution grid; `applyTypeDefaults` for shape switching |
 | `src/bbs/calc.js` | `D²/162.2` unit weights, bend deductions |
-| `src/bbs/csv.js` | FreeCAD-compatible CSV export/import (`MASTER_HEADERS` superset) |
+| `src/bbs/csv.js` | FreeCAD-compatible CSV export/import (`MASTER_HEADERS` superset); the BBS export is `bbsSchedule` (the bar table, the steel total) + the concrete block (`concreteBlock`, with the volumes typed for one export) |
+| `src/bbs/volumeOverride.js` | The override boxes of the BBS export's concrete-volume panel (Node-tested): a blank box keeps the computed volume, a number in m³ replaces it for that one file |
+| `src/bbs/exportCommands.js`, `src/bbs/ExportVolumes.jsx` | Every ⤓ BBS CSV button: a file with concrete volumes in it opens the volume panel first (the typed volumes are for that file only), then writes it |
 | `src/bbs/tableView.js` | Pure logic of the bottom BBS panel's table (Node-tested): the flat item list of group headers and rows (`flattenItems`), the window of rows to draw (`windowRange`, `clampScrollTop`), where to scroll to a row (`revealTop`), the find box (`makeRowFilter`, `filterGroups`), ▦ group grouping (`groupBySet`) and the Groups list order (`orderGroups`) |
 | `src/bbs/BbsTable.jsx`, `BbsGroups.jsx` | The panel's windowed table (fixed 28 px rows, pinned group header, follows a selection made elsewhere) and its Groups overview (members and ▦ groups with totals, click to jump) |
 | `src/bbs/groups.js`, `groupCommands.js`, `GroupName.jsx` | Editing ▦ groups: the pure rules (name check, rename, add bars, remove bars, a group needs two bars, a face-sketch group loses its sketch; Node-tested), the dialogue behind the buttons (acts on the selection, confirms before a sketch group changes) and the in-place rename box. A group's id is its name, so a rename replaces `setId` on its bars |
