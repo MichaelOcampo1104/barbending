@@ -17,7 +17,9 @@ import {
   fitZoomForBox, clampOrthoZoom, PERSP_FOV_DEG, ORTHO_DEPTH, MIN_VISIBLE_M, MAX_VISIBLE_M,
 } from '../viewer/cameraMath.js';
 import { switchProjection, setOrthoZoom } from '../viewer/cameraOps.js';
-import { enrichBar, concreteVolumeM3, rebarRatioKgM3 } from '../bbs/csv.js';
+import { enrichBar } from '../bbs/csv.js';
+import { totalsOf } from '../bbs/modelTotals.js';
+import { withoutViewerFields } from './viewerFields.js';
 import { rowAppBox } from '../viewer/regionSelect.js';
 import { sectionPlanes } from '../viewer/sectionPlanes.js';
 import { gunzipBytes, fromBase64 } from './codec.js';
@@ -63,11 +65,16 @@ async function main() {
       kg: e.Weight_kg, host: hostNames.get(e.host) || e.host || '',
     };
   });
-  const totalBars = rows.reduce((s, r) => s + (r.copies || 1), 0);
-  const totalKg = rows.reduce((s, r) => s + (r.kg || 0), 0);
-  const concM3 = concretes.reduce((s, c) => s + concreteVolumeM3(c), 0); // every member, hidden or not, as the app's BBS header does
-  const ratio = rebarRatioKgM3(totalKg, concM3);
-  $('stats').textContent = `${rows.length} rows · ${totalBars} bars · ${totalKg.toFixed(1)} kg · ${concM3.toFixed(3)} m³ concrete · ${ratio == null ? 'n/a' : `${ratio.toFixed(1)} kg/m³`}`;
+  // The volumes typed for this file (⤓ Viewer's panel) sit beside the computed figures, labelled, and only when there are some.
+  const typedVols = new Map(Object.entries(project.typedVolumes && typeof project.typedVolumes === 'object' ? project.typedVolumes : {})
+    .filter(([, v]) => typeof v === 'number' && v > 0));
+  const totals = totalsOf(rows, concretes, typedVols);
+  $('stats').textContent = `${rows.length} rows · ${totals.bars} bars · ${totals.kg.toFixed(1)} kg · ${totals.computedM3.toFixed(3)} m³ concrete · ${totals.ratio == null ? 'n/a' : `${totals.ratio.toFixed(1)} kg/m³`}`;
+  if (totals.typedM3 != null) {
+    $('typed').textContent = `typed ${totals.typedM3.toFixed(3)} m³ · ${totals.typedRatio == null ? 'n/a' : `${totals.typedRatio.toFixed(1)} kg/m³`}`;
+    $('typed').title = [...totals.typedMembers.map((m) => `${m.name}: ${m.volumeM3.toFixed(3)} m³ typed (computed ${m.computedM3.toFixed(3)} m³)`),
+      'Volumes typed in ⤓ Viewer for this file only. The figures before them are the computed ones.'].join('\n');
+  }
   $('saved').textContent = project.savedAt ? `saved ${new Date(project.savedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : '';
 
   // ---- renderer, scene ----
@@ -416,7 +423,7 @@ async function main() {
   $('toggle-panel').addEventListener('click', (e) => { $('panel').classList.toggle('closed'); e.target.classList.toggle('on'); });
   // ⤓ Project: the embedded project, as the .json the app's ⤒ Project opens.
   $('download').addEventListener('click', () => {
-    const projectOnly = Object.fromEntries(Object.entries(project).filter(([k]) => k !== 'viewerFormat' && k !== 'title'));
+    const projectOnly = withoutViewerFields(project);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(projectOnly, null, 2)], { type: 'application/json' }));
     a.download = `${(project.title || 'barbending-model').replace(/[^\w.-]+/g, '_')}.json`;

@@ -10,15 +10,14 @@ import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveB
 import { enrichBar, downloadCsv, parseCsv, SHAPE_CODES, autoAssignBarMarks, concreteVolumeM3, rebarRatioKgM3, concreteVolumeSource } from './bbs/csv.js';
 import { lapLengthMm, barBond, lapBondFor } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
-import { packViewerHtml, cleanViewerTitle, viewerFileName, parseProjectFile, DEFAULT_VIEWER_TITLE } from './standalone/pack.js';
-import { loadViewerTemplate } from './standalone/exportViewer.js';
+import { cleanViewerTitle, parseProjectFile, DEFAULT_VIEWER_TITLE } from './standalone/pack.js';
 import BbsTable from './bbs/BbsTable.jsx';
 import BbsGroups from './bbs/BbsGroups.jsx';
 import GroupName from './bbs/GroupName.jsx';
 import { flattenItems, makeRowFilter, filterGroups, groupBySet } from './bbs/tableView.js';
 import { selectionStats } from './bbs/groups.js';
 import { addSelectedToGroup, removeSelectedFromGroup } from './bbs/groupCommands.js';
-import { startBbsExport } from './bbs/exportCommands.js';
+import { startBbsExport, startViewerExport } from './bbs/exportCommands.js';
 import ExportVolumes from './bbs/ExportVolumes.jsx';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
 // IFC load so the main bundle stays light. See IfcPanel handlers.
@@ -2255,22 +2254,14 @@ function FileBar() {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
-  // ⤓ Viewer: the whole model as ONE .html file that opens in any browser (src/standalone/). Cancelling the title prompt aborts.
+  // ⤓ Viewer: the whole model as ONE .html file that opens in any browser (src/standalone/). Cancelling the title prompt aborts. A model with
+  // concrete members asks for their volumes first (ExportVolumes.jsx); the file is packed when that panel is exported.
   const downloadViewer = async () => {
     const raw = window.prompt('Title for the viewer file:', DEFAULT_VIEWER_TITLE);
     if (raw === null) return;
-    const title = cleanViewerTitle(raw);
     setBuilding(true);
-    try {
-      const template = await loadViewerTemplate({ url: `${import.meta.env.BASE_URL}viewer-template.html` });
-      const html = await packViewerHtml(template, useStore.getState()._projectData(), { title });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-      a.download = viewerFileName(title, new Date());
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-      console.info(`[save] exported viewer file: ${a.download} (${Math.round(html.length / 1024)} KB)`);
-    } catch (err) { alert(err && err.message ? err.message : String(err)); }
+    try { await startViewerExport(cleanViewerTitle(raw)); }
+    catch (err) { alert(err && err.message ? err.message : String(err)); }
     finally { setBuilding(false); }
   };
   const onOpenFile = (e) => {
