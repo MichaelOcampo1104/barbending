@@ -134,6 +134,11 @@ export const useStore = create((set, get) => ({
   setSelectTool: (t) => set({ selectTool: t === 'box' || t === 'lasso' ? t : null }),
   // The toolbar buttons and the hotkeys: arm that tool, or turn it off when it is the armed one already.
   toggleSelectTool: (t) => set((s) => ({ selectTool: (t === 'box' || t === 'lasso') && s.selectTool !== t ? t : null })),
+  // The BBS export waiting on its concrete-volume panel (ExportVolumes.jsx): { bars, memberIds, filename, steelKg }, or null. UI only:
+  // it is never saved with the project (_projectData lists what is).
+  volumeExport: null,
+  openVolumeExport: (x) => set({ volumeExport: x }),
+  closeVolumeExport: () => set({ volumeExport: null }),
   selectedConcrete: 'c1',
   showConcrete: true,
 

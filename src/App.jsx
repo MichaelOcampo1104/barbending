@@ -7,7 +7,7 @@ import { isFieldRendererActive } from './viewer/barfield/rendererFlag.js';
 import { fmtLen } from './viewer/Scene.jsx';
 import { useStore } from './store.js';
 import { REBAR_TYPES, DIM_FIELDS_BY_TYPE, applyTypeDefaults, distCount, resolveBarHost, memberKind, slabLinkSpine, getBentDefaults, parseLegs } from './bbs/shapes.js';
-import { enrichBar, downloadCsv, downloadBbsCsv, parseCsv, SHAPE_CODES, autoAssignBarMarks, concreteVolumeM3, rebarRatioKgM3, concreteVolumeSource } from './bbs/csv.js';
+import { enrichBar, downloadCsv, parseCsv, SHAPE_CODES, autoAssignBarMarks, concreteVolumeM3, rebarRatioKgM3, concreteVolumeSource } from './bbs/csv.js';
 import { lapLengthMm, barBond, lapBondFor } from './bbs/calc.js';
 import IfcPanel, { IfcLoadButton, fitIfcLive } from './ifc/IfcPanel.jsx';
 import { packViewerHtml, cleanViewerTitle, viewerFileName, parseProjectFile, DEFAULT_VIEWER_TITLE } from './standalone/pack.js';
@@ -18,6 +18,8 @@ import GroupName from './bbs/GroupName.jsx';
 import { flattenItems, makeRowFilter, filterGroups, groupBySet } from './bbs/tableView.js';
 import { selectionStats } from './bbs/groups.js';
 import { addSelectedToGroup, removeSelectedFromGroup } from './bbs/groupCommands.js';
+import { startBbsExport } from './bbs/exportCommands.js';
+import ExportVolumes from './bbs/ExportVolumes.jsx';
 // NOTE: ./ifc/session.js (web-ifc parser) is dynamically imported on first
 // IFC load so the main bundle stays light. See IfcPanel handlers.
 import './App.css';
@@ -1910,7 +1912,7 @@ function BbsStrip() {
               )}
               <button
                 className="ghost sm"
-                onClick={() => downloadBbsCsv(g.rows.map((r) => bars[r._origIdx]), concretes, `BBS_${g.name.replace(/[\s\W]+/g, '_')}.csv`, { memberIds: g.concrete ? [g.id] : [] })}
+                onClick={() => startBbsExport(g.rows.map((r) => bars[r._origIdx]), g.concrete ? [g.id] : [], `BBS_${g.name.replace(/[\s\W]+/g, '_')}.csv`)}
                 title={`Export BBS CSV with volume + ratio for ${g.name}`}
               >⤓ BBS CSV</button>
             </span>
@@ -2137,7 +2139,7 @@ function BbsStrip() {
             <button className="ghost sm" onClick={() => setBars(autoAssignBarMarks(bars, { scopeByHost: joinMode || elemFilter !== 'all' }))} title="Detect and unify bar marks for all bars with identical shape, diameter, and length">
               🏷️ Match Marks
             </button>
-            <button style={{ background: '#059669', fontWeight: 600 }} onClick={() => downloadBbsCsv(exportBars, concretes, bbsFilename, { memberIds: exportMemberIds })} title={`Generate BBS Schedule CSV with concrete volumes + rebar ratio (${joinMode || elemFilter !== 'all' ? filterLabel : 'Entire Model'})`}>
+            <button style={{ background: '#059669', fontWeight: 600 }} onClick={() => startBbsExport(exportBars, exportMemberIds, bbsFilename)} title={`Generate BBS Schedule CSV with concrete volumes + rebar ratio (${joinMode || elemFilter !== 'all' ? filterLabel : 'Entire Model'})`}>
               ⤓ BBS Schedule CSV {(joinMode || elemFilter !== 'all') ? `(${filterLabel})` : ''}
             </button>
             <button onClick={() => downloadCsv(exportBars, rebarFilename)} title={`Export FreeCAD parametric template CSV (${elemFilter === 'all' ? 'Entire Model' : filterLabel})`}>
@@ -2314,7 +2316,7 @@ function FileBar() {
         title="Save bars + concrete in this browser (auto-restored on reload; IFC files reload by hand)"
       >💾 Save</button>
       <button
-        className="hbtn" onClick={() => downloadBbsCsv(useStore.getState().bars, useStore.getState().concretes)}
+        className="hbtn" onClick={() => startBbsExport(useStore.getState().bars, null, 'bar_bending_schedule.csv')}
         title="Generate BBS Schedule CSV (FreeCAD benchmark / BS 8666 format with shape codes 20, 37, 38, 85, 41, 43)"
       >⤓ BBS CSV</button>
       <button
@@ -2550,6 +2552,7 @@ export default function App() {
       </div>
       <BbsStrip />
       <StatusBar />
+      <ExportVolumes />
     </div>
   );
 }

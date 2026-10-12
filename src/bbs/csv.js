@@ -215,15 +215,18 @@ export const BBS_BENCHMARK_HEADERS = [
   'Total Weight (kg)',
 ];
 
-export function toBbsBenchmarkCsv(bars, concretes = [], opts = {}) {
+// A CSV cell: quoted when it holds a comma, a quote or a line break.
+const esc = (v) => {
+  if (v === undefined || v === null) return '';
+  const s = String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+// The schedule part of the BBS export: the bar table and the per-diameter summary. Returns its lines and the total steel (kg) that the
+// summary ends with (the concrete block divides it for the rebar ratio).
+export function bbsSchedule(bars, concretes = []) {
   const concMap = new Map((concretes || []).map((c) => [c.id, c.name || c.type || c.id]));
   const rows = bars.map((b) => enrichBar(b, concretes));
-
-  const esc = (v) => {
-    if (v === undefined || v === null) return '';
-    const s = String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
 
   const lines = ['Bar Bending Schedule', BBS_BENCHMARK_HEADERS.join(',')];
   const diaTotals = {};
@@ -322,25 +325,52 @@ export function toBbsBenchmarkCsv(bars, concretes = [], opts = {}) {
 
   lines.push(['Total', grandLenM.toFixed(3), grandWeightKg.toFixed(2)].map(esc).join(','));
 
-  // Concrete volumes + rebar ratio (kg/m³). opts.memberIds scopes the block
-  // to the joined/filtered members; null = every concrete passed in.
-  const volMembers = (opts.memberIds
-    ? (concretes || []).filter((c) => opts.memberIds.includes(c.id))
-    : (concretes || []));
-  let totalVolM3 = 0;
-  lines.push('');
-  lines.push('Concrete volumes (Lx*Ly*Lz)');
-  lines.push(['Member', 'Volume (m3)'].map(esc).join(','));
-  for (const c of volMembers) {
-    const v = concreteVolumeM3(c);
-    totalVolM3 += v;
-    lines.push([(c.name || c.type || c.id), v.toFixed(3)].map(esc).join(','));
-  }
-  lines.push(['Total concrete (m3)', totalVolM3.toFixed(3)].map(esc).join(','));
-  lines.push(['Total steel (kg)', grandWeightKg.toFixed(2)].map(esc).join(','));
-  const ratio = rebarRatioKgM3(grandWeightKg, totalVolM3);
-  lines.push(['Rebar ratio (kg/m3)', ratio == null ? 'n/a' : ratio.toFixed(2)].map(esc).join(','));
+  return { lines, steelKg: grandWeightKg };
+}
 
+// The concrete members a file lists: opts.memberIds scopes them to the joined or filtered members (null = every concrete passed in).
+export function concreteBlockMembers(concretes, memberIds = null) {
+  return memberIds ? (concretes || []).filter((c) => memberIds.includes(c.id)) : (concretes || []);
+}
+
+// One row per member of the block: the volume the file writes for it and where that volume comes from. A value typed for this export
+// (volumesM3, a Map of member id → m³) replaces the computed volume, which is the exact mesh when the member has one, else Lx·Ly·Lz.
+export function concreteBlockRows(concretes, memberIds = null, volumesM3 = null) {
+  return concreteBlockMembers(concretes, memberIds).map((c) => {
+    const computedM3 = concreteVolumeM3(c);
+    const computedSource = concreteVolumeSource(c);
+    const typed = volumesM3?.get(c.id);
+    const isTyped = typeof typed === 'number' && typed > 0;
+    return {
+      id: c.id,
+      name: c.name || c.type || c.id,
+      computedM3,
+      computedSource,
+      volumeM3: isTyped ? typed : computedM3,
+      source: isTyped ? 'typed' : computedSource,
+    };
+  });
+}
+
+// The block's rows, its total volume, and the rebar ratio (kg/m³, null without concrete) for the steel total of the schedule.
+export function concreteBlock(concretes, memberIds = null, volumesM3 = null, steelKg = 0) {
+  const members = concreteBlockRows(concretes, memberIds, volumesM3);
+  const totalM3 = members.reduce((sum, m) => sum + m.volumeM3, 0);
+  return { members, totalM3, ratio: rebarRatioKgM3(steelKg, totalM3) };
+}
+
+// The whole BBS CSV: the schedule, then the concrete block. opts.memberIds scopes the block; opts.volumesM3 holds the volumes typed for
+// this file (see concreteBlockRows).
+export function toBbsBenchmarkCsv(bars, concretes = [], opts = {}) {
+  const { lines, steelKg } = bbsSchedule(bars, concretes);
+  const block = concreteBlock(concretes, opts.memberIds, opts.volumesM3, steelKg);
+  lines.push('');
+  lines.push('Concrete volumes');
+  lines.push(['Member', 'Volume (m3)', 'Source'].map(esc).join(','));
+  for (const m of block.members) lines.push([m.name, m.volumeM3.toFixed(3), m.source].map(esc).join(','));
+  lines.push(['Total concrete (m3)', block.totalM3.toFixed(3)].map(esc).join(','));
+  lines.push(['Total steel (kg)', steelKg.toFixed(2)].map(esc).join(','));
+  lines.push(['Rebar ratio (kg/m3)', block.ratio == null ? 'n/a' : block.ratio.toFixed(2)].map(esc).join(','));
   return lines.join('\n');
 }
 

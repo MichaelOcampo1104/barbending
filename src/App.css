@@ -231,6 +231,23 @@ button.sm.bbs-pencil { padding: 0 4px; opacity: 0.7; flex: 0 0 auto; }
 .bbs-rename.wrap { flex-wrap: wrap; flex: 1 1 auto; }
 .bbs-rename.wrap .bbs-rename-err { white-space: normal; flex: 1 1 100%; }
 .bbs button:disabled, .cbox button:disabled { opacity: 0.4; cursor: default; }
+/* the BBS export's concrete-volume panel (ExportVolumes.jsx): a modal over the page, so its keys and clicks stay in it */
+.volpanel-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(2, 6, 23, 0.6); display: flex; align-items: center; justify-content: center; }
+.volpanel { width: min(680px, 94vw); max-height: 84vh; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; background: #0d1730; border: 1px solid #2b3d63; border-radius: 8px; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6); color: #c6d3ea; font-size: 12px; }
+.volpanel h3 { margin: 0; font-size: 14px; color: #e2e8f0; }
+.volpanel-note { margin: 0; color: #94a3b8; line-height: 1.4; }
+.volpanel-scroll { min-height: 0; overflow: auto; border: 1px solid #1e2d4d; border-radius: 6px; }
+.volpanel table { width: 100%; border-collapse: collapse; }
+.volpanel th, .volpanel td { padding: 4px 8px; border-bottom: 1px solid #1e2d4d; text-align: left; white-space: nowrap; }
+.volpanel th { position: sticky; top: 0; background: #13203c; color: #94a3b8; font-weight: 600; }
+.volpanel .num { text-align: right; font-variant-numeric: tabular-nums; }
+.volpanel input { width: 9ch; height: 22px; box-sizing: border-box; padding: 1px 6px; background: #0b1528; color: #e2e8f0; border: 1px solid #38bdf8; border-radius: 4px; font-size: 12px; text-align: right; }
+.volpanel input::placeholder { color: #475569; }
+.volpanel .volpanel-err { display: block; color: #fca5a5; font-size: 11px; white-space: normal; }
+.volpanel-total { color: #e2e8f0; }
+.volpanel-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.volpanel-go { background: #059669; font-weight: 600; }
+.volpanel button:disabled { opacity: 0.4; cursor: default; }
 /* the Set card's title: the name gives way (an ellipsis) before the bar count or the buttons do */
 .crow.setrow { flex-wrap: wrap; align-items: center; row-gap: 4px; }
 .crow .setname { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; flex: 1 1 auto; white-space: nowrap; }
