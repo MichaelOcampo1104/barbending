@@ -112,7 +112,9 @@ try {
   // Cross-ties: remove the test level, then type two cross-ties into the base level. 16 bars leave 3 bars per long side to hook.
   await clickInCard(b, '× Remove');
   await waitFor(b, `document.querySelectorAll('.memberCard input[data-field="sfl"]').length === 1`);
-  await typeField(b, 'links', 0, 'H10-100 + 2H10-100 X + 2H10-100 Y');
+  await typeField(b, 'linksouter', 0, 'H10-100');
+  await typeField(b, 'linksx', 0, '2H10-100');
+  await typeField(b, 'linksy', 0, '2H10-100');
   report(await waitFor(b, `/hooked cross-ties X/.test(document.querySelector('.memberCard').textContent) && /hooked cross-ties Y/.test(document.querySelector('.memberCard').textContent)`), 'the read-back shows the X and Y cross-ties as hooked');
   await clickInCard(b, '▦ Generate sets');
   report(await waitFor(b, `window.__store.getState().bars.length === 53`), 'two cross-ties along X and two along Y add 53 rows: 16 mains, 32 starters, 1 outer link set and 4 cross-ties');
@@ -126,7 +128,9 @@ try {
   await pickLayout(b, 'faces');
   await typeField(b, 'barslong', 0, '44H40');
   await typeField(b, 'barsshort', 0, '8H32');
-  await typeField(b, 'links', 0, 'H10-100 + 2H10-150 X + 6H10-150 Y');
+  await typeField(b, 'linksouter', 0, 'H10-100');
+  await typeField(b, 'linksx', 0, '2H10-150');
+  await typeField(b, 'linksy', 0, '6H10-150');
   report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('44 × H40 long + 8 × H32 short')`), 'the read-back shows the long and short faces');
   await clickInCard(b, '▦ Generate sets');
   report(await waitFor(b, `window.__store.getState().bars.length === 165`), 'the rectangular column adds 165 rows: 52 mains, 104 starters, 1 outer link set and 8 cross-ties');
@@ -151,6 +155,15 @@ try {
   report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('is over 1000 m')`), 'an SFL typed in millimetres is refused, with the metres to type');
   await clickInCard(b, '× Remove');
   report(await waitFor(b, `document.querySelectorAll('.memberCard input[data-field="sfl"]').length === 1`), 'the test level is removed again');
+
+  // Slab below a level: a 1500 mm slab under a level 2.3 m above the base sits in the storey below, from 800 to 2300 mm.
+  await clickInCard(b, '+ Level above the top');
+  report(await waitFor(b, `document.querySelectorAll('.memberCard input[data-field="sfl"]').length === 2`), 'a level row appears above the base of R1 for its slab');
+  await typeField(b, 'sfl', 0, '2.3');
+  await typeField(b, 'slab', 0, '1500');
+  report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('800 to 2300')`), 'a 1500 mm slab under a level 2.3 m up shows its link zone from 800 to 2300 mm');
+  await clickInCard(b, '× Remove');
+  report(await waitFor(b, `document.querySelectorAll('.memberCard input[data-field="sfl"]').length === 1`), 'the slab test level is removed again');
 
   // Wall: select the wall, switch the card to Wall, generate.
   await b.ev(`window.__store.getState().selectConcrete('c2')`);

@@ -331,6 +331,45 @@ export function parseLinks(text) {
   };
 }
 
+// The LINKS of each level from its three cells: the outer link, then the cross links along X and along Y. A cross-link cell reads its
+// count, size and spacing ("2H10-150"), and a blank cell means none. A cell that reads "same as below" takes the level under it, cell by
+// cell. Returns the LINKS notation that resolveSchedule reads, top level first (for example "H10-100 + 2H10-150 X + 6H10-150 Y").
+export function linksNotation(rowsTopFirst) {
+  const bottomUp = [...(rowsTopFirst || [])].reverse();
+  const cells = [];
+  bottomUp.forEach((r, k) => {
+    const row = {};
+    for (const [key, field] of [['outer', 'linksOuter'], ['x', 'linksX'], ['y', 'linksY']]) {
+      const raw = String(r[field] ?? '').trim();
+      row[key] = SAME_RE.test(raw) ? (k === 0 ? 'same' : cells[k - 1][key]) : raw;
+    }
+    cells.push(row);
+  });
+  return cells.reverse().map((row) => {
+    // A level that has nothing to copy from keeps "same", which resolveSchedule refuses with its own message.
+    if (Object.values(row).includes('same')) return 'same';
+    const parts = [row.outer];
+    if (row.x) parts.push(`${row.x} X`);
+    if (row.y) parts.push(`${row.y} Y`);
+    return parts.join(' + ');
+  });
+}
+
+// The links in the slab below each level, from its three cells (outer, X, Y), top level first. A level with its cells all blank has no slab
+// links of its own, so its slab takes the links of the storey it sits in. Returns the notation for each level ("" when blank).
+export function slabLinksNotation(rowsTopFirst) {
+  return (rowsTopFirst || []).map((r) => {
+    const outer = String(r.linksBotOuter ?? '').trim();
+    const x = String(r.linksBotX ?? '').trim();
+    const y = String(r.linksBotY ?? '').trim();
+    if (!outer && !x && !y) return '';
+    const parts = [outer];
+    if (x) parts.push(`${x} X`);
+    if (y) parts.push(`${y} Y`);
+    return parts.join(' + ');
+  });
+}
+
 // The schedule as the drawing gives it: `rowsTopFirst` lists the levels top first, each with a name, its SFL (metres) and the cells
 // SIZE, MAIN BARS and LINKS. Returns { ok, rows (bottom first), count, linkDia } or { ok: false, msg }. Each resolved row has h (mm above
 // the bottom row), bars { count, dia }, links { sets, dia, spacing, cross }, size { lx, ly } and the optional lap, step and jog.
@@ -371,6 +410,15 @@ export function resolveSchedule(rowsTopFirst, { lx, ly, layout = 'all' }) {
     if (bars.error) return { ok: false, msg: bars.error };
     const links = cell('links', 'LINKS', parseLinks);
     if (links.error) return { ok: false, msg: links.error };
+    // The slab below this level (SLAB THK; its SFL is the slab's top) and the links in it. The base's slab is below the member, so it is not read.
+    const slabMm = k > 0 && !isBlank(r.slab) ? Number(r.slab) : null;
+    if (slabMm !== null && !(slabMm > 0)) return { ok: false, msg: `The slab below ${name} must be above zero, or left blank.` };
+    const slabLinkText = k > 0 ? String(r.linksBottom ?? '').trim() : '';
+    const slabLinks = slabLinkText ? parseLinks(slabLinkText) : null;
+    if (slabLinkText && !slabLinks) {
+      return { ok: false, msg: `Could not read the links in the slab below ${name}: "${slabLinkText}". Write them as in LINKS, for example H10-150 + 2H10-150 X.` };
+    }
+    if (slabLinks && slabMm === null) return { ok: false, msg: `Give the slab below ${name} its thickness, or clear its links.` };
     const sfl = Number(r.sfl);
     if (isBlank(r.sfl) || !Number.isFinite(sfl)) return { ok: false, msg: `Give ${name} its SFL (m).` };
     // SFL is in metres. A millimetre value (-20870) would put every level thousands of metres from the base, so it is refused by name.
@@ -383,6 +431,7 @@ export function resolveSchedule(rowsTopFirst, { lx, ly, layout = 'all' }) {
       size: size.value,
       bars: bars.value,
       links: links.value,
+      slab: slabMm === null ? null : { mm: slabMm, links: slabLinks },
       lap: r.lap ?? null,
       step: r.step ?? null,
       jog: r.jog ?? null,
@@ -432,6 +481,32 @@ export function resolveSchedule(rowsTopFirst, { lx, ly, layout = 'all' }) {
       return { ok: false, msg: `${r.name} has two cross-tie groups along the same direction: give one along X and one along Y.` };
     }
   }
+  // A slab must fit inside the storey below it, leaving room for that storey's own links. Its links follow the rules of LINKS: one closed
+  // set, the bottom row's outer size, and cross links with a count, a size and a spacing.
+  for (let k = 1; k < out.length; k++) {
+    const r = out[k];
+    if (!r.slab) continue;
+    const storey = r.h - out[k - 1].h;
+    if (!(r.slab.mm < storey)) {
+      return { ok: false, msg: `The slab below ${r.name} (${r.slab.mm} mm) is as thick as, or thicker than, the storey below it (${Math.round(storey)} mm).` };
+    }
+    const sl = r.slab.links;
+    if (!sl) continue;
+    if (sl.dia !== first.links.dia) {
+      return { ok: false, msg: `The outer link in the slab below ${r.name} is H${sl.dia}, but the bottom row's is H${first.links.dia}. Keep one outer link size up the column.` };
+    }
+    if (sl.sets !== 1) return { ok: false, msg: `The slab below ${r.name} has ${sl.sets} closed link sets. More than one closed set per level is not modelled yet.` };
+    if (!(sl.spacing > 0)) return { ok: false, msg: `The link spacing in the slab below ${r.name} must be above zero.` };
+    for (const g of sl.cross) {
+      if (!(g.count >= 1 && g.dia > 0 && g.spacing > 0)) {
+        return { ok: false, msg: `The cross links in the slab below ${r.name} need a count, a size and a spacing above zero.` };
+      }
+    }
+    const dirs = sl.cross.map((g) => g.dir);
+    if (new Set(dirs).size !== dirs.length) {
+      return { ok: false, msg: `The slab below ${r.name} has two cross-link groups along the same direction.` };
+    }
+  }
   return { ok: true, rows: out, count: first.bars.count, linkDia: first.links.dia };
 }
 
@@ -454,22 +529,35 @@ function scheduleOfSimple(member, c) {
   return rows.reverse();
 }
 
-// Link runs: neighbouring levels with the same link spacing share one stack of links, so a level that only changes the bars does not
-// restart the links. Cross-ties add the bar sizes on each face to the key, because their hooks depend on them, so a run with cross-ties
-// restarts where the bars change. A run starts at its first level's bottom and ends where the next run starts (the top run ends at the
-// member's top).
-function linkRuns(rows, covB, covT, lz) {
-  const runs = [];
-  rows.forEach((r, k) => {
+// Link zones from the bottom of the member up (resolved rows, bottom first). A storey's links run from its SFL up to the slab of the level
+// above. That slab sits below the level's SFL, so it is the top of this storey: its zone runs from the slab's bottom up to the SFL. The zone
+// takes the links given on its own level, or the storey's links when none are given. Each zone carries the bar sizes of the storey it lies
+// in, for the hooks of its cross links. The first zone starts at the member's bottom cover, and the last ends at its top cover.
+export function linkZones(rows, covB, covT, lz) {
+  const zones = [];
+  rows.forEach((r, j) => {
     const dias = faceDias(r);
-    const key = `${r.links.spacing}|${r.links.cross.length ? `${JSON.stringify(r.links.cross)}|${dias.long}|${dias.short}` : 'none'}`;
-    const last = runs[runs.length - 1];
-    if (last && last.key === key) return;
-    runs.push({
-      key, bottom: k === 0 ? covB : r.h, spacing: r.links.spacing, cross: r.links.cross, longDia: dias.long, shortDia: dias.short,
-    });
+    const next = rows[j + 1];
+    const slab = next && next.slab ? next.slab : null;
+    const top = slab ? next.h - slab.mm : next ? next.h : lz - covT;
+    zones.push({ bottom: j === 0 ? covB : r.h, top, links: r.links, longDia: dias.long, shortDia: dias.short, name: `${r.name} storey` });
+    if (slab) zones.push({ bottom: top, top: next.h, links: slab.links || r.links, longDia: dias.long, shortDia: dias.short, name: `${next.name} slab` });
   });
-  return runs.map((run, i) => ({ ...run, top: i < runs.length - 1 ? runs[i + 1].bottom : lz - covT }));
+  return zones;
+}
+
+// Link runs: neighbouring zones with the same link spacing and cross links share one stack of links, so a level that only changes the bars
+// does not restart the links. Cross links add the bar sizes to the key, because their hooks depend on them. A run starts at its first
+// zone's bottom and ends where the next run starts (the top run ends at the member's top cover).
+function linkRuns(zones) {
+  const runs = [];
+  for (const z of zones) {
+    const key = `${z.links.spacing}|${z.links.cross.length ? `${JSON.stringify(z.links.cross)}|${z.longDia}|${z.shortDia}` : 'none'}`;
+    const last = runs[runs.length - 1];
+    if (last && last.key === key) continue;
+    runs.push({ key, bottom: z.bottom, spacing: z.links.spacing, cross: z.links.cross, longDia: z.longDia, shortDia: z.shortDia });
+  }
+  return runs.map((run, i) => ({ ...run, top: i < runs.length - 1 ? runs[i + 1].bottom : zones[zones.length - 1].top }));
 }
 
 // The bars a cross-tie can hook, by direction. Along Y: the interior bars of the bottom row that have a bar at the same x on the top row.
@@ -515,7 +603,7 @@ function columnPlan(member, inp, cover, covB, covT) {
     splices[face] = resolveLevels(levels, { mainDia: faceDias(bottom)[face], covB, covT, lz: member.lz });
     if (!splices[face].ok) return splices[face];
   }
-  const runs = linkRuns(sch.rows, covB, covT, member.lz);
+  const runs = linkRuns(linkZones(sch.rows, covB, covT, member.lz));
   if (runs.some((run) => !(run.top - run.bottom - dL > 0))) {
     return { ok: false, msg: 'A stretch of the schedule is too short for its links: keep each level clear of the next and of the top.' };
   }
