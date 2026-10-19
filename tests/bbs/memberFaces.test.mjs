@@ -1,34 +1,42 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  defaultCardInputs, facePositions, faceDias, levelDefaults, memberGroups, parseFaceBars, parseMainBars, resolveSchedule,
+  barsText, defaultCardInputs, facePositions, faceDias, levelDefaults, memberGroups, resolveSchedule,
 } from '../../src/bbs/memberReinforcement.js';
 
 const near = (a, b, tol = 0.05) => assert.ok(Math.abs(a - b) <= tol, `${a} != ${b}`);
 const group = (res, name) => res.groups.find((g) => g.name === name);
 const dias = (rows) => rows.reduce((m, r) => ({ ...m, [r.Dia]: (m[r.Dia] || 0) + 1 }), {});
 
-// Column 1: 2500 x 1000 x 4500, cover 40. The long faces (along X) take 44H40 and the short faces 8H32: 22 bars on each long face
-// (corners included) and 4 between the corners on each short face.
+// Column 1: 2500 x 1000 x 4500, cover 40. In the "long and short faces" layout, 44H40 is on the long faces (22 on each, corners
+// included) and 8H32 on the short faces (4 on each, between the corners).
 const COLUMN1 = { id: 'c4', name: 'C1', kind: 'COLUMN', lx: 2500, ly: 1000, lz: 4500, x: 0, y: 0, z: 0, covB: 40, covT: 40 };
-const FACES = '44H40 long + 8H32 short';
-const inputs = (schedule, layout = 'all') => ({
+const inputs = (schedule, layout = 'faces') => ({
   ...defaultCardInputs(40),
   kind: 'Column',
   column: { layout, lap: null, schedule },
   starters: { base: true, top: true, dia: null, lap: null, anchorage: null, bend: null },
 });
-const base = (over = {}) => ({ name: 'Base', sfl: 0, size: '2500 x 1000', bars: FACES, links: 'H10-100 + 2H10-150 X + 6H10-150 Y', ...over });
-const level2 = (over = {}) => ({ name: 'Level 2', sfl: 2.5, size: 'same', bars: 'same', links: 'same', ...over });
+const base = (over = {}) => ({
+  name: 'Base', sfl: 0, size: '2500 x 1000', barsLong: '44H40', barsShort: '8H32', links: 'H10-100 + 2H10-150 X + 6H10-150 Y', ...over,
+});
+const level2 = (over = {}) => ({ name: 'Level 2', sfl: 2.5, size: 'same', barsLong: 'same', barsShort: 'same', links: 'same', ...over });
 
-test('the long and short faces read as separate counts and sizes, in either order', () => {
-  assert.deepEqual(parseFaceBars(FACES), { long: { count: 44, dia: 40 }, short: { count: 8, dia: 32 } });
-  assert.deepEqual(parseFaceBars('8H32 short + 44H40 long'), { long: { count: 44, dia: 40 }, short: { count: 8, dia: 32 } });
-  assert.equal(parseFaceBars('44H40 long'), null);
-  assert.equal(parseFaceBars('44H40 long + 8H32 long'), null);
-  assert.equal(parseFaceBars('44H40 long + 8H32 short + 4H25 short'), null);
-  assert.equal(parseFaceBars('44H25'), null);
-  assert.equal(parseMainBars(FACES), null);
+test('one MAIN BARS cell per face: the long faces take 44H40, the short faces 8H32, 52 bars in all', () => {
+  const r = resolveSchedule([base()], { lx: 2500, ly: 1000, layout: 'faces' });
+  assert.equal(r.ok, true, r.msg);
+  assert.equal(r.count, 52);
+  assert.deepEqual(faceDias(r.rows[0]), { long: 40, short: 32 });
+  assert.deepEqual(r.rows[0].bars.faces.long, { count: 44, dia: 40 });
+  assert.deepEqual(r.rows[0].bars.faces.short, { count: 8, dia: 32 });
+  assert.equal(barsText(r.rows[0].bars), '44 × H40 long + 8 × H32 short');
+});
+
+test('the one-size layout refuses the long-and-short notation, and says which layout to use', () => {
+  const r = resolveSchedule([{ ...base(), bars: '44H40 long + 8H32 short' }], { lx: 2500, ly: 1000, layout: 'all' });
+  assert.equal(r.ok, false);
+  assert.match(r.msg, /Could not read MAIN BARS "44H40 long \+ 8H32 short" on Base/);
+  assert.match(r.msg, /For long and short faces, choose that layout/);
 });
 
 test('bars on the long faces run corner to corner; the short faces take the bars between their corners', () => {
@@ -53,13 +61,18 @@ test('bars on the long faces run corner to corner; the short faces take the bars
   assert.deepEqual(right.map(([, y]) => Math.round(y)), [250, 420, 590, 760]);
 });
 
-test('a row with long and short faces resolves to 52 bars with each face\'s size, and its counts must stay the same up the column', () => {
-  const r = resolveSchedule([base()], { lx: 2500, ly: 1000, layout: 'all' });
+test('same as below takes each face from the level under it, one face at a time', () => {
+  const r = resolveSchedule([level2({ barsShort: '8H32' }), base()], { lx: 2500, ly: 1000, layout: 'faces' });
   assert.equal(r.ok, true, r.msg);
-  assert.equal(r.count, 52);
-  assert.deepEqual(faceDias(r.rows[0]), { long: 40, short: 32 });
-  assert.deepEqual(r.rows[0].bars.faces.long, { count: 44, dia: 40 });
-  assert.deepEqual(r.rows[0].bars.faces.short, { count: 8, dia: 32 });
+  assert.deepEqual(r.rows[1].bars.faces.long, { count: 44, dia: 40 });
+  assert.deepEqual(r.rows[1].bars.faces.short, { count: 8, dia: 32 });
+});
+
+test('the bottom row needs both face cells, and an unreadable cell names its face', () => {
+  const noLong = resolveSchedule([base({ barsLong: 'same' })], { lx: 2500, ly: 1000, layout: 'faces' });
+  assert.match(noLong.msg, /The bottom row needs its own MAIN BARS on the long faces/);
+  const typo = resolveSchedule([base({ barsShort: '8 bars' })], { lx: 2500, ly: 1000, layout: 'faces' });
+  assert.match(typo.msg, /Could not read MAIN BARS on the short faces "8 bars" on Base/);
 });
 
 test('column 1: 44H40 long, 8H32 short, 2 X and 6 Y cross-ties at 150, adds 165 rows', () => {
@@ -112,8 +125,8 @@ test('column 1: 44H40 long, 8H32 short, 2 X and 6 Y cross-ties at 150, adds 165 
   near(cx[1].Pos_y, 569, 0.01);
 });
 
-test('two levels, long faces 40 then 32 and short faces 32 throughout: each face laps with its own lap and crank', () => {
-  const rows = [level2({ bars: '44H32 long + 8H32 short' }), base({ links: 'H10-100' })];
+test('two levels: the long faces go 40 then 32 and the short faces stay 32, each face laps with its own lap and crank', () => {
+  const rows = [level2({ barsLong: '44H32', barsShort: '8H32' }), base({ links: 'H10-100' })];
   const res = memberGroups(COLUMN1, inputs(rows), { neighbours: [] });
   assert.equal(res.ok, true, res.msg);
   const mains = group(res, 'C1 mains').rows;
@@ -138,17 +151,13 @@ test('the starters take each face\'s bar: H40 on the long faces, H32 on the shor
   assert.deepEqual(dias(st.filter((r) => r.Bar_mark.startsWith('ST2-'))), { 32: 8, 40: 44 });
 });
 
-test('per-face bars are refused where the layout, the member or the counts cannot take them', () => {
-  const two = memberGroups(COLUMN1, inputs([base()], 'x'), { neighbours: [] });
-  assert.equal(two.ok, false);
-  assert.match(two.msg, /All faces layout/);
-  const odd = memberGroups(COLUMN1, inputs([base({ bars: '45H40 long + 8H32 short' })]), { neighbours: [] });
+test('per-face bars are refused where the counts or the member cannot take them', () => {
+  const odd = memberGroups(COLUMN1, inputs([base({ barsLong: '45H40' })]), { neighbours: [] });
+  assert.equal(odd.ok, false);
   assert.match(odd.msg, /even count/);
   const square = memberGroups({ ...COLUMN1, lx: 800, ly: 800 }, inputs([base({ size: '800 x 800' })]), { neighbours: [] });
   assert.match(square.msg, /longer one way/);
-  const mixed = memberGroups(COLUMN1, inputs([level2({ bars: '44H32' }), base()]), { neighbours: [] });
-  assert.match(mixed.msg, /mixes one size/);
-  const counts = memberGroups(COLUMN1, inputs([level2({ bars: '46H40 long + 8H32 short' }), base()]), { neighbours: [] });
+  const counts = memberGroups(COLUMN1, inputs([level2({ barsLong: '46H40' }), base()]), { neighbours: [] });
   assert.match(counts.msg, /counts on each pair of faces must stay the same/);
 });
 
@@ -180,4 +189,26 @@ test('a member longer along Y has its long faces as the left and right columns, 
     assert.equal(r.c_length_b, 52); // Y ties hold the short faces at the top and bottom
     near(r.length, 2400, 0.01); // 2358 between the rows plus 42
   }
+});
+
+test('a level above the top names the level and both heights, so a short member is easy to spot', () => {
+  const res = memberGroups(COLUMN1, inputs([level2({ sfl: 9 }), base()]), { neighbours: [] });
+  assert.equal(res.ok, false);
+  assert.match(res.msg, /Level 2 is 9000 mm above the base, but this member is only 4500 mm high, so the level is not below its top/);
+});
+
+test('SFL is in metres: the drawing\'s values fit a 12 m member, and a millimetre value is refused by name', () => {
+  const tall = { ...COLUMN1, lz: 12000 };
+  const drawing = [
+    level2({ name: 'B2 concourse', sfl: -12.27, barsLong: 'same', barsShort: 'same' }),
+    level2({ name: 'B3 platform', sfl: -18.57, barsLong: 'same', barsShort: 'same' }),
+    base({ name: 'B3 underplatform', sfl: -20.87, links: 'H10-150' }),
+  ];
+  const ok = memberGroups(tall, inputs(drawing), { neighbours: [] });
+  assert.equal(ok.ok, true, ok.msg);
+  assert.deepEqual(resolveSchedule(drawing, { lx: 2500, ly: 1000, layout: 'faces' }).rows.map((r) => r.h), [0, 2300, 8600]);
+  const mm = [level2({ name: 'B2 concourse', sfl: -12270 }), base({ name: 'B3 underplatform', sfl: -20870, links: 'H10-150' })];
+  const refused = memberGroups(tall, inputs(mm), { neighbours: [] });
+  assert.equal(refused.ok, false);
+  assert.match(refused.msg, /B3 underplatform: SFL -20870 is over 1000 m/);
 });

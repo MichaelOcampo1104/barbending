@@ -52,6 +52,15 @@ const typeField = (b, field, index, value) => b.ev(`(() => {
   return true;
 })()`);
 
+// Picks an option of the card's Layout select, through React's own change handling.
+const pickLayout = (b, value) => b.ev(`(() => {
+  const select = document.querySelector('.memberCard select');
+  if (!select) return false;
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, ${JSON.stringify(value)});
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+})()`);
+
 const b = await launchBrowser({ width: 1600, height: 1000 });
 try {
   // ?autotest exposes window.__store (the store is driven through it, as in check_bbs.mjs)
@@ -114,7 +123,9 @@ try {
   // Long and short faces: 44H40 on the long faces (the bottom and top rows) and 8H32 on the short, with 2 X and 6 Y cross-ties at 150.
   await b.ev(`window.__store.getState().selectConcrete('c3')`);
   report(await waitFor(b, `document.querySelector('.memberCard') && window.__store.getState().selectedConcrete === 'c3'`), 'selecting the rectangular column moves the card to it');
-  await typeField(b, 'bars', 0, '44H40 long + 8H32 short');
+  await pickLayout(b, 'faces');
+  await typeField(b, 'barslong', 0, '44H40');
+  await typeField(b, 'barsshort', 0, '8H32');
   await typeField(b, 'links', 0, 'H10-100 + 2H10-150 X + 6H10-150 Y');
   report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('44 × H40 long + 8 × H32 short')`), 'the read-back shows the long and short faces');
   await clickInCard(b, '▦ Generate sets');
@@ -130,6 +141,16 @@ try {
   })()`), 'Y ties hook the H40 long-face bars (hook 60), X ties the H32 short-face bars (hook 52)');
   await b.ev(`window.__store.getState().undo()`);
   report(await waitFor(b, `window.__store.getState().bars.length === 0`), 'one undo removes the rectangular column\'s sets');
+
+  // Heights: a level 9 m above the base of the 4.5 m member is refused by name, with both heights. A millimetre SFL is refused with the metres to type.
+  await clickInCard(b, '+ Level above the top');
+  report(await waitFor(b, `document.querySelectorAll('.memberCard input[data-field="sfl"]').length === 2`), 'a level row appears above the base of R1');
+  await typeField(b, 'sfl', 0, '9');
+  report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('is 9000 mm above the base, but this member is only 4500 mm high')`), 'a level 9 m above the base is refused, with its height and the member height');
+  await typeField(b, 'sfl', 0, '-20870');
+  report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('is over 1000 m')`), 'an SFL typed in millimetres is refused, with the metres to type');
+  await clickInCard(b, '× Remove');
+  report(await waitFor(b, `document.querySelectorAll('.memberCard input[data-field="sfl"]').length === 1`), 'the test level is removed again');
 
   // Wall: select the wall, switch the card to Wall, generate.
   await b.ev(`window.__store.getState().selectConcrete('c2')`);

@@ -14,7 +14,9 @@ const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Num
 // A placeholder for a value that differs between the long and the short faces ("1650 / 1290"), or the one value when they match.
 const pair = (long, short) => (long === short ? String(long) : `${long} / ${short}`);
 let rowSeq = 0;
-const newRow = (over = {}) => ({ id: ++rowSeq, name: '', sfl: '', size: 'same', bars: 'same', links: 'same', lap: '', step: '', jog: '', ...over });
+const newRow = (over = {}) => ({
+  id: ++rowSeq, name: '', sfl: '', size: 'same', bars: 'same', barsLong: 'same', barsShort: 'same', links: 'same', lap: '', step: '', jog: '', ...over,
+});
 
 function formOf(member, cover) {
   const d = defaultCardInputs(cover);
@@ -29,6 +31,8 @@ function formOf(member, cover) {
         sfl: '0',
         size: `${Math.round(member.lx)} x ${Math.round(member.ly)}`,
         bars: `${d.column.mainCount}H${d.column.mainDia}`,
+        barsLong: `${d.column.mainCount}H${d.column.mainDia}`,
+        barsShort: `${d.column.mainCount}H${d.column.mainDia}`,
         links: `H${d.column.linkDia}-${d.column.linkSpacing}`,
       })],
     },
@@ -46,7 +50,7 @@ function inputsOf(f, cover) {
       layout: f.column.layout,
       lap: numOrNull(f.column.lap),
       schedule: f.column.schedule.map((r) => ({
-        name: r.name, sfl: numOrNull(r.sfl), size: r.size, bars: r.bars, links: r.links,
+        name: r.name, sfl: numOrNull(r.sfl), size: r.size, bars: r.bars, barsLong: r.barsLong, barsShort: r.barsShort, links: r.links,
         lap: numOrNull(r.lap), step: numOrNull(r.step), jog: numOrNull(r.jog),
       })),
     },
@@ -82,10 +86,10 @@ function TextField({ label, value, placeholder, onChange }) {
 }
 
 // One drawing cell: the value as the drawing writes it, and "= below" to take the level under it.
-function CellField({ label, field, value, placeholder, canSame, onChange }) {
+function CellField({ label, field, value, placeholder, canSame, onChange, labelWidth = 84 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '2px 0' }}>
-      <span style={{ width: 84, fontSize: 11, color: '#9fb0cc' }}>{label}</span>
+      <span style={{ width: labelWidth, fontSize: 11, color: '#9fb0cc' }}>{label}</span>
       <div className="fld" style={{ flex: 1, margin: 0 }}>
         <input type="text" data-field={field} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
       </div>
@@ -148,10 +152,11 @@ export default function MemberCard({ member }) {
       {form.kind === 'Column' ? (
         <>
           <div className="grid3">
-            <label className="fld">
+            <label className="fld" style={{ gridColumn: '1 / -1' }}>
               <span>Layout</span>
               <select value={form.column.layout} onChange={(e) => patch('column', 'layout', e.target.value)}>
-                <option value="all">All faces</option>
+                <option value="all">All faces, one size</option>
+                <option value="faces">All faces, long and short faces</option>
                 <option value="x">Two faces (bars along X)</option>
                 <option value="y">Two faces (bars along Y)</option>
               </select>
@@ -160,8 +165,8 @@ export default function MemberCard({ member }) {
           </div>
 
           <div className="sect">Schedule: top level first, as in the drawing</div>
-          <div className="distnote">SFL is in metres. Heights are the differences between SFLs. “= below” takes the level under it.</div>
-          <div className="distnote">MAIN BARS: 44H25 for one size on every face, or 44H40 long + 8H32 short (each count is for a pair of faces; the long faces take the corners).</div>
+          <div className="distnote">SFL is in metres: -20.870, not -20870. Each level is a height above the base, so it must lie between the base and the top of this member. “= below” takes the level under it.</div>
+          <div className="distnote">MAIN BARS: one size on every face (44H25), or with “All faces, long and short faces”, the long faces (44H40) and the short faces (8H32) in their own cells. Each count is for a pair of faces, and the long faces take the corners.</div>
           {rows.map((row, i) => {
             const idx = rowsRes ? rowsRes.length - 1 - i : -1;
             const rr = idx >= 0 ? rowsRes[idx] : null;
@@ -181,8 +186,17 @@ export default function MemberCard({ member }) {
                 </div>
                 <CellField label="SIZE" field="size" value={row.size} placeholder="2500 x 1000" canSame={!isBottom}
                   onChange={(v) => patchRow(row.id, 'size', v)} />
-                <CellField label="MAIN BARS" field="bars" value={row.bars} placeholder="44H25" canSame={!isBottom}
-                  onChange={(v) => patchRow(row.id, 'bars', v)} />
+                {form.column.layout === 'faces' ? (
+                  <>
+                    <CellField label="MAIN BARS long face" labelWidth={124} field="barslong" value={row.barsLong} placeholder="44H40" canSame={!isBottom}
+                      onChange={(v) => patchRow(row.id, 'barsLong', v)} />
+                    <CellField label="MAIN BARS short face" labelWidth={124} field="barsshort" value={row.barsShort} placeholder="8H32" canSame={!isBottom}
+                      onChange={(v) => patchRow(row.id, 'barsShort', v)} />
+                  </>
+                ) : (
+                  <CellField label="MAIN BARS" field="bars" value={row.bars} placeholder="44H25" canSame={!isBottom}
+                    onChange={(v) => patchRow(row.id, 'bars', v)} />
+                )}
                 <CellField label="LINKS" field="links" value={row.links} placeholder="H10-100 + 4H10-100 X + 6H10-100 Y" canSame={!isBottom}
                   onChange={(v) => patchRow(row.id, 'links', v)} />
                 {!isBottom && (
@@ -203,9 +217,10 @@ export default function MemberCard({ member }) {
           </div>
           {rowsRes && (
             <div className="distnote" style={{ marginTop: 4 }}>
+              <div>Heights are above the base. This member is {Math.round(member.lz)} mm high.</div>
               {rowsRes.slice().reverse().map((r) => (
                 <div key={r.h}>
-                  {r.name}: {barsText(r.bars)}, links H{r.links.dia} @{r.links.spacing}
+                  {r.name}{r.h ? ` at ${r.h} mm` : ''}: {barsText(r.bars)}, links H{r.links.dia} @{r.links.spacing}
                   {r.links.cross.map((g) => `, + ${g.count} hooked cross-ties ${g.dir} H${g.dia} @${g.spacing}`).join('')}
                 </div>
               ))}

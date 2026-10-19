@@ -143,8 +143,15 @@ export function resolveLevels(levels, { mainDia, covB, covT, lz }) {
   let dBelow = mainDia;
   for (const l of sorted) {
     const level = num(l.level), dia = num(l.dia);
-    if (!(level > 0 && level < lz)) return { ok: false, msg: 'Each level must be above the base and below the top.' };
-    if (!(dia > 0)) return { ok: false, msg: 'Each level needs a bar Ø above it.' };
+    const name = l.name || 'A level';
+    if (!(level > 0)) return { ok: false, msg: `${name} is not above the base.` };
+    if (!(level < lz)) {
+      return {
+        ok: false,
+        msg: `${name} is ${Math.round(level)} mm above the base, but this member is only ${Math.round(lz)} mm high, so the level is not below its top. Make the member taller, or take this level and the ones above it out of this member's schedule.`,
+      };
+    }
+    if (!(dia > 0)) return { ok: false, msg: `${name} needs a bar Ø above it.` };
     const d = levelDefaults(dBelow, dia);
     const lap = orDefault(l.lap, d.lap), step = orDefault(l.step, d.step), jog = orDefault(l.jog, d.jog);
     if (!(lap > 0)) return { ok: false, msg: 'A level\'s lap must be above zero.' };
@@ -275,7 +282,7 @@ const BARS_RE = /^\s*(\d+)\s*[Hh]\s*(\d+)\s*$/;
 // A group with no letter runs along Y, as in H10-150 + 6H10-150.
 const LINK_OUTER_RE = /^\s*(?:(\d+)\s*)?[Hh]\s*(\d+)\s*-\s*(\d+)\s*$/;
 const LINK_CROSS_RE = /^\s*(\d+)\s*[Hh]\s*(\d+)\s*-\s*(\d+)\s*([XxYy])?\s*$/;
-const EXAMPLE = { size: '2500 x 1000', bars: '44H25, or 44H40 long + 8H32 short', links: 'H10-100 + 4H10-100 X + 6H10-100 Y' };
+const EXAMPLE = { size: '2500 x 1000', bars: '44H25', links: 'H10-100 + 4H10-100 X + 6H10-100 Y' };
 
 export const isSameBelow = (v) => SAME_RE.test(String(v ?? ''));
 
@@ -289,30 +296,6 @@ export function parseSize(text) {
 export function parseMainBars(text) {
   const m = BARS_RE.exec(String(text ?? ''));
   return m ? { count: Number(m[1]), dia: Number(m[2]) } : null;
-}
-
-// "44H40 long + 8H32 short" (each count is for a pair of faces) → { long: { count, dia }, short: { count, dia } }, or null.
-const FACE_BARS_RE = /^\s*(\d+)\s*[Hh]\s*(\d+)\s*(long|short)\s*$/i;
-export function parseFaceBars(text) {
-  const parts = String(text ?? '').split('+');
-  if (parts.length !== 2) return null;
-  const faces = {};
-  for (const part of parts) {
-    const m = FACE_BARS_RE.exec(part);
-    if (!m) return null;
-    const face = m[3].toLowerCase();
-    if (faces[face]) return null;
-    faces[face] = { count: Number(m[1]), dia: Number(m[2]) };
-  }
-  return faces.long && faces.short ? faces : null;
-}
-
-// A MAIN BARS cell: one size on every face ("44H25"), or long and short faces → { count, dia, faces? }, or null. `count` is the total
-// bars, `dia` the long faces' Ø, and `faces` is set only for long and short faces.
-function parseBars(text) {
-  const faces = parseFaceBars(text);
-  if (faces) return { count: faces.long.count + faces.short.count, dia: faces.long.dia, faces };
-  return parseMainBars(text);
 }
 
 // The bar Ø on the long and the short faces of a resolved row (one size gives the same Ø on both).
@@ -354,6 +337,8 @@ export function parseLinks(text) {
 export function resolveSchedule(rowsTopFirst, { lx, ly, layout = 'all' }) {
   const bottomUp = [...(rowsTopFirst || [])].reverse();
   if (!bottomUp.length) return { ok: false, msg: 'Add at least one level to the schedule.' };
+  const twoFaces = layout === 'x' || layout === 'y';   // bars on two faces only, one size
+  const faces = layout === 'faces';                    // long and short faces, one MAIN BARS cell each
   const out = [];
   for (let k = 0; k < bottomUp.length; k++) {
     const r = bottomUp[k];
@@ -362,16 +347,34 @@ export function resolveSchedule(rowsTopFirst, { lx, ly, layout = 'all' }) {
       const raw = String(r[key] ?? '').trim();
       if (SAME_RE.test(raw)) return k === 0 ? { error: `The bottom row needs its own ${label}.` } : { value: out[k - 1][key] };
       const value = parse(raw);
-      return value ? { value } : { error: `Could not read ${label} "${raw}" on ${name}. Write it as in the drawing, for example ${EXAMPLE[key]}.` };
+      const hint = key === 'bars' && !faces ? ' For long and short faces, choose that layout and give each face its own cell.' : '';
+      return value ? { value } : { error: `Could not read ${label} "${raw}" on ${name}. Write it as in the drawing, for example ${EXAMPLE[key]}.${hint}` };
+    };
+    // Long and short faces: one MAIN BARS cell per face, as "44H40" and "8H32". "same as below" takes that face's bars from the level under it.
+    const faceCell = (key, label, face) => {
+      const raw = String(r[key] ?? '').trim();
+      if (SAME_RE.test(raw)) return k === 0 ? { error: `The bottom row needs its own ${label}.` } : { value: out[k - 1].bars.faces[face] };
+      const value = parseMainBars(raw);
+      return value ? { value } : { error: `Could not read ${label} "${raw}" on ${name}. Write it as in the drawing, for example 44H40.` };
     };
     const size = cell('size', 'SIZE', parseSize);
     if (size.error) return { ok: false, msg: size.error };
-    const bars = cell('bars', 'MAIN BARS', parseBars);
+    let bars;
+    if (faces) {
+      const long = faceCell('barsLong', 'MAIN BARS on the long faces', 'long');
+      const short = faceCell('barsShort', 'MAIN BARS on the short faces', 'short');
+      if (long.error || short.error) return { ok: false, msg: long.error || short.error };
+      bars = { value: { count: long.value.count + short.value.count, dia: long.value.dia, faces: { long: long.value, short: short.value } } };
+    } else {
+      bars = cell('bars', 'MAIN BARS', parseMainBars);
+    }
     if (bars.error) return { ok: false, msg: bars.error };
     const links = cell('links', 'LINKS', parseLinks);
     if (links.error) return { ok: false, msg: links.error };
     const sfl = Number(r.sfl);
     if (isBlank(r.sfl) || !Number.isFinite(sfl)) return { ok: false, msg: `Give ${name} its SFL (m).` };
+    // SFL is in metres. A millimetre value (-20870) would put every level thousands of metres from the base, so it is refused by name.
+    if (Math.abs(sfl) >= 1000) return { ok: false, msg: `${name}: SFL ${sfl} is over 1000 m. SFL is in metres, so type the drawing's value (for example -20.870, not -20870).` };
     if (k > 0 && !(sfl > out[k - 1].sfl)) return { ok: false, msg: `${name}: SFL ${sfl} m must be above the level below (${out[k - 1].sfl} m).` };
     out.push({
       name,
@@ -386,20 +389,16 @@ export function resolveSchedule(rowsTopFirst, { lx, ly, layout = 'all' }) {
     });
   }
   const first = out[0];
-  const need = layout === 'all' ? 4 : 2;
+  const need = twoFaces ? 2 : 4;
   if (!(Number.isInteger(first.bars.count) && first.bars.count >= need)) {
-    return { ok: false, msg: layout === 'all' ? 'All faces needs at least 4 bars.' : 'Two faces needs at least 2 bars per face.' };
+    return { ok: false, msg: twoFaces ? 'Two faces needs at least 2 bars per face.' : 'All faces needs at least 4 bars.' };
   }
-  if (first.bars.faces && layout !== 'all') return { ok: false, msg: 'Long and short faces need the All faces layout.' };
-  if (first.bars.faces && Math.round(lx) === Math.round(ly)) {
+  if (faces && Math.round(lx) === Math.round(ly)) {
     return { ok: false, msg: 'Long and short faces need a member longer one way than the other.' };
   }
   for (const r of out) {
     if (Math.round(lx) !== r.size.lx || Math.round(ly) !== r.size.ly) {
       return { ok: false, msg: `SIZE ${r.size.lx} x ${r.size.ly} on ${r.name} does not match this member (${Math.round(lx)} x ${Math.round(ly)}).` };
-    }
-    if (!!r.bars.faces !== !!first.bars.faces) {
-      return { ok: false, msg: `MAIN BARS on ${r.name} mixes one size with long and short faces. Give every level the same form.` };
     }
     if (r.bars.faces) {
       const { long, short } = r.bars.faces;
@@ -439,7 +438,7 @@ export function resolveSchedule(rowsTopFirst, { lx, ly, layout = 'all' }) {
 // The simple inputs (main Ø, bar count, link Ø and spacing, levels) read as a schedule: the base level, then one level per entry in
 // `levels`, which keeps the links as the level below. Returned top first, like the drawing.
 function scheduleOfSimple(member, c) {
-  const count = c.layout === 'all' ? num(c.mainCount) : num(c.faceCount);
+  const count = c.layout === 'x' || c.layout === 'y' ? num(c.faceCount) : num(c.mainCount);
   const rows = [{
     name: 'Base',
     sfl: 0,
@@ -512,7 +511,7 @@ function columnPlan(member, inp, cover, covB, covT) {
   // out face by face: a bar laps the bar of its own face.
   const splices = {};
   for (const face of ['long', 'short']) {
-    const levels = sch.rows.slice(1).map((r) => ({ level: r.h, dia: faceDias(r)[face], lap: r.lap, step: r.step, jog: r.jog }));
+    const levels = sch.rows.slice(1).map((r) => ({ name: r.name, level: r.h, dia: faceDias(r)[face], lap: r.lap, step: r.step, jog: r.jog }));
     splices[face] = resolveLevels(levels, { mainDia: faceDias(bottom)[face], covB, covT, lz: member.lz });
     if (!splices[face].ok) return splices[face];
   }
@@ -532,9 +531,9 @@ function columnPlan(member, inp, cover, covB, covT) {
     x1: member.lx - (cover + dL + maxDia(xFace) / 2),
     y1: member.ly - (cover + dL + maxDia(yFace) / 2),
   };
-  const positions = c.layout === 'all'
-    ? (bottom.bars.faces ? facePositions(box, bottom.bars.faces, longAxis) : ringPositions(box, sch.count))
-    : faceRowPositions(box, sch.count, c.layout === 'y' ? 'y' : 'x');
+  const positions = c.layout === 'x' || c.layout === 'y'
+    ? faceRowPositions(box, sch.count, c.layout)
+    : (bottom.bars.faces ? facePositions(box, bottom.bars.faces, longAxis) : ringPositions(box, sch.count));
   const faceOf = positions.map((p) => faceOfBar(p, box, longAxis));
   const candidates = { X: crossCandidates(positions, box, 'X'), Y: crossCandidates(positions, box, 'Y') };
   for (const run of runs) {
