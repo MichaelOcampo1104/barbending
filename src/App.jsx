@@ -14,6 +14,7 @@ import { cleanViewerTitle, parseProjectFile, DEFAULT_VIEWER_TITLE } from './stan
 import BbsTable from './bbs/BbsTable.jsx';
 import BbsGroups from './bbs/BbsGroups.jsx';
 import GroupName from './bbs/GroupName.jsx';
+import MemberCard from './bbs/MemberCard.jsx';
 import { flattenItems, makeRowFilter, filterGroups, groupBySet } from './bbs/tableView.js';
 import { selectionStats } from './bbs/groups.js';
 import { addSelectedToGroup, removeSelectedFromGroup } from './bbs/groupCommands.js';
@@ -816,6 +817,8 @@ function ConcreteEditor() {
             <div className="distnote" style={{ marginTop: 2 }} title={concreteVolumeSource(c) === 'mesh' ? 'Exact mesh volume: retraced IFC profile incl. openings/chamfers — this is the BBS take-off' : 'Lx·Ly·Lz box volume — this is the BBS take-off'}>
               Volume {concreteVolumeM3(c).toFixed(3)} m³ {concreteVolumeSource(c) === 'mesh' ? '(✨ exact mesh)' : '(box)'}
             </div>
+
+            {c.id === selectedConcrete && <MemberCard member={c} />}
 
             {/* Quick Ref Line Helpers & Attached Ref Lines */}
             <div className="refline-section" onClick={(e) => e.stopPropagation()}>

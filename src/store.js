@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { defaultBar, defaultBarForHost, resolveBarHost, genBarPoints, barMainLength, barSpliceEnds, distToBar, barOverlapsBoxes, buildFaceBar, buildSlopedFaceRows, applyTypeDefaults } from './bbs/shapes.js';
 import { lapLengthMm, lapBondFor } from './bbs/calc.js';
-import { renameGroupRows, addToGroupRows, removeFromGroupRows } from './bbs/groups.js';
+import { renameGroupRows, addToGroupRows, removeFromGroupRows, checkGroupName } from './bbs/groups.js';
 import { defaultSectionBox, normalizeSection } from './viewer/sectionPlanes.js';
 import { isAxisView } from './viewer/cameraMath.js';
 
@@ -921,6 +921,37 @@ export const useStore = create((set, get) => ({
       selectedConcrete: bars[0].host || state.selectedConcrete,
     }));
     return bars.map((_, i) => first + i);
+  },
+  // Member reinforcement card (src/bbs/memberReinforcement.js): each group becomes a ▦ set named by its `name`, the rows are numbered
+  // in sequence, and everything is one undo step. Names are checked first (unused, at most 40 characters), so a refusal changes nothing.
+  addMemberRows: (groups) => {
+    const s0 = get();
+    const list = (Array.isArray(groups) ? groups : []).filter((g) => g && g.rows && g.rows.length);
+    if (!list.length) return { ok: false, msg: 'Nothing to add.' };
+    const names = [];
+    for (const g of list) {
+      const chk = checkGroupName(g.name, s0.bars);
+      if (!chk.ok) return chk;
+      if (names.includes(chk.name.toLowerCase())) return { ok: false, msg: `The set name "${chk.name}" is used twice.` };
+      names.push(chk.name.toLowerCase());
+    }
+    tagSeq = Math.max(tagSeq + 1, s0.bars.length + 1);
+    const first = s0.bars.length;
+    const rows = [];
+    for (const g of list) {
+      const setId = checkGroupName(g.name, s0.bars).name;
+      for (const row of g.rows) {
+        rows.push({ ...row, Rebar_tag: tagSeq, setId });
+        tagSeq += 1;
+      }
+    }
+    set((state) => withHist(state, {
+      bars: [...state.bars, ...rows],
+      selectedBar: state.bars.length + rows.length - 1,
+      selectedBars: rows.map((_, i) => first + i),
+      selectedConcrete: rows[0].host || state.selectedConcrete,
+    }));
+    return { ok: true, count: rows.length, sets: list.length };
   },
   // All live indices carrying a setId, in bar order.
   setIndices: (setId) => {
