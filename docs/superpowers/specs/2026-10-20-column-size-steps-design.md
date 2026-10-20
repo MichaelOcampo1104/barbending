@@ -26,7 +26,11 @@ Derived: the roof soffit is +0.030, which is 20900 mm above the base, so the mem
 
 R1. **Size step.** A level whose SIZE differs from the level below starts a new section at its SFL. The upper section is centred on the lower one (3200 to 2400: 400 mm at each end).
 
-R2. **Termination at a size step.** The lower section's bars and the upper section's starters are both anchored in the step's slab, each bent horizontally inside it. The upper bars do not lap the lower bars, because the two rings do not line up (40 upper bars against 48 lower bars). The lower bends sit one cover above the soffit, and the upper bends one bar diameter above them (the larger of the two bars). The horizontal leg is the anchorage, defaulting to the bar's lap length (2240 for H40, 1650 for H32, 1290 for H25). There is no crank and no jog at the step.
+R2. **Bars at a size step (revised 2026-10-20 after your answer on lapped starters).** Each lower bar is sorted by where it lands in the new section's envelope (the box centred on the base):
+- **Inside the envelope:** the bar laps as usual at the step: its crank (the usual crank for the larger bar, 40 mm for H40), its jog (1 in 6) and its lap (2240 mm for H40). The upper bar stays at the same position.
+- **Outside the envelope:** the bar bends in to the envelope. These are every short-face bar, and the nearest outside bar at each end of each long face (`STEP_BEND_PER_END` = 1). Its crank is its move to the envelope plus the usual crank, so its tail lies beside its upper bar. Its jog is 1 in 6 of that crank, and it starts below the SFL, so the bend sits in the lower section and the lap sits in the new section.
+- **The rest of the outside long-face bars** (the outermost one or two at each end of each long face) end in the slab, bent in there with a leg of their lap length (2240 for H40).
+The upper section takes the bars that lap or bend, and its count must equal MAIN BARS. For C4/C4A: 28 lap, 12 bend and 8 end, so 40 upper bars, as the drawing says. The bends sit one cover above the soffit (14320 mm).
 
 R3. **Levels that keep their size** are splices, as now: crank, jog and lap.
 
@@ -43,7 +47,7 @@ R7. **Room and clashes.** Every splice and termination must clear the next level
 - Lower section, base to the B1 soffit: 0 to 14280 mm, 3200 × 800, 48 bars.
 - Splice at the B3 platform (2300): a 2375, b 2615, c 4855 (40 mm crank, 240 mm jog, 2240 mm lap).
 - Splice at the B2 lower concourse (8600): a 8675, b 8915, c 11155. It ends 3125 mm below the B1 soffit, so it fits.
-- Step at B1: the lower bends at 14320 mm and the upper bends at 14392.5 mm (one bar diameter above them), both in the B1 slab (14280 to 15080 mm).
+- Step at B1 (R2 as revised, section 9): 28 bars lap as usual (crank at 15155 mm, lap from 15395 mm), 12 bend in (their jogs start at 12490 mm for the short-face bars and 14390 mm for the long-face ones, and their upper bars start at the SFL, 15080 mm), and 8 end in the B1 slab, bent at 14320 mm.
 - Upper section, from the B1 SFL (15080 mm) to the top: 2400 × 800, centred (x 400 to 2800), 40 H25.
 - Links: base storey 40 to 800; B3 storey 2300 to 7400; B2 storey 8600 to 14280; no links in the B1 slab; upper storey from 15080 to the top.
 - Member Hz is set to 20900 mm (it is 11000 mm in the project file today).
@@ -91,3 +95,14 @@ Not built (limits):
 - The base and roof slabs are modelled only as far as the starters.
 
 C4/C4A needs the member's height set to 20900 mm. The project's Column is 11000 mm, so change it in the Concrete tab before generating.
+
+## 9. Revision (2026-10-20): the bars at the step
+
+After the first build, your answer on lapped starters changed the step rule (R2): the bars that land inside the new envelope lap as usual, the bars outside it bend in, and the outermost end in the slab. The first build's terminate-and-starter rule, and its "no bend" choice, no longer apply. Section 8's "no bent offset option" is superseded too: bends are built.
+
+- **The split for C4/C4A (approved "go"):** 48 lower bars. 28 lap as usual (crank 40, jog 240, lap 2240, upper bar from 15395 mm). 8 short-face bars bend in (move 396.5 mm, crank 431.5, jog 2590, from 12490 mm). 4 long-face bars bend in, the nearest at each end of each long face (move 74.6 mm, crank 114.6, jog 690, from 14390 mm). 8 long-face bars end in the slab at 14320 mm, each with a 2240 mm leg. The upper bars: 40 H25, 28 from 15395 mm and 12 from the SFL (15080 mm), each to the top cover.
+- **Positions:** the new section takes the lower positions for the bars that lap, and the envelope's edge for the bars that bend. It is no longer a ring. Its cross-ties take the same counts (X 2, Y 4). A step keeps the member's depth: a SIZE with another depth is refused, because the bars are sorted by x alone.
+- **The bend's tail sits beside its upper bar:** the crank is the move plus the usual crank, and the jog is 1 in 6 of that crank, rounded to 10 mm.
+- **Open (O6): cross-ties in the storey below B1.** The two X ties in that storey hook the short-face bars at 336 and 464 mm. Those bars bend in between about 12.5 and 14.3 m, so the ties cross them on 18 layers each (36 crossings). The card warns. The lower storey's X ties there need a decision: stop them below the bends, or route them around.
+- **The clash check (R7)** applies to the ends in the slab against every other bar at the step. The laps are the usual laps, so they are not checked.
+- **Correction:** the first build avoided bends because of the B2 splice. That reason came from reading B1 as −9.870; B1 is −5.790 (15.08 m above the base). A bend starts at 12.5 m, above the B2 splice's top at 11.16 m, so bends fit.

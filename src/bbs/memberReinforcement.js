@@ -15,6 +15,9 @@ const STOCK_MM = 12000;
 // mm: an element "touches" the member's base or top within this tolerance.
 const FACE_TOL = 1;
 const FACES = ['long', 'short'];
+// Spec 5f (revised 2026-10-20): at a size step, the nearest outside long-face bar at each end of each long face bends in to the new section;
+// the outermost ones end in the slab. Every short-face bar outside the new section bends in.
+const STEP_BEND_PER_END = 1;
 
 // Lengths and angles to 0.1 mm / 0.1°; positions to 0.01 mm, since ring and wall spacings are often a quarter or a half mm.
 const r1 = (v) => Math.round(v * 10) / 10;
@@ -432,9 +435,9 @@ export function resolveSchedule(rowsTopFirst, { lx, ly, layout = 'all' }) {
     if (Math.abs(sfl) >= 1000) return { ok: false, msg: `${name}: SFL ${sfl} is over 1000 m. SFL is in metres, so type the drawing's value (for example -20.870, not -20870).` };
     if (k > 0 && !(sfl > out[k - 1].sfl)) return { ok: false, msg: `${name}: SFL ${sfl} m must be above the level below (${out[k - 1].sfl} m).` };
     const stepHere = k > 0 && (size.value.lx !== out[k - 1].size.lx || size.value.ly !== out[k - 1].size.ly);
-    // The bars of a size step turn into that level's slab, so the step needs its thickness (spec 5f, R2).
+    // Some bars of a size step end in that level's slab, so the step needs its thickness (spec 5f, R2).
     if (stepHere && slabMm === null) {
-      return { ok: false, msg: `${name} changes SIZE, so its bars turn into its slab: give it SLAB THK (its SFL is the slab's top).` };
+      return { ok: false, msg: `${name} changes SIZE, so some of its bars end in its slab: give it SLAB THK (its SFL is the slab's top).` };
     }
     out.push({
       name,
@@ -469,6 +472,10 @@ export function resolveSchedule(rowsTopFirst, { lx, ly, layout = 'all' }) {
     }
     if (k > 0 && (r.size.lx > mLx || r.size.ly > mLy)) {
       return { ok: false, msg: `SIZE ${r.size.lx} x ${r.size.ly} on ${r.name} is bigger than this member (${mLx} x ${mLy}).` };
+    }
+    // planStep sorts the bars by their x alone, so a size step must keep the depth: a change of depth would place bars outside the section.
+    if (k > 0 && !sameSection && r.size.ly !== mLy) {
+      return { ok: false, msg: `SIZE ${r.size.lx} x ${r.size.ly} on ${r.name} changes the depth: a size step keeps the depth (${mLy}) and narrows the width.` };
     }
     if (r.layout === 'faces' && r.size.lx === r.size.ly) {
       return { ok: false, msg: 'Long and short faces need a member longer one way than the other.' };
@@ -613,10 +620,9 @@ function faceNormal([x, y], box) {
   return d > 0 ? [nx / d, ny / d] : [0, 0];
 }
 
-// The column's bars, links and levels, from its schedule (or from the simple inputs, read as one). Each section (spec 5f: the levels that
-// share a SIZE) has its own box, centred on the base, with its own bar positions, cross-tie candidates and link profile. The bars turn in
-// the slab of a size step: the lower section's top bars end in a bend there, and the upper section's bars start with one (see steps).
-// Returns { ok: true, ... } or { ok: false, msg }.
+// The column's bars, links and levels, from its schedule (or from the simple inputs, read as one). Each section (the levels that share a
+// SIZE) has its own box, centred on the base, with its own bar positions, cross-tie candidates and link profile. At a size step the bars
+// change as spec 5f says (planStep). Returns { ok: true, ... } or { ok: false, msg }.
 function columnPlan(member, inp, cover, covB, covT) {
   const c = inp.column;
   const rows = Array.isArray(c.schedule) ? c.schedule : scheduleOfSimple(member, c);
@@ -627,7 +633,7 @@ function columnPlan(member, inp, cover, covB, covT) {
   const bond = inp.bond || 'good';
   const twoFaces = c.layout === 'x' || c.layout === 'y';
   const bottom = lv[0], topRow = lv[lv.length - 1];
-  const sectionRows = [];   // the resolved rows of each section, by their index in lv
+  const sectionRows = [];   // the rows of each section, by their index in lv
   lv.forEach((r, i) => {
     sectionRows[r.section] = [...(sectionRows[r.section] || []), i];
   });
@@ -671,27 +677,17 @@ function columnPlan(member, inp, cover, covB, covT) {
       linkPts: lappedLinkPoints({ lx, ly, cover, dia: dL, lap: linkLap }).map(([x, y]) => [x + ox, y + oy]),
     });
   }
-  // The bent ends of a size step (spec 5f, R2). The lower bars turn at zL, one cover above the soffit of the step's slab, and the upper bars
-  // turn at zU, one bar diameter above them (spec 5f, R7), so neither set's bends cross the other's bars. Only one step is modelled.
-  const steps = [];
-  for (let s = 1; s < sections.length; s++) {
-    const up = sections[s];
-    const stepIdx = up.idx[0];
-    const stepRow = lv[stepIdx];
-    if (up.idx.length > 1) {
-      return {
-        ok: false,
-        msg: `${lv[up.idx[1]].name} keeps the size of ${stepRow.name}, so it would be a splice starting in the step's slab, which the card does not model yet. Give it its own SIZE, or take it out of the schedule.`,
-      };
-    }
-    const soffit = stepRow.h - (stepRow.slab ? stepRow.slab.mm : 0);
-    const dLow = Math.max(...FACES.map((f) => faceDias(lv[stepIdx - 1])[f]));
-    const dUp = Math.max(...FACES.map((f) => faceDias(stepRow)[f]));
-    const zL = soffit + cover;
-    steps.push({ name: stepRow.name, soffit, zL, zU: zL + (dLow + dUp) / 2 + Math.max(dLow, dUp) });
+  // A level above a size step that keeps its size would be a splice starting in the step's slab, which is not modelled.
+  const stepIdx = sections.length > 1 ? sections[1].idx[0] : null;
+  if (stepIdx !== null && sections[1].idx.length > 1) {
+    return {
+      ok: false,
+      msg: `${lv[sections[1].idx[1]].name} keeps the size of ${lv[stepIdx].name}, so it would be a splice starting in the step's slab, which the card does not model yet. Give it its own SIZE, or take it out of the schedule.`,
+    };
   }
-  // The splices of each section, face by face: a bar laps the bar of its own face. A section's first row is its base or its step, so the
-  // splices are the levels above it. Its room is limited by the step below (its bars start at zU) and the step above (its bars end at zL).
+  // The splices of each section (the levels above its first row), face by face: a bar laps the bar of its own face. The section below a step
+  // ends its splices below the step's bends (the ceiling).
+  const stepZL = stepIdx === null ? null : lv[stepIdx].h - (lv[stepIdx].slab ? lv[stepIdx].slab.mm : 0) + cover;
   const splices = {};
   for (const face of FACES) {
     const list = [];
@@ -706,13 +702,45 @@ function columnPlan(member, inp, cover, covB, covT) {
         lz: member.lz,
         bond,
         starterTop: starterSpec(inp.starters, mainDia, 'base', bond).lap,
-        floor: s === 0 ? null : steps[s - 1].zU,
-        ceiling: s === sections.length - 1 ? null : steps[s].zL,
+        ceiling: s === 0 ? stepZL : null,
       });
       if (!res.ok) return res;
       list.push(...res.list.map((l) => ({ ...l, section: s })));
     }
     splices[face] = { ok: true, list };
+  }
+  // The size step (spec 5f): the bars at it lap as usual, bend in, or end in the slab (planStep). The section above takes the bars it leaves.
+  let step = null;
+  if (stepIdx !== null) {
+    const lastC = {};
+    for (const face of FACES) {
+      const below = splices[face].list.filter((l) => l.section === 0);
+      lastC[face] = below.length ? below[below.length - 1].c : covB + faceDias(bottom)[face] / 2;
+    }
+    const res = planStep({
+      lowerSec: sections[0],
+      upperSec: sections[1],
+      lv,
+      stepIdx,
+      cover,
+      bond,
+      lastC,
+      centre: [sections[0].lx / 2, sections[0].ly / 2],
+    });
+    if (!res.ok) return res;
+    step = res;
+    sections[1] = {
+      ...sections[1],
+      box: res.upperBox,
+      positions: res.upperPositions,
+      faceOf: res.upperFaceOf,
+      count: res.upperPositions.length,
+      candidates: {
+        X: crossCandidates(res.upperPositions, res.upperBox, 'X'),
+        Y: crossCandidates(res.upperPositions, res.upperBox, 'Y'),
+      },
+      bottoms: res.upperBottoms,
+    };
   }
   const runs = linkRuns(linkZones(lv, covB, covT, member.lz));
   if (runs.some((run) => !(run.top - run.bottom - dL > 0))) {
@@ -748,7 +776,100 @@ function columnPlan(member, inp, cover, covB, covT) {
     runs,
     slabs: lv.filter((r) => r.slab).map((r) => ({ name: r.name, bottom: r.h - r.slab.mm, top: r.h })),
     sections,
-    steps,
+    step,
+    steps: step ? [{ name: lv[stepIdx].name, soffit: step.soffit, zL: step.zL, zSFL: step.zSFL, counts: step.counts }] : [],
+  };
+}
+
+// The bars at a size step (spec 5f, as revised on 2026-10-20). `lowerSec` is the section below the step, `upperSec` the one above it. A lower
+// bar inside the new section's envelope laps as usual: its crank and lap sit at the step. A bar outside the envelope bends in to it: each
+// short-face bar, and the nearest outside bar at each end of each long face (STEP_BEND_PER_END of them). The other outside long-face bars end
+// in the slab, bent in there. A bend's crank is its move to the envelope plus the usual crank, so its tail lies beside its upper bar. `lastC`
+// gives, per face, where the splice below the step ends: every bar must start above it. Returns the bars, their counts, and the upper section's
+// positions, bottoms and envelope, or { ok: false, msg }.
+function planStep({ lowerSec, upperSec, lv, stepIdx, cover, bond, lastC, centre }) {
+  const stepRow = lv[stepIdx];
+  const below = lv[stepIdx - 1];
+  const soffit = stepRow.h - (stepRow.slab ? stepRow.slab.mm : 0);
+  const zL = soffit + cover;   // the bars that end in the slab turn one cover above the soffit
+  const zSFL = stepRow.h;      // the bends end at the SFL, where the upper bars start
+  const X0 = upperSec.box.x0, X1 = upperSec.box.x1;
+  const Ylo = lowerSec.box.y0, Yhi = lowerSec.box.y1;
+  const EPS = 0.01;
+  const upperBox = { x0: X0, x1: X1, y0: Ylo, y1: Yhi };
+  const lowerDia = faceDias(below), upperDia = faceDias(stepRow);
+  const inside = ([x]) => x >= X0 - EPS && x <= X1 + EPS;
+  // The outside long-face bars, grouped by row and end: each group keeps its STEP_BEND_PER_END nearest bars to bend in.
+  const groups = new Map();
+  lowerSec.positions.forEach((p, i) => {
+    if (lowerSec.faceOf[i] !== 'long' || inside(p)) return;
+    const end = p[0] < X0 ? 'left' : 'right';
+    const row = Math.abs(p[1] - Ylo) < EPS ? 'bottom' : 'top';
+    const key = `${row}|${end}`;
+    const gap = end === 'left' ? X0 - p[0] : p[0] - X1;
+    groups.set(key, [...(groups.get(key) || []), { i, gap }]);
+  });
+  const bendLong = new Set();
+  for (const list of groups.values()) {
+    list.sort((a, b) => a.gap - b.gap).slice(0, STEP_BEND_PER_END).forEach((e) => bendLong.add(e.i));
+  }
+  const bars = lowerSec.positions.map((p, i) => {
+    const face = lowerSec.faceOf[i];
+    const d = levelDefaults(lowerDia[face], upperDia[face], bond);   // the usual crank, jog and lap of the larger bar
+    if (inside(p)) {
+      const ux = centre[0] - p[0], uy = centre[1] - p[1];
+      const len = Math.hypot(ux, uy) || 1;
+      const a = zSFL + SPLICE_START_MM, b = a + d.jog;
+      return { i, face, kind: 'inside', p, q: p, a, b, c: b + d.lap, crank: d.step, jog: d.jog, lap: d.lap, dir: [ux / len, uy / len], bottom: b };
+    }
+    if (face === 'short' || bendLong.has(i)) {
+      const q = [p[0] < X0 ? X0 : X1, p[1]];
+      const dx = q[0] - p[0];
+      const crank = Math.abs(dx) + d.step;
+      const jog = Math.ceil((6 * crank) / 10) * 10;
+      const b = zSFL;
+      return { i, face, kind: 'bend', p, q, a: b - jog, b, c: b + d.lap, crank, jog, lap: d.lap, dir: [dx < 0 ? -1 : 1, 0], bottom: b };
+    }
+    return { i, face, kind: 'terminate', p, zL, lap: d.lap, outward: faceNormal(p, lowerSec.box) };
+  });
+  // Room: every bar starts above the splice below the step, and the bars that end in the slab end above it.
+  for (const st of bars) {
+    const top = st.kind === 'terminate' ? st.zL : st.a;
+    if (!(top - lastC[st.face] >= 1)) {
+      return { ok: false, msg: `${stepRow.name} needs room: the bars that move or end at the step would start inside the splice below. Keep the levels clear of each other.` };
+    }
+  }
+  const counts = { inside: 0, bend: 0, terminate: 0 };
+  for (const st of bars) counts[st.kind] += 1;
+  const placed = bars.filter((st) => st.kind !== 'terminate');
+  const upperPositions = placed.map((st) => st.q);
+  const upperFaceOf = upperPositions.map((q) => faceOfBar(q, upperBox, upperSec.longAxis));
+  if (placed.length !== stepRow.bars.count) {
+    return {
+      ok: false,
+      msg: `${stepRow.name} is ${stepRow.bars.count} bars, but the section above it takes ${placed.length}: ${counts.inside} lap as usual, ${counts.bend} bend in, and ${counts.terminate} end in the slab. Change MAIN BARS to ${placed.length}, or change how many bars end.`,
+    };
+  }
+  if (stepRow.bars.faces) {
+    const longs = upperFaceOf.filter((f) => f === 'long').length;
+    if (longs !== stepRow.bars.faces.long.count || placed.length - longs !== stepRow.bars.faces.short.count) {
+      return {
+        ok: false,
+        msg: `${stepRow.name}: the section above takes ${longs} bars on the long faces and ${placed.length - longs} on the short faces. Change MAIN BARS so each pair of faces matches.`,
+      };
+    }
+  }
+  return {
+    ok: true,
+    soffit,
+    zL,
+    zSFL,
+    bars,
+    counts,
+    upperPositions,
+    upperFaceOf,
+    upperBottoms: placed.map((st) => st.bottom),
+    upperBox,
   };
 }
 
@@ -791,7 +912,7 @@ export function cardInputError(member, inp) {
 
 function columnGroups(member, inp, cover, covB, covT, plan, neighbours, warnings) {
   const dL = plan.linkDia;
-  const { sections, steps } = plan;
+  const { sections, step } = plan;
   const centre = [member.x + member.lx / 2, member.y + member.ly / 2];
   // Unit vector from a main bar towards the column centre: a crank steps that way, into the section and away from the links.
   const inward = (px, py) => {
@@ -799,105 +920,123 @@ function columnGroups(member, inp, cover, covB, covT, plan, neighbours, warnings
     const d = Math.hypot(ux, uy);
     return d > 0 ? [ux / d, uy / d] : [1, 0];
   };
-  // A bend in a step's slab turns out of the face the bar sits on (a corner bar turns diagonally outward). Radial bends would fan out from
-  // the centre, so neighbouring bars on a long face would come within a few tens of mm of each other (spec 5f, R7).
+  // A bar that ends in a step's slab turns out of the face it sits on (a corner bar turns diagonally outward), as the starters do.
   const bendOutward = (row, normal) => bendPlanRotation(row, normal);
-  // The horizontal leg of a step's bend is the bar's lap length (spec 5f, R2).
-  const legOf = (dia) => lapLengthMm(dia, plan.bond);
 
   // Bars up the height, face by face: the bottom bar, then one more above each level. A level's lower bar is a double crank (Z) that
-  // cranks inward over its jog and laps the upper bar; the top bar runs straight to the top. A size step ends the lower section's top bar
-  // in a bend, and starts the upper section's bar with one. Marks: V1 is the bottom bar, V2 the next, and so on, up through the sections.
+  // cranks inward over its jog and laps the upper bar; the top bar runs straight to the top. At a size step (spec 5f) each lower bar laps,
+  // bends in, or ends in the slab, and the upper section's bars start where those leave them. Marks: V1 is the bottom bar, V2 the next, and
+  // so on, up through the sections.
   const mains = [];
-  let made = 0;   // the bar segments numbered so far, in the sections below
+  const stepRows = [];   // the bars at the step, for the clash check: the row, the lower bar it is (or null), and whether it ends in the slab
+  let made = 0;          // the bar segments numbered so far, in the sections below
   sections.forEach((sec, s) => {
-    const last = s === sections.length - 1;
-    const segsOf = (face) => {
-      const segs = [];
-      let bottom = s === 0 ? covB + plan.mainDia[face] / 2 : steps[s - 1].zU;
-      let segDia = faceDias(plan.rows[sec.idx[0]])[face];
-      for (const splice of plan.splices[face].list.filter((l) => l.section === s)) {
-        segs.push({ dia: segDia, bottom, splice });
-        bottom = splice.b;
-        segDia = splice.dia;
-      }
-      segs.push({ dia: segDia, bottom, splice: null });
-      return segs;
-    };
-    const segs = { long: segsOf('long'), short: segsOf('short') };
-    const nSeg = segs.long.length;
-    // Where a face's bar ends: at the top cover (the top section), or at the bend in the step's slab.
-    const topOf = (face) => (last ? member.lz - covT + segs[face][nSeg - 1].dia / 2 : steps[s].zL);
-    sec.positions.forEach(([x, y], i) => {
-      const face = sec.faceOf[i];
-      const px = member.x + x, py = member.y + y;
+    if (s === 0) {
+      const segsOf = (face) => {
+        const segs = [];
+        let bottom = covB + plan.mainDia[face] / 2;
+        let segDia = plan.mainDia[face];
+        for (const splice of plan.splices[face].list.filter((l) => l.section === 0)) {
+          segs.push({ dia: segDia, bottom, splice });
+          bottom = splice.b;
+          segDia = splice.dia;
+        }
+        segs.push({ dia: segDia, bottom, splice: null });
+        return segs;
+      };
+      const segs = { long: segsOf('long'), short: segsOf('short') };
+      const nSeg = segs.long.length;
       for (let j = 0; j < nSeg; j++) {
-        const seg = segs[face][j];
-        const bar = {
-          Bar_mark: `V${made + j + 1}-${i + 1}`,
-          Dia: seg.dia,
+        sec.positions.forEach(([x, y], i) => {
+          const face = sec.faceOf[i];
+          const px = member.x + x, py = member.y + y;
+          const seg = segs[face][j];
+          const bar = {
+            Bar_mark: `V${made + j + 1}-${i + 1}`,
+            Dia: seg.dia,
+            Plane: 'XZ',
+            Pos_Rotation: 90,
+            Pos_x: r2(px), Pos_y: r2(py), Pos_z: r2(member.z + seg.bottom),
+            bond_condition: plan.bond,
+          };
+          let row;
+          if (seg.splice && seg.splice.step > 0) {
+            row = tagRow(member, {
+              ...bar,
+              Rebar_Type: 'double_crank',
+              DC_Lap_Start: r1(seg.splice.a - seg.bottom),
+              DC_Lap_Mid: r1(seg.splice.jog),
+              DC_Tail_Length: r1(seg.splice.c - seg.splice.b),
+              Crank_step: seg.splice.step,
+            });
+            row.plan_rotation = planRotationToward(row, [0, 0, 0], [0, 1, 0], inward(px, py));
+          } else if (seg.splice) {
+            row = tagRow(member, { ...bar, Rebar_Type: 'straight', 'Length of Bar': r1(seg.splice.c - seg.bottom) });
+          } else if (step) {
+            const st = step.bars[i];
+            if (st.kind === 'terminate') {
+              row = tagRow(member, {
+                ...bar,
+                Rebar_Type: 'bent',
+                'Length of Bar': r1(st.zL - seg.bottom),
+                H: r1(st.lap),
+                bent_up_down: 'up',
+                hook_start: 'no',
+              });
+              row.plan_rotation = bendOutward(row, st.outward);
+            } else {
+              row = tagRow(member, {
+                ...bar,
+                Rebar_Type: 'double_crank',
+                DC_Lap_Start: r1(st.a - seg.bottom),
+                DC_Lap_Mid: r1(st.jog),
+                DC_Tail_Length: r1(st.c - st.b),
+                Crank_step: r1(st.crank),
+              });
+              row.plan_rotation = planRotationToward(row, [0, 0, 0], [0, 1, 0], st.kind === 'inside' ? inward(px, py) : st.dir);
+            }
+          } else {
+            row = tagRow(member, { ...bar, Rebar_Type: 'straight', 'Length of Bar': r1(member.lz - covT + seg.dia / 2 - seg.bottom) });
+          }
+          mains.push(row);
+          if (step && j === nSeg - 1) stepRows.push({ row, lower: i, bent: step.bars[i].kind === 'terminate' });
+        });
+      }
+      made += nSeg;
+    } else {
+      // The upper section: one bar per position, from its bottom (where its lap or bend starts at the step) up to the top cover.
+      sec.positions.forEach(([x, y], j) => {
+        const face = sec.faceOf[j];
+        const dia = faceDias(plan.rows[sec.idx[0]])[face];
+        const row = tagRow(member, {
+          Bar_mark: `V${made + 1}-${j + 1}`,
+          Rebar_Type: 'straight',
+          Dia: dia,
           Plane: 'XZ',
           Pos_Rotation: 90,
-          Pos_x: r2(px), Pos_y: r2(py), Pos_z: r2(member.z + seg.bottom),
+          Pos_x: r2(member.x + x), Pos_y: r2(member.y + y), Pos_z: r2(member.z + sec.bottoms[j]),
+          'Length of Bar': r1(member.lz - covT + dia / 2 - sec.bottoms[j]),
           bond_condition: plan.bond,
-        };
-        if (seg.splice && seg.splice.step > 0) {
-          const row = tagRow(member, {
-            ...bar,
-            Rebar_Type: 'double_crank',
-            DC_Lap_Start: r1(seg.splice.a - seg.bottom),
-            DC_Lap_Mid: r1(seg.splice.jog),
-            DC_Tail_Length: r1(seg.splice.c - seg.splice.b),
-            Crank_step: seg.splice.step,
-          });
-          row.plan_rotation = planRotationToward(row, [0, 0, 0], [0, 1, 0], inward(px, py));
-          mains.push(row);
-        } else if (seg.splice) {
-          mains.push(tagRow(member, { ...bar, Rebar_Type: 'straight', 'Length of Bar': r1(seg.splice.c - seg.bottom) }));
-        } else if (!last) {
-          // The lower section's top bar: straight up to the step's slab, then its leg into the slab.
-          const row = tagRow(member, {
-            ...bar,
-            Rebar_Type: 'bent',
-            'Length of Bar': r1(topOf(face) - seg.bottom),
-            H: r1(legOf(seg.dia)),
-            bent_up_down: 'up',
-            hook_start: 'no',
-          });
-          row.plan_rotation = bendOutward(row, faceNormal([x, y], sec.box));
-          mains.push(row);
-        } else if (s > 0) {
-          // The upper section's bar: its leg in the step's slab at the bottom, then straight up to the top cover.
-          const row = tagRow(member, {
-            ...bar,
-            Pos_Rotation: -90,
-            Pos_z: r2(member.z + topOf(face)),
-            Rebar_Type: 'bent',
-            'Length of Bar': r1(topOf(face) - seg.bottom),
-            H: r1(legOf(seg.dia)),
-            bent_up_down: 'up',
-            hook_start: 'no',
-          });
-          row.plan_rotation = bendOutward(row, faceNormal([x, y], sec.box));
-          mains.push(row);
-        } else {
-          mains.push(tagRow(member, { ...bar, Rebar_Type: 'straight', 'Length of Bar': r1(topOf(face) - seg.bottom) }));
-        }
-      }
-    });
-    made += nSeg;
+        });
+        mains.push(row);
+        stepRows.push({ row, lower: null, bent: false });
+      });
+      made += 1;
+    }
   });
   if ([...plan.splices.long.list, ...plan.splices.short.list].some((l) => !(l.step > 0))) {
     warnings.push('A level has no crank step, so its lapped bars share a position and overlap in the lap.');
   }
-  for (const st of steps) {
-    warnings.push(`The bars turn into the slab at ${st.name} (lower bars to ${Math.round(st.zL)} mm, upper bars from ${Math.round(st.zU)} mm above the base). Each leg is the bar's lap length: check the slab can hold it.`);
+  if (step) {
+    const k = step.counts;
+    warnings.push(`At ${plan.steps[0].name} (${Math.round(step.zSFL)} mm above the base) the bars change: ${k.inside} lap as usual, ${k.bend} bend in to the new section, and ${k.terminate} end in the slab, bent in at ${Math.round(step.zL)} mm. Each bend's leg is the bar's lap length: check the slab can hold it.`);
   }
 
   // Links: one stack per run of levels (its first link sits Ø/2 above the run's bottom, its last Ø/2 below the run's top). The cross-ties of
   // a run are c_link_with_hook rows: Y ties in the link layers, from the bottom bar row to the top bar row; X ties one tie diameter higher,
   // from the left column to the right column. Each end is a double hook that holds a bar (spec 5c). A run takes its section's box.
   const links = [];
+  let crossings = 0;   // X ties in the storey below the step that pass through a bar bending in there
   plan.runs.forEach((run, k) => {
     const sec = sections[run.section];
     const { box, candidates, linkPts: pts, longAxis } = sec;
@@ -927,6 +1066,12 @@ function columnGroups(member, inp, cover, covB, covT, plan, neighbours, warnings
       const nC = Math.floor((limit - z0) / sC) + 1;
       for (let j = 0; j < m; j++) {
         const at = cands[Math.round(((j + 1) * (cands.length + 1)) / (m + 1)) - 1];
+        if (step && dir === 'X' && run.section === 0) {
+          for (let layer = 0; layer < nC; layer += 1) {
+            const z = z0 + layer * sC;
+            if (step.bars.some((st) => st.kind === 'bend' && Math.abs(st.p[1] - at) < 0.5 && z >= st.a && z <= st.b)) crossings += 1;
+          }
+        }
         if (dir === 'Y') {
           links.push(tagRow(member, {
             Bar_mark: `CT${k + 1}-${j + 1}`,
@@ -964,6 +1109,10 @@ function columnGroups(member, inp, cover, covB, covT, plan, neighbours, warnings
   if (plan.runs.some((run) => run.cross.length)) {
     warnings.push('Cross-ties hook the bars: Y ties the top and bottom rows, X ties the left and right faces. Their hook closures sit on the outer links, because the bars touch the links, so they clash there (spec item L). X ties sit one tie diameter above the link layer (spec item M).');
   }
+  if (crossings > 0) {
+    const bends = step.bars.filter((st) => st.kind === 'bend');
+    warnings.push(`${crossings} cross-tie crossing${crossings === 1 ? '' : 's'} along X in the storey below ${plan.steps[0].name}: those ties pass through bars that bend in there, between ${Math.round(Math.min(...bends.map((st) => st.a)))} and ${Math.round(Math.max(...bends.map((st) => st.b)))} mm. Check those ties at the bends (spec 9, O6).`);
+  }
 
   // A splice starts 75 mm above its level's SFL, so it sits in the storey above the slab below it. A splice that reaches up into a higher
   // slab would have no links around its bars there, so each such overlap is flagged for checking.
@@ -983,11 +1132,14 @@ function columnGroups(member, inp, cover, covB, covT, plan, neighbours, warnings
   const topStarters = starterRows({
     member, positions: topSec.positions, faceOf: topSec.faceOf, starters: { base: false, top: inp.starters.top }, specFor, cover, neighbours, mark: 'ST', warnings,
   });
-  return [
-    { name: `${member.name} mains`, rows: mains },
-    { name: `${member.name} links`, rows: links },
-    { name: `${member.name} starters`, rows: [...baseStarters, ...topStarters] },
-  ];
+  return {
+    groups: [
+      { name: `${member.name} mains`, rows: mains },
+      { name: `${member.name} links`, rows: links },
+      { name: `${member.name} starters`, rows: [...baseStarters, ...topStarters] },
+    ],
+    clash: stepClash(stepRows),
+  };
 }
 
 function wallGroups(member, inp, cover, covB, intH, neighbours, warnings) {
@@ -1097,13 +1249,16 @@ function segmentDistance(p1, q1, p2, q2) {
   return Math.hypot(c1[0] - c2[0], c1[1] - c2[1], c1[2] - c2[2]);
 }
 
-// Spec 5f, R7: the bent ends in a size step's slab keep a clear gap of one bar diameter (the larger of the two) from each other. Returns the
-// first pair that comes closer than that, as { a, b, gap, need }, or null.
-export function stepClash(bentRows) {
-  const sets = bentRows.map((row) => ({ row, pts: polylineOf(row) }));
-  for (let i = 0; i < sets.length; i++) {
-    for (let j = i + 1; j < sets.length; j++) {
-      const A = sets[i], B = sets[j];
+// Spec 5f, R7: a bar that ends in a size step's slab keeps one bar diameter clear of every other bar at the step, counting the larger of the
+// two bars. `stepRows` lists the bars at the step, each as { row, lower, bent }: `lower` is the lower bar it belongs to (null for an upper
+// bar) and `bent` says whether it ends in the slab. A lower bar is not checked against its own partner. Returns the first clash as
+// { a, b, gap, need }, or null.
+export function stepClash(stepRows) {
+  const sets = stepRows.map((s) => ({ ...s, pts: polylineOf(s.row) }));
+  for (const A of sets.filter((s) => s.bent)) {
+    for (const B of sets) {
+      if (B === A) continue;
+      if (A.lower !== null && B.lower === A.lower) continue;
       const need = (A.row.Dia + B.row.Dia) / 2 + Math.max(A.row.Dia, B.row.Dia);
       let gap = Infinity;
       for (let p = 0; p < A.pts.length - 1; p++) {
@@ -1127,30 +1282,24 @@ export function memberGroups(member, inp, { neighbours = [] } = {}) {
   const intH = member.lz - covB - covT;
   const warnings = [];
   const plan = inp.kind === 'Wall' ? null : columnPlan(member, inp, cover, covB, covT);
-  const groups = inp.kind === 'Wall'
-    ? wallGroups(member, inp, cover, covB, intH, neighbours, warnings)
+  const built = inp.kind === 'Wall'
+    ? { groups: wallGroups(member, inp, cover, covB, intH, neighbours, warnings), clash: null }
     : columnGroups(member, inp, cover, covB, covT, plan, neighbours, warnings);
-  // The bent ends in a size step's slab must keep their clear gap (spec 5f, R7). A clash is refused, and the card names the two bars.
-  if (plan && plan.steps.length) {
-    const mains = groups.find((g) => g.name === `${member.name} mains`);
-    const bent = mains ? mains.rows.filter((r) => r.Rebar_Type === 'bent' && /^V/.test(r.Bar_mark)) : [];
-    const clash = stepClash(bent);
-    if (clash) {
-      return {
-        ok: false,
-        msg: `The bent ends in the slab at ${plan.steps[0].name} clash: ${clash.a} and ${clash.b} are ${clash.gap} mm apart, and need ${clash.need} mm.`,
-      };
-    }
+  if (built.clash) {
+    return {
+      ok: false,
+      msg: `The bars that end in the slab at ${plan.steps[0].name} clash: ${built.clash.a} and ${built.clash.b} are ${built.clash.gap} mm apart, and need ${built.clash.need} mm.`,
+    };
   }
-  const kept = groups.filter((g) => g.rows.length);
+  const kept = built.groups.filter((g) => g.rows.length);
   const long = kept.flatMap((g) => g.rows).filter((r) => barMainLength(r) > STOCK_MM).length;
   if (long) warnings.push(`${long} bar${long === 1 ? '' : 's'} longer than ${STOCK_MM / 1000} m: a splice is not modelled.`);
-  // The splices (per face, bottom level first, each with its level's height) and the size steps let the card show where each lap and step sits.
+  // The splices (per face, bottom level first, each with its level's height) and the size step let the card show where each lap and step sits.
   return {
     ok: true,
     groups: kept,
     warnings,
     splices: plan ? plan.splices : null,
-    steps: plan ? plan.steps.map(({ name, soffit, zL, zU }) => ({ name, soffit, zL, zU })) : [],
+    steps: plan ? plan.steps : [],
   };
 }

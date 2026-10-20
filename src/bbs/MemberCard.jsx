@@ -140,7 +140,7 @@ export default function MemberCard({ member }) {
   const inp = inputsOf(form, cover);
   const plan = memberGroups(member, inp, { neighbours: concretes });
   // The splice at a level, on each face: its crank foot a and lap top c (see resolveLevels). Matched by the level's height, so a level that
-  // is a size step (its bars turn in the slab, with no splice) gives null. Null for a wall.
+  // is a size step (its bars lap, bend or end in the slab, with no splice there) gives null. Null for a wall.
   const spliceAt = (r) => (plan.ok && plan.splices
     ? { long: plan.splices.long.list.find((l) => l.level === r.h), short: plan.splices.short.list.find((l) => l.level === r.h) }
     : null);
@@ -218,7 +218,7 @@ export default function MemberCard({ member }) {
           <div className="sect">Schedule: top level first, as in the drawing</div>
           <div className="distnote">SFL is in metres: -20.870, not -20870. Each level is a height above the base, so it must lie between the base and the top of this member. “= below” takes the level under it.</div>
           <div className="distnote">MAIN BARS: one size on every face (44H25), or long and short faces (44H40 and 8H32) in their own cells. Each count is for a pair of faces, and the long faces take the corners. Each level picks its layout; “same as below” takes the level under it.</div>
-          <div className="distnote">SIZE: a level with a different SIZE starts a new section, centred on the base. Its bars turn into that level's slab (bent ends, no lap), so the level needs its SLAB THK. One size step per column for now.</div>
+          <div className="distnote">SIZE: a level with a different SIZE starts a new section, centred on the base. The bars below it that land inside the new size lap as usual. Those outside bend in, except the long-face bars beyond the first at each end, which end in that level's slab, so it needs its SLAB THK. One size step per column for now.</div>
           <div className="distnote">LINKS: above each SFL, the outer link and cross links run up to the slab of the level above. SLAB THK is the slab below an SFL (the SFL is its top). No links run inside a slab. The base's slab is below the member, so it is not modelled.</div>
           <div className="distnote">LAP: each splice starts 75 mm above its SFL. Its lap is the good-bond lap for the bar Ø (from the lap table) unless you type one in that level.</div>
           {rows.map((row, i) => {
@@ -295,7 +295,7 @@ export default function MemberCard({ member }) {
                   <div key={r.h}>
                     {r.name}{r.h ? ` at ${r.h} mm` : ''}: {barsText(r.bars)}, links H{r.links.dia} @{r.links.spacing}
                     {r.links.cross.map((g) => `, + ${g.count} hooked cross-ties ${g.dir} H${g.dia} @${g.spacing}`).join('')}
-                    {st && <div>Size step to {r.size.lx} x {r.size.ly}: the bars turn in the slab, lower bars to {Math.round(st.zL)} mm, upper bars from {Math.round(st.zU)} mm above the base.</div>}
+                    {st && <div>Size step to {r.size.lx} x {r.size.ly}: {st.counts.inside} bars lap as usual, {st.counts.bend} bend in, and {st.counts.terminate} end in the slab at {Math.round(st.zL)} mm above the base.</div>}
                     {sp && sp.long && sp.short && <div>Splice {spanText(sp)}, lap {pair(sp.long.lap, sp.short.lap)} mm</div>}
                   </div>
                 );
