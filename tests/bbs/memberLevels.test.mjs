@@ -20,18 +20,19 @@ const ONE = [{ level: 2000, dia: 20, lap: null, step: null, jog: null }];
 test('level defaults: the larger bar\'s table lap, a crank step of the larger Ø, and a jog of 1 in 6', () => {
   assert.deepEqual(levelDefaults(25, 20), { lap: 1290, step: 25, jog: 150 });
   assert.deepEqual(levelDefaults(20, 25), { lap: 1290, step: 25, jog: 150 });
+  assert.deepEqual(levelDefaults(25, 20, 'poor'), { lap: 1840, step: 25, jog: 150 }); // the bond picks the table: poor is longer
 });
 
-test('a level centres its splice: the upper bar starts at level − lap/2, the lower bar cranks over the jog below that', () => {
+test('a splice starts 75 mm above its level: the lower bar cranks over its jog from a to b, and the upper bar laps from b to c', () => {
   const r = resolveLevels(ONE, BOX);
   assert.equal(r.ok, true, r.msg);
   assert.deepEqual(r.list.map(({ level, dia, lap, step, jog, a, b, c }) => ({ level, dia, lap, step, jog, a, b, c })), [
-    { level: 2000, dia: 20, lap: 1290, step: 25, jog: 150, a: 1205, b: 1355, c: 2645 },
+    { level: 2000, dia: 20, lap: 1290, step: 25, jog: 150, a: 2075, b: 2225, c: 3515 },
   ]);
 });
 
 test('levels that leave no room for their splice are refused', () => {
-  assert.equal(resolveLevels([{ level: 100, dia: 20 }], BOX).ok, false); // the first splice runs into the base
+  assert.equal(resolveLevels([{ level: 100, dia: 20 }], { ...BOX, starterTop: 1290 }).ok, false); // the splice starts inside the base starters (1290 mm)
   assert.equal(resolveLevels([{ level: 4300, dia: 20 }], BOX).ok, false); // the splice runs past the top
   assert.equal(resolveLevels([{ level: 1500, dia: 20 }, { level: 1900, dia: 16 }], BOX).ok, false); // two splices overlap
   assert.equal(resolveLevels([{ level: 0, dia: 20 }], BOX).ok, false);
@@ -51,7 +52,7 @@ test('one level: the lower bar is a double crank (Z) and the upper bar a straigh
     assert.equal(r.Rebar_Type, 'double_crank');
     assert.equal(r.Dia, 25);
     near(r.Pos_z, 52.5, 0.01);
-    near(r.DC_Lap_Start, 1152.5, 0.01);
+    near(r.DC_Lap_Start, 2022.5, 0.01); // a (2075) less the bar's bottom (52.5)
     assert.equal(r.DC_Lap_Mid, 150);
     assert.equal(r.DC_Tail_Length, 1290);
     assert.equal(r.Crank_step, 25);
@@ -60,8 +61,8 @@ test('one level: the lower bar is a double crank (Z) and the upper bar a straigh
   for (const r of up) {
     assert.equal(r.Rebar_Type, 'straight');
     assert.equal(r.Dia, 20);
-    near(r.Pos_z, 1355, 0.01);
-    near(r['Length of Bar'], 3115, 0.01);
+    near(r.Pos_z, 2225, 0.01); // b
+    near(r['Length of Bar'], 2245, 0.01); // to the top end, 4470 − 2225
   }
 });
 
@@ -78,8 +79,8 @@ test('the crank steps inward: its tail lies one crank step from the upper bar, t
     const dx = world[3][0] - r.Pos_x, dy = world[3][1] - r.Pos_y;
     near(Math.hypot(dx, dy), 25, 0.05);
     assert.ok(dx * (400 - r.Pos_x) + dy * (400 - r.Pos_y) > 0, `${r.Bar_mark} crank steps away from the centre`);
-    near(world[3][2], 2645, 0.05);
-    near(world[1][2], 1205, 0.05);
+    near(world[3][2], 3515, 0.05); // c, the lap's top
+    near(world[1][2], 2075, 0.05); // a, the crank's foot
   }
 });
 
@@ -111,14 +112,14 @@ test('two levels: the bottom two bars are double cranks, the top one straight', 
   assert.ok(v1.every((r) => r.Rebar_Type === 'double_crank' && r.Dia === 25));
   assert.ok(v2.every((r) => r.Rebar_Type === 'double_crank' && r.Dia === 20));
   assert.ok(v3.every((r) => r.Rebar_Type === 'straight' && r.Dia === 16));
-  near(v1[0].DC_Lap_Start, 652.5, 0.01); // a_1 = 1500 − 645 − 150 = 705
-  near(v2[0].Pos_z, 855, 0.01); // b_1 = 1500 − 645
-  near(v2[0].DC_Lap_Start, 1530, 0.01); // a_2 = 3000 − 495 − 120 = 2385, less b_1
+  near(v1[0].DC_Lap_Start, 1522.5, 0.01); // a_1 = 1500 + 75 = 1575, less the bar's bottom (52.5)
+  near(v2[0].Pos_z, 1725, 0.01); // b_1 = a_1 + jog 150
+  near(v2[0].DC_Lap_Start, 1350, 0.01); // a_2 = 3000 + 75 = 3075, less b_1
   assert.equal(v2[0].DC_Lap_Mid, 120);
   assert.equal(v2[0].DC_Tail_Length, 990);
   assert.equal(v2[0].Crank_step, 20);
-  near(v3[0].Pos_z, 2505, 0.01); // b_2 = 3000 − 495
-  near(v3[0]['Length of Bar'], 1963, 0.01); // to the top end, 4460 + 8
+  near(v3[0].Pos_z, 3195, 0.01); // b_2 = a_2 + jog 120
+  near(v3[0]['Length of Bar'], 1273, 0.01); // to the top end, 4468 − 3195
 });
 
 test('a zero crank step gives straight lapped bars, with a warning that the bars share a position', () => {
@@ -126,7 +127,7 @@ test('a zero crank step gives straight lapped bars, with a warning that the bars
   assert.equal(res.ok, true, res.msg);
   const v1 = group(res, 'C1 mains').rows.filter((r) => r.Bar_mark.startsWith('V1-'));
   assert.ok(v1.every((r) => r.Rebar_Type === 'straight'));
-  near(v1[0]['Length of Bar'], 2645 - 52.5, 0.01);
+  near(v1[0]['Length of Bar'], 3515 - 52.5, 0.01);
   assert.ok(res.warnings.some((w) => /share a position/.test(w)));
 });
 

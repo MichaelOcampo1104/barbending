@@ -2,8 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store.js';
 import { memberKind } from './shapes.js';
 import {
-  barsText, defaultCardInputs, defaultLinkLap, faceDias, levelDefaults, linkZones, linksNotation, memberGroups, resolveSchedule,
-  slabLinksNotation, starterSpec,
+  barsText, defaultCardInputs, defaultLinkLap, faceDias, levelDefaults, linkZones, linksNotation, memberGroups, resolveSchedule, starterSpec,
 } from './memberReinforcement.js';
 
 // Member reinforcement card (Concrete tab, under the selected box member). The form holds raw text, so partial input stays typable.
@@ -14,10 +13,17 @@ import {
 const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
 // A placeholder for a value that differs between the long and the short faces ("1650 / 1290"), or the one value when they match.
 const pair = (long, short) => (long === short ? String(long) : `${long} / ${short}`);
+// Column and wall bars cast in good bond (vertical steel, as the BBS bond column reads it), so the laps are the good-bond lengths from the lap
+// table. A typed lap overrides its default.
+const BOND = 'good';
+// A splice's span in mm, from its crank foot (a) to its lap top (c), on the long and the short faces (see resolveLevels).
+const spanText = (sp) => (sp.long.a === sp.short.a && sp.long.c === sp.short.c
+  ? `${Math.round(sp.long.a)} to ${Math.round(sp.long.c)} mm`
+  : `${Math.round(sp.long.a)} to ${Math.round(sp.long.c)} mm on the long faces, ${Math.round(sp.short.a)} to ${Math.round(sp.short.c)} mm on the short`);
 let rowSeq = 0;
 const newRow = (over = {}) => ({
   id: ++rowSeq, name: '', sfl: '', size: 'same', bars: 'same', barsLong: 'same', barsShort: 'same',
-  linksOuter: 'same', linksX: 'same', linksY: 'same', slab: '', linksBotOuter: '', linksBotX: '', linksBotY: '', lap: '', step: '', jog: '', ...over,
+  linksOuter: 'same', linksX: 'same', linksY: 'same', layout: 'same', slab: '', lap: '', step: '', jog: '', ...over,
 });
 
 function formOf(member, cover) {
@@ -47,18 +53,18 @@ function formOf(member, cover) {
 
 function inputsOf(f, cover) {
   const nums = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'string' && k !== 'layout' ? Number(v) : v]));
-  // The LINKS notation of each level, from its outer link and cross-link cells (see linksNotation), and the links in its slab.
+  // The LINKS notation of each level, from its outer link and cross-link cells (see linksNotation).
   const links = linksNotation(f.column.schedule);
-  const slabLinks = slabLinksNotation(f.column.schedule);
   return {
     kind: f.kind,
     cover,
+    bond: BOND,
     column: {
       layout: f.column.layout,
       lap: numOrNull(f.column.lap),
       schedule: f.column.schedule.map((r, i) => ({
-        name: r.name, sfl: numOrNull(r.sfl), size: r.size, bars: r.bars, barsLong: r.barsLong, barsShort: r.barsShort, links: links[i],
-        slab: numOrNull(r.slab), linksBottom: slabLinks[i],
+        name: r.name, sfl: numOrNull(r.sfl), size: r.size, layout: r.layout, bars: r.bars, barsLong: r.barsLong, barsShort: r.barsShort, links: links[i],
+        slab: numOrNull(r.slab),
         lap: numOrNull(r.lap), step: numOrNull(r.step), jog: numOrNull(r.jog),
       })),
     },
@@ -108,6 +114,22 @@ function CellField({ label, field, value, placeholder, canSame, onChange, labelW
   );
 }
 
+// The MAIN BARS layout of one level: "same as below" takes the level under it, and the bottom level takes the column's Layout above.
+function LayoutField({ value, onChange }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '2px 0' }}>
+      <span style={{ width: 124, fontSize: 11, color: '#9fb0cc' }}>MAIN BARS layout</span>
+      <div className="fld" style={{ flex: 1, margin: 0 }}>
+        <select value={value} onChange={(e) => onChange(e.target.value)}>
+          <option value="same">same as below</option>
+          <option value="all">one size on every face</option>
+          <option value="faces">long and short faces</option>
+        </select>
+      </div>
+    </div>
+  );
+}
+
 export default function MemberCard({ member }) {
   const cover = useStore((s) => s.cover);
   const concretes = useStore((s) => s.concretes);
@@ -117,6 +139,11 @@ export default function MemberCard({ member }) {
 
   const inp = inputsOf(form, cover);
   const plan = memberGroups(member, inp, { neighbours: concretes });
+  // The splice at a level, on each face: its crank foot a and lap top c (see resolveLevels). Matched by the level's height, so a level that
+  // is a size step (its bars turn in the slab, with no splice) gives null. Null for a wall.
+  const spliceAt = (r) => (plan.ok && plan.splices
+    ? { long: plan.splices.long.list.find((l) => l.level === r.h), short: plan.splices.short.list.find((l) => l.level === r.h) }
+    : null);
   const patch = (section, key, value) => setForm((f) => ({ ...f, [section]: { ...f[section], [key]: value } }));
   const setKind = (kind) => setForm((f) => ({ ...f, kind }));
   const patchRow = (id, key, value) => setForm((f) => ({
@@ -138,7 +165,7 @@ export default function MemberCard({ member }) {
   const linkDia = rowsRes ? rowsRes[0].links.dia : 10;
   const legW = member.lx - 2 * cover - linkDia;
   const lapAuto = legW > 0 ? defaultLinkLap(legW) : '';
-  const startBase = baseDias && { long: starterSpec(inp.starters, baseDias.long), short: starterSpec(inp.starters, baseDias.short) };
+  const startBase = baseDias && { long: starterSpec(inp.starters, baseDias.long, 'base', BOND), short: starterSpec(inp.starters, baseDias.short, 'base', BOND) };
 
   const generate = () => {
     if (!plan.ok) {
@@ -153,6 +180,18 @@ export default function MemberCard({ member }) {
 
   const rows = form.column.schedule;
   const S = form.starters, W = form.wall;
+  // Each level's MAIN BARS layout, top level first: two faces along X or Y apply to every level; otherwise the bottom level takes the
+  // column's Layout, and a level that says "same as below" takes the layout of the level under it.
+  const layoutsTopFirst = (() => {
+    const eff = [];
+    [...rows].reverse().forEach((r, k) => {
+      if (form.column.layout === 'x' || form.column.layout === 'y') eff.push('two');
+      else if (k === 0) eff.push(form.column.layout === 'faces' ? 'faces' : 'all');
+      else if (r.layout === 'faces' || r.layout === 'all') eff.push(r.layout);
+      else eff.push(eff[k - 1]);
+    });
+    return eff.reverse();
+  })();
   return (
     <div className="memberCard" onClick={(e) => e.stopPropagation()}>
       <div className="sect">▦ Reinforcement card</div>
@@ -178,14 +217,16 @@ export default function MemberCard({ member }) {
 
           <div className="sect">Schedule: top level first, as in the drawing</div>
           <div className="distnote">SFL is in metres: -20.870, not -20870. Each level is a height above the base, so it must lie between the base and the top of this member. “= below” takes the level under it.</div>
-          <div className="distnote">MAIN BARS: one size on every face (44H25), or with “All faces, long and short faces”, the long faces (44H40) and the short faces (8H32) in their own cells. Each count is for a pair of faces, and the long faces take the corners.</div>
-          <div className="distnote">LINKS: above each SFL, the outer link and cross links run up to the slab of the level above. SLAB THK is the slab below an SFL (the SFL is its top), and its links go on that level. Blank slab links mean the links of the storey it sits in. The base's slab is below the member, so it is not modelled.</div>
+          <div className="distnote">MAIN BARS: one size on every face (44H25), or long and short faces (44H40 and 8H32) in their own cells. Each count is for a pair of faces, and the long faces take the corners. Each level picks its layout; “same as below” takes the level under it.</div>
+          <div className="distnote">SIZE: a level with a different SIZE starts a new section, centred on the base. Its bars turn into that level's slab (bent ends, no lap), so the level needs its SLAB THK. One size step per column for now.</div>
+          <div className="distnote">LINKS: above each SFL, the outer link and cross links run up to the slab of the level above. SLAB THK is the slab below an SFL (the SFL is its top). No links run inside a slab. The base's slab is below the member, so it is not modelled.</div>
+          <div className="distnote">LAP: each splice starts 75 mm above its SFL. Its lap is the good-bond lap for the bar Ø (from the lap table) unless you type one in that level.</div>
           {rows.map((row, i) => {
             const idx = rowsRes ? rowsRes.length - 1 - i : -1;
             const rr = idx >= 0 ? rowsRes[idx] : null;
             const below = idx >= 1 ? rowsRes[idx - 1] : null;
             const auto = rr && below
-              ? { long: levelDefaults(faceDias(below).long, faceDias(rr).long), short: levelDefaults(faceDias(below).short, faceDias(rr).short) }
+              ? { long: levelDefaults(faceDias(below).long, faceDias(rr).long, BOND), short: levelDefaults(faceDias(below).short, faceDias(rr).short, BOND) }
               : null;
             const isBottom = i === rows.length - 1;
             return (
@@ -199,7 +240,10 @@ export default function MemberCard({ member }) {
                 </div>
                 <CellField label="SIZE" field="size" value={row.size} placeholder="2500 x 1000" canSame={!isBottom}
                   onChange={(v) => patchRow(row.id, 'size', v)} />
-                {form.column.layout === 'faces' ? (
+                {!isBottom && (form.column.layout === 'all' || form.column.layout === 'faces') && (
+                  <LayoutField value={row.layout} onChange={(v) => patchRow(row.id, 'layout', v)} />
+                )}
+                {layoutsTopFirst[i] === 'faces' ? (
                   <>
                     <CellField label="MAIN BARS long face" field="barslong" value={row.barsLong} placeholder="44H40" canSame={!isBottom}
                       onChange={(v) => patchRow(row.id, 'barsLong', v)} />
@@ -220,24 +264,20 @@ export default function MemberCard({ member }) {
                 {!isBottom && (
                   <>
                     <NumField label="Slab thk (mm)" field="slab" value={row.slab} placeholder="e.g. 1500" onChange={(v) => patchRow(row.id, 'slab', v)} />
-                    <div className="distnote" style={{ marginTop: 2 }}>Links in the slab below this SFL (blank: the links of the storey it sits in):</div>
-                    <CellField label="Slab outer" field="linksbotouter" value={row.linksBotOuter} placeholder="H10-150" showSame={false}
-                      onChange={(v) => patchRow(row.id, 'linksBotOuter', v)} />
-                    <CellField label="Slab cross X" field="linksbotx" value={row.linksBotX} placeholder="e.g. 2H10-150" showSame={false}
-                      onChange={(v) => patchRow(row.id, 'linksBotX', v)} />
-                    <CellField label="Slab cross Y" field="linksboty" value={row.linksBotY} placeholder="e.g. 6H10-150" showSame={false}
-                      onChange={(v) => patchRow(row.id, 'linksBotY', v)} />
+                    <div className="distnote" style={{ marginTop: 2 }}>No links in this slab: the links below stop at its bottom, and the links above start at this SFL.</div>
                   </>
                 )}
                 {!isBottom && (
-                  <details style={{ marginTop: 4 }}>
-                    <summary style={{ fontSize: 11, color: '#9fb0cc', cursor: 'pointer' }}>Lap, crank and jog for this level</summary>
-                    <div className="grid3">
-                      <NumField label="Lap" value={row.lap} placeholder={auto ? pair(auto.long.lap, auto.short.lap) : ''} onChange={(v) => patchRow(row.id, 'lap', v)} />
-                      <NumField label="Crank step" value={row.step} placeholder={auto ? pair(auto.long.step, auto.short.step) : ''} onChange={(v) => patchRow(row.id, 'step', v)} />
-                      <NumField label="Jog" value={row.jog} placeholder={auto ? pair(auto.long.jog, auto.short.jog) : ''} onChange={(v) => patchRow(row.id, 'jog', v)} />
-                    </div>
-                  </details>
+                  <>
+                    <NumField label="Lap (good bond)" field="lap" value={row.lap} placeholder={auto ? pair(auto.long.lap, auto.short.lap) : ''} onChange={(v) => patchRow(row.id, 'lap', v)} />
+                    <details style={{ marginTop: 4 }}>
+                      <summary style={{ fontSize: 11, color: '#9fb0cc', cursor: 'pointer' }}>Crank step and jog for this level</summary>
+                      <div className="grid3">
+                        <NumField label="Crank step" value={row.step} placeholder={auto ? pair(auto.long.step, auto.short.step) : ''} onChange={(v) => patchRow(row.id, 'step', v)} />
+                        <NumField label="Jog" value={row.jog} placeholder={auto ? pair(auto.long.jog, auto.short.jog) : ''} onChange={(v) => patchRow(row.id, 'jog', v)} />
+                      </div>
+                    </details>
+                  </>
                 )}
               </div>
             );
@@ -248,19 +288,26 @@ export default function MemberCard({ member }) {
           {rowsRes && (
             <div className="distnote" style={{ marginTop: 4 }}>
               <div>Heights are above the base. This member is {Math.round(member.lz)} mm high.</div>
-              {rowsRes.slice().reverse().map((r) => (
-                <div key={r.h}>
-                  {r.name}{r.h ? ` at ${r.h} mm` : ''}: {barsText(r.bars)}, links H{r.links.dia} @{r.links.spacing}
-                  {r.links.cross.map((g) => `, + ${g.count} hooked cross-ties ${g.dir} H${g.dia} @${g.spacing}`).join('')}
-                </div>
-              ))}
+              {rowsRes.slice().reverse().map((r) => {
+                const sp = spliceAt(r);
+                const st = plan.ok ? plan.steps.find((s) => s.name === r.name) : null;
+                return (
+                  <div key={r.h}>
+                    {r.name}{r.h ? ` at ${r.h} mm` : ''}: {barsText(r.bars)}, links H{r.links.dia} @{r.links.spacing}
+                    {r.links.cross.map((g) => `, + ${g.count} hooked cross-ties ${g.dir} H${g.dia} @${g.spacing}`).join('')}
+                    {st && <div>Size step to {r.size.lx} x {r.size.ly}: the bars turn in the slab, lower bars to {Math.round(st.zL)} mm, upper bars from {Math.round(st.zU)} mm above the base.</div>}
+                    {sp && sp.long && sp.short && <div>Splice {spanText(sp)}, lap {pair(sp.long.lap, sp.short.lap)} mm</div>}
+                  </div>
+                );
+              })}
               {zones && (
                 <div style={{ marginTop: 4 }}>
                   <div>Link zones, in mm above the base:</div>
                   {zones.map((z) => (
                     <div key={z.bottom}>
-                      {Math.round(z.bottom)} to {Math.round(z.top)}: {z.name}, H{z.links.dia} @{z.links.spacing}
-                      {z.links.cross.map((g) => `, + ${g.count} cross links ${g.dir} H${g.dia} @${g.spacing}`).join('')}
+                      {Math.round(z.bottom)} to {Math.round(z.top)}: {z.name}
+                      {z.links ? `, H${z.links.dia} @${z.links.spacing}` : ''}
+                      {z.links ? z.links.cross.map((g) => `, + ${g.count} cross links ${g.dir} H${g.dia} @${g.spacing}`).join('') : ''}
                     </div>
                   ))}
                 </div>
@@ -301,7 +348,7 @@ export default function MemberCard({ member }) {
       </div>
       <div className="grid3">
         <NumField label="Top Ø" value={S.topDia} placeholder={topDias && topDias.long ? pair(topDias.long, topDias.short) : ''} onChange={(v) => patch('starters', 'topDia', v)} />
-        <NumField label="Lap" value={S.lap} placeholder={startBase ? pair(startBase.long.lap, startBase.short.lap) : ''} onChange={(v) => patch('starters', 'lap', v)} />
+        <NumField label="Lap (good bond)" value={S.lap} placeholder={startBase ? pair(startBase.long.lap, startBase.short.lap) : ''} onChange={(v) => patch('starters', 'lap', v)} />
         <NumField label="Anchorage" value={S.anchorage} placeholder={startBase ? pair(startBase.long.anchorage, startBase.short.anchorage) : ''} onChange={(v) => patch('starters', 'anchorage', v)} />
       </div>
       <div className="grid3">

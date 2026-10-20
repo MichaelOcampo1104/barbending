@@ -127,7 +127,8 @@ test('column 1: 44H40 long, 8H32 short, 2 X and 6 Y cross-ties at 150, adds 165 
 
 test('two levels: the long faces go 40 then 32 and the short faces stay 32, each face laps with its own lap and crank', () => {
   const rows = [level2({ barsLong: '44H32', barsShort: '8H32' }), base({ links: 'H10-100' })];
-  const res = memberGroups(COLUMN1, inputs(rows), { neighbours: [] });
+  // The 2.5 m level's splice (40 → 32 on the long faces, lap 2240) runs up to 5055 mm, so this test uses a 5.5 m member.
+  const res = memberGroups({ ...COLUMN1, lz: 5500 }, inputs(rows), { neighbours: [] });
   assert.equal(res.ok, true, res.msg);
   const mains = group(res, 'C1 mains').rows;
   assert.equal(mains.length, 104);

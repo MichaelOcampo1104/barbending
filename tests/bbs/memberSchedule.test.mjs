@@ -76,18 +76,18 @@ test('the drawing\'s column: three splices, the bottom bars Z-cranked, 234 rows'
   assert.equal(v1.length + v2.length + v3.length, 132);
   // splice at 2300: lap 1650 (the larger bar, H32), crank 35, jog 210
   assert.ok(v1.every((r) => r.Rebar_Type === 'double_crank' && r.Dia === 32));
-  assert.equal(v1[0].DC_Lap_Start, 1209);
+  assert.equal(v1[0].DC_Lap_Start, 2319); // a = 2300 + 75, less the bar's bottom (56)
   assert.equal(v1[0].DC_Lap_Mid, 210);
   assert.equal(v1[0].DC_Tail_Length, 1650);
   assert.equal(v1[0].Crank_step, 35);
   // splice at 8600: H25 both sides, so lap 1290, crank 25, jog 150
   assert.ok(v2.every((r) => r.Rebar_Type === 'double_crank' && r.Dia === 25));
-  assert.equal(v2[0].DC_Lap_Start, 6330);
+  assert.equal(v2[0].DC_Lap_Start, 6090); // a = 8600 + 75, less b of the splice below (2585)
   assert.equal(v2[0].DC_Tail_Length, 1290);
   assert.equal(v2[0].Crank_step, 25);
   assert.ok(v3.every((r) => r.Rebar_Type === 'straight' && r.Dia === 25));
-  near(v3[0].Pos_z, 7955, 0.01);
-  near(v3[0]['Length of Bar'], 4017.5, 0.01);
+  near(v3[0].Pos_z, 8825, 0.01); // b of the top splice: 8600 + 75 + jog 150
+  near(v3[0]['Length of Bar'], 3147.5, 0.01); // to the top end, 11972.5 − 8825
 });
 
 test('the links: a stack per run of bar sizes, and six c_link_with_hook cross-ties in each run', () => {

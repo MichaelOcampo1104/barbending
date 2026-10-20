@@ -27,6 +27,8 @@ const report = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${msg}`); if
 const COLUMN = { id: 'c1', name: 'C1', kind: 'COLUMN', lx: 800, ly: 800, lz: 4500, x: 0, y: 0, z: 0, covB: 40, covT: 40, slope: 0 };
 const WALL = { id: 'c2', name: 'W1', kind: 'WALL', lx: 5000, ly: 200, lz: 3000, x: 2000, y: 2000, z: 0, covB: 40, covT: 40, slope: 0 };
 const RECT = { id: 'c3', name: 'R1', kind: 'COLUMN', lx: 2500, ly: 1000, lz: 4500, x: 0, y: 3000, z: 0, covB: 40, covT: 40, slope: 0 };
+// The C4/C4A drawing (docs/superpowers/specs/2026-10-20-column-size-steps-design.md): a 3200 x 800 base, a 2400 x 800 section from B1 up, Hz 20900.
+const C4 = { id: 'c4', name: 'C4', kind: 'COLUMN', lx: 3200, ly: 800, lz: 20900, x: 0, y: 0, z: 0, covB: 40, covT: 40, slope: 0 };
 
 async function waitFor(b, expr, timeoutMs = 30000) {
   const t0 = Date.now();
@@ -55,6 +57,15 @@ const typeField = (b, field, index, value) => b.ev(`(() => {
 // Picks an option of the card's Layout select, through React's own change handling.
 const pickLayout = (b, value) => b.ev(`(() => {
   const select = document.querySelector('.memberCard select');
+  if (!select) return false;
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, ${JSON.stringify(value)});
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+})()`);
+
+// Picks the layout of one level (its MAIN BARS layout select), counting the level rows from the top.
+const pickRowLayout = (b, index, value) => b.ev(`(() => {
+  const select = document.querySelectorAll('.memberCard .levelRow select')[${index}];
   if (!select) return false;
   Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, ${JSON.stringify(value)});
   select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -161,7 +172,8 @@ try {
   report(await waitFor(b, `document.querySelectorAll('.memberCard input[data-field="sfl"]').length === 2`), 'a level row appears above the base of R1 for its slab');
   await typeField(b, 'sfl', 0, '2.3');
   await typeField(b, 'slab', 0, '1500');
-  report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('800 to 2300')`), 'a 1500 mm slab under a level 2.3 m up shows its link zone from 800 to 2300 mm');
+  report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('800 to 2300')`), 'a 1500 mm slab under a level 2.3 m up shows as a gap from 800 to 2300 mm');
+  report(await b.ev(`document.querySelector('.memberCard').textContent.includes('no links')`), 'the slab zone reads no links');
   await clickInCard(b, '× Remove');
   report(await waitFor(b, `document.querySelectorAll('.memberCard input[data-field="sfl"]').length === 1`), 'the slab test level is removed again');
 
@@ -180,6 +192,40 @@ try {
   await sleep(400);
   const shot = await b.send('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(outDir, 'member_card.png'), Buffer.from(shot.data, 'base64'));
+  // Size steps: the C4/C4A drawing, typed as the drawing writes it. The base has long and short faces; B3 platform and B2 keep them ("same as
+  // below"); B1 takes one size, 2400 x 800, from its SFL up. Entered bottom up, so each new level goes above the one before.
+  await b.ev(`window.__store.setState({ concretes: [${JSON.stringify(COLUMN)}, ${JSON.stringify(C4)}], bars: [], selectedConcrete: 'c4', past: [], future: [] })`);
+  report(await waitFor(b, `!!document.querySelector('.memberCard') && /This member is 20900 mm high/.test(document.querySelector('.memberCard').textContent)`), 'the card shows the C4 member, 20900 mm high');
+  await pickLayout(b, 'faces');
+  await typeField(b, 'sfl', 0, '-20.87');
+  await typeField(b, 'barslong', 0, '40H40');
+  await typeField(b, 'barsshort', 0, '8H32');
+  await typeField(b, 'linksouter', 0, 'H10-100');
+  await typeField(b, 'linksx', 0, '2H10-100');
+  await typeField(b, 'linksy', 0, '4H10-100');
+  for (const [sfl, slab] of [['-18.57', '1500'], ['-12.27', '1200']]) {
+    const n = await b.ev(`document.querySelectorAll('.memberCard input[data-field="sfl"]').length`);
+    await clickInCard(b, '+ Level above the top');
+    await waitFor(b, `document.querySelectorAll('.memberCard input[data-field="sfl"]').length === ${n + 1}`);
+    await typeField(b, 'sfl', 0, sfl);
+    await typeField(b, 'slab', 0, slab);
+  }
+  await clickInCard(b, '+ Level above the top');
+  await waitFor(b, `document.querySelectorAll('.memberCard input[data-field="sfl"]').length === 4`);
+  await typeField(b, 'sfl', 0, '-5.79');
+  await typeField(b, 'size', 0, '2400 x 800');
+  await typeField(b, 'slab', 0, '800');
+  await pickRowLayout(b, 0, 'all');
+  await waitFor(b, `!!document.querySelector('.memberCard input[data-field="bars"]')`);
+  await typeField(b, 'bars', 0, '40H25');
+  await clickInCard(b, '▦ Generate sets');
+  report(await waitFor(b, `window.__store.getState().bars.length === 300`), 'the C4/C4A drawing adds 300 rows');
+  const c4Sets = await b.ev(`Object.fromEntries(['C4 mains', 'C4 links', 'C4 starters'].map((n) => [n, window.__store.getState().bars.filter((r) => r.setId === n).length]))`);
+  report(JSON.stringify(c4Sets) === JSON.stringify({ 'C4 mains': 184, 'C4 links': 28, 'C4 starters': 88 }), `C4 sets: ${JSON.stringify(c4Sets)}`);
+  report(await b.ev(`document.querySelector('.memberCard').textContent.includes('Size step to 2400 x 800')`), 'the read-back names the size step at B1');
+  await b.ev(`window.__store.getState().undo()`);
+  report(await waitFor(b, `window.__store.getState().bars.length === 0`), 'one undo removes the C4 sets');
+
   report(b.consoleErrors.length === 0, `no console errors${b.consoleErrors.length ? `: ${b.consoleErrors.slice(0, 3).join(' | ')}` : ''}`);
 } catch (e) {
   report(false, `check stopped: ${e.message}`);
