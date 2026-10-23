@@ -265,6 +265,33 @@ def main():
     ap.add_argument('--profile-n', type=int, default=0)
     ap.add_argument('--profile-spacing', type=float, default=0.0)
     ap.add_argument('--profile-axis', default='')
+    ap.add_argument('--section-base', type=float, default=None, help='elevation of the lowest drawn line (section mode)')
+    ap.add_argument('--section-depth', type=float, default=None, help='beam depth = concrete height (section mode)')
+    ap.add_argument('--section-y', type=float, default=None, help='beam plan Y of its south face (section mode)')
+    ap.add_argument('--section-width', type=float, default=None, help='beam width across Y (section mode)')
+    ap.add_argument('--section-cover', type=float, default=None, help='cover top and bottom (default --cover)')
+    ap.add_argument('--link-box', action='store_true', help='section link lines become closed boxes across the beam')
+    ap.add_argument('--link-spacing', type=float, default=0.0, help='link box spacing along X (mm); zone links without an SP tag')
+    ap.add_argument('--link-shape', default='tie', choices=['tie', 'c_link'],
+                    help='section link shape: tie = closed box, c_link = open U with legs of the drawn height')
+    ap.add_argument('--link-zone', action='store_true',
+                    help='section: each closed REBAR-LINK rectangle is a c_link_with_hook zone (stations along X, levels up Z)')
+    ap.add_argument('--link-level-spacing', type=float, default=300.0, help='c_link level spacing up a zone (mm)')
+    ap.add_argument('--link-leg-a', type=float, default=130.0, help='c_link leg A (mm)')
+    ap.add_argument('--link-leg-b', type=float, default=110.0, help='c_link hook leg B (mm)')
+    ap.add_argument('--link-double-hook', action='store_true', help='c_link hooks at both ends (default single hook)')
+    ap.add_argument('--link-rot', type=int, default=0, choices=[0, 90],
+                    help='zone links: 0 = spine across the width with levels up Z; 90 = spine vertical, one leg at each side')
+    ap.add_argument('--link-qty-x', '--link-count-x', dest='link_qty_x', type=int, default=0,
+                    help='zone links without an SP tag: stations along X, spread across the span (instead of --link-spacing)')
+    ap.add_argument('--link-qty-y', type=int, default=0,
+                    help='zone links with --link-rot 90: legs across the width, spread between the cover lines (default 2)')
+    ap.add_argument('--link-qty-z', type=int, default=0,
+                    help='zone links with --link-rot 0: levels up the zone, spread bottom edge to top edge (instead of --link-level-spacing)')
+    ap.add_argument('--link-extent', type=float, default=0.0,
+                    help='zone links: the spacing (or quantity) covers only this length of each drawn zone (0 = the whole zone)')
+    ap.add_argument('--link-extent-from', choices=['start', 'end'], default='start',
+                    help='zone links: measure --link-extent from the start (low X) or the end (high X) edge of each zone')
     a = ap.parse_args()
 
     doc = ezdxf.readfile(a.dxf); msp = doc.modelspace()
@@ -280,6 +307,47 @@ def main():
     rects = [e for e in msp.query('LWPOLYLINE')
              if e.dxf.layer.startswith('CONC-') and e.is_closed]
     print(f'{len(bars)} centerlines, {len(ticks)} extent ticks, {len(texts)} bar tags, {len(rects)} concrete rects, {len(cticks)} concrete tags')
+
+    # ---- section mode (--section-base ...): the drawing is an ELEVATION, X along the beam and DXF Y = height. Bars and link boxes take
+    # their elevation from --section-base, their plan Y from --section-y + cover + link dia + bar dia/2, and their spacing across Y from
+    # --section-width. The one closed CONC-* outline becomes the beam: depth --section-depth, width --section-width, south face at --section-y.
+    sec_cfg = None
+    if any(v is not None for v in (a.section_base, a.section_depth, a.section_y, a.section_width)) or a.link_box or a.link_zone:
+        _missing = [n for n, v in (('--section-base', a.section_base), ('--section-depth', a.section_depth),
+                                   ('--section-y', a.section_y), ('--section-width', a.section_width)) if v is None]
+        if _missing:
+            sys.exit('section mode needs ' + ', '.join(_missing))
+        if str(a.starter_plane).upper() != 'XZ':
+            sys.exit('section mode needs --starter-plane XZ (an elevation: X along the beam, DXF Y = height)')
+        if len(rects) != 1:
+            sys.exit(f'section mode needs exactly one closed CONC-* outline, found {len(rects)}')
+        if a.link_box and not a.link_spacing > 0:
+            sys.exit('--link-box needs --link-spacing above zero (mm between boxes along X)')
+        if a.link_extent < 0 or (a.link_extent > 0 and not a.link_zone):
+            sys.exit('--link-extent needs --link-zone and a length above zero (mm)')
+        _sr = [(p[0], p[1]) for p in rects[0].vertices()]
+        _zone = [p[0] for t in ticks for p in t.vertices()] or [p[0] for p in _sr]
+        _lk = [e for e in msp.query('LWPOLYLINE') if e.dxf.layer.startswith('REBAR-LINK')]
+        _lm = re.search(r'H(\d+)', _lk[0].dxf.layer) if _lk else None
+        sec_cfg = {'base': a.section_base, 'depth': a.section_depth, 'y': a.section_y, 'width': a.section_width,
+                   'cover': a.section_cover if a.section_cover is not None else a.cover,
+                   'ymin': min(p[1] for p in _sr), 'zx0': min(_zone), 'zx1': max(_zone),
+                   'link_dia': int(_lm.group(1)) if _lm else 0}
+        a.profiles = 'auto'
+        print(f'section mode: beam at Y {a.section_y}, elevation {a.section_base} to {a.section_base + a.section_depth}, '
+              f'width {a.section_width}, cover {sec_cfg["cover"]}, link H{sec_cfg["link_dia"]}, zone X {min(_zone):.1f} to {max(_zone):.1f}')
+        if a.starter_y is not None:
+            print('NOTE --starter-y is ignored in section mode: bars sit at --section-y + cover + link dia + bar dia/2')
+        if a.link_zone:
+            # SP=<spacing along X> on a tag at a link zone sets that zone's spacing; the rectangle's layer sets its diameter
+            zone_sp_tags = [(t.dxf.insert[0], t.dxf.insert[1], t.plain_text()) for t in msp.query('TEXT MTEXT')
+                            if re.search(r'\bSP\s*=', t.plain_text(), re.I)]
+            # link zones come from the rectangles, so LINK_HOOK and SP= tags are not read as bar tags: they pair with every bar within reach
+            _zone_tag = lambda s: 'LINK_HOOK' in s or re.search(r'\bSP\s*=', s, re.I) is not None
+            _ntag = sum(1 for t in texts if _zone_tag(t[0]))
+            texts[:] = [t for t in texts if not _zone_tag(t[0])]
+            if _ntag:
+                print(f'NOTE {_ntag} LINK_HOOK / SP= tag(s) not read as bar tags: link zones come from the closed REBAR-LINK rectangles')
 
     # ---- concrete rects: bbox footprint + THK/Z tag -> app box member ----
     # Tags pair nearest-first by ascending rect area (consumed), so stacked
@@ -335,6 +403,10 @@ def main():
             'lx': round(max(xs)-min(xs), 1), 'ly': round(max(ys)-min(ys), 1),
             'lz': thk, 'x': round(x0, 2), 'y': round(y0, 2), 'z': z,
             'covB': covB, 'covT': covT, 'slope': slope})
+        if sec_cfg is not None:
+            # the drawn outline is an elevation: its height becomes the beam depth, its Y the plan position, its bottom the elevation
+            concretes[-1].update(ly=a.section_width, lz=a.section_depth, y=a.section_y, z=a.section_base,
+                                 covB=sec_cfg['cover'], covT=sec_cfg['cover'])
         print(f'{r.dxf.layer} bbox x={x0:.1f} y={y0:.1f} lx={max(xs)-min(xs):.1f} ly={max(ys)-min(ys):.1f} -> id={cid.lower()} name={name} lz={thk} z={z} covB={covB} covT={covT}')
     cmap = {c['id']: c['id'] for c in concretes} | {c['name'].lower(): c['id'] for c in concretes}
     cobj = {c['id']: c for c in concretes}
@@ -1208,6 +1280,118 @@ def main():
     # a bar tag within 1500 keeps its legacy straight-chord row. Default
     # tags-mode leaves this off so mixed/tagged plan files convert exactly
     # as before.
+    sec_link_rows = []
+    if sec_cfg is not None and a.link_zone:
+        # each SP tag goes to its nearest closed REBAR-LINK rectangle, if within 300 mm (a tie goes to the rectangle whose low-X end is nearest)
+        _zl = [z for z in msp.query('LWPOLYLINE') if re.match(r'REBAR-LINK-H\d+$', z.dxf.layer) and z.is_closed]
+        _zbox = [(min(p[0] for p in z.vertices()), max(p[0] for p in z.vertices()),
+                  min(p[1] for p in z.vertices()), max(p[1] for p in z.vertices())) for z in _zl]
+        zone_sp_of, sp_tag_used = {}, set()
+        for _ti, (_tx, _ty, _tt) in enumerate(zone_sp_tags):
+            _near = [(math.hypot(max(_x0 - _tx, 0.0, _tx - _x1), max(_y0 - _ty, 0.0, _ty - _y1)), abs(_tx - _x0), _i)
+                     for _i, (_x0, _x1, _y0, _y1) in enumerate(_zbox)]
+            _d, _, _bi = min(_near, default=(1e9, 0.0, -1))
+            if _d <= 300:
+                zone_sp_of.setdefault(_zl[_bi].dxf.handle, []).append(_ti)
+        for _z in msp.query('LWPOLYLINE'):
+            _zm = re.match(r'REBAR-LINK-H(\d+)$', _z.dxf.layer)
+            if not _zm or not _z.is_closed:
+                continue
+            _zq = [(float(p[0]), float(p[1])) for p in _z.vertices()]
+            _zx0, _zx1 = min(p[0] for p in _zq), max(p[0] for p in _zq)
+            _zy0, _zy1 = min(p[1] for p in _zq), max(p[1] for p in _zq)
+            _zdia = int(_zm.group(1))
+            _zb = sec_cfg['base'] + (_zy0 - sec_cfg['ymin'])   # the zone's drawn bottom
+            _zt = sec_cfg['base'] + (_zy1 - sec_cfg['ymin'])   # the zone's drawn top
+            # the SP tag(s) on this zone (assigned to their nearest rectangle above) set the spacing along X
+            _tsp = None
+            for _ti in zone_sp_of.get(_z.dxf.handle, []):
+                _tt = zone_sp_tags[_ti][2]
+                sp_tag_used.add(_ti)
+                _hm = re.search(r'\bH(\d+)\b', _tt)
+                if _hm and int(_hm.group(1)) != _zdia:
+                    print(f'NOTE tag "{_tt}" says H{_hm.group(1)}, but {_z.dxf.layer} is drawn H{_zdia}: using H{_zdia} (the layer)')
+                _tm = re.search(r'\bSP\s*=\s*(\S+)', _tt, re.I)
+                _sv = _tm.group(1) if _tm else ''
+                if not re.fullmatch(r'\d+(\.\d+)?', _sv):
+                    print(f'NOTE tag "{_tt}": SP={_sv} is not one spacing along X (beams take SP=150, not 300x300): the command line sets this zone')
+                    continue
+                if _tsp is not None and float(_sv) != _tsp:
+                    sys.exit(f'{_z.dxf.layer}: two SP tags disagree ({_tsp:g} and {_sv}) near X {_zx0:.1f}: keep one')
+                _tsp = float(_sv)
+            # along X: the span is the whole drawn zone, or its first (or last) --link-extent. The SP tag gives the spacing; without one,
+            # a quantity is spread evenly across the span, or --link-spacing gives the count, anchored on the edge the span starts from
+            _span = _zx1 - _zx0
+            if a.link_extent > 0:
+                if a.link_extent > _span + 1e-6:
+                    print(f'NOTE {_z.dxf.layer}: --link-extent {a.link_extent:g} is longer than the drawn zone ({_span:.1f}); using the whole zone')
+                _span = min(_span, a.link_extent)
+            _pstart = _zx0 if a.link_extent_from == 'start' else _zx1 - _span   # the low-X end of the span
+            if _tsp is None and a.link_qty_x > 0:
+                _nx = a.link_qty_x
+                _sx = _span / (_nx - 1) if _nx > 1 else 0.0
+                _px = _pstart if _nx > 1 else _pstart + _span / 2
+                _xsrc = 'qty'
+            else:
+                _sp = _tsp if _tsp is not None else a.link_spacing
+                if not _sp > 0:
+                    sys.exit(f'{_z.dxf.layer}: no spacing for this link zone: add SP=<spacing> to its tag, or give --link-qty-x or --link-spacing')
+                _nx = math.floor(_span / _sp + 1e-6) + 1
+                _sx = _sp
+                _px = _pstart if a.link_extent_from == 'start' else _zx1 - (_nx - 1) * _sx
+                _xsrc = 'SP tag' if _tsp is not None else 'spacing'
+            if a.link_rot == 90:
+                # spine vertical: legs across the width, hooks turned inward (the left half hooks +Y, the right half -Y)
+                _ny = a.link_qty_y if a.link_qty_y > 0 else 2
+                _y1 = sec_cfg['y'] + sec_cfg['cover'] + _zdia / 2
+                _y2 = sec_cfg['y'] + sec_cfg['width'] - sec_cfg['cover'] - _zdia / 2
+                _sy = (_y2 - _y1) / (_ny - 1) if _ny > 1 else 0.0
+                _nl = (_ny + 1) // 2
+                for _th, _py, _pz, _qy in ((270, _y1, _zt, _nl), (90, _y1 + _nl * _sy, _zb, _ny - _nl)):
+                    if _qy < 1:
+                        continue
+                    sec_link_rows.append({
+                        'Bar_mark': f'CL{len(sec_link_rows) + 1}', 'Rebar_Type': 'c_link_with_hook', 'Dia': _zdia, 'Plane': 'YZ',
+                        'Pos_Rotation': _th, 'Pos_x': round(_px, 2), 'Pos_y': round(_py, 2), 'Pos_z': round(_pz, 1),
+                        'length': round(_zt - _zb, 1), 'c_length_a': a.link_leg_a, 'c_length_b': a.link_leg_b,
+                        'double_hook': 'yes',
+                        'qty_x': _nx, 'spacing_x': round(_sx, 3), 'qty_y': _qy, 'spacing_y': round(_sy, 3),
+                        'qty_z': 1, 'spacing_z': 0,
+                        'qty': 1, 'Visible': 1, 'bond_condition': '',
+                        'Group': concretes[0]['name'], 'host': concretes[0]['id'],
+                        'feature': f'c_link legs: {_qy} across Y, {_nx} along X',
+                    })
+                print(f'CL{len(sec_link_rows) - 1} and CL{len(sec_link_rows)}: H{_zdia}, {_ny} legs across the width at {_sy:.1f}, '
+                      f'{_nx} stations along X from {_px:.1f} to {_px + (_nx - 1) * _sx:.1f} at {_sx:.1f} ({_xsrc}), '
+                      f'spine {round(_zt - _zb, 1)} vertical from Z {_zb:.1f} to {_zt:.1f}')
+            else:
+                # spine across the width: levels up the zone; a quantity is spread from its bottom edge to its top edge
+                if a.link_qty_z > 0:
+                    _nz = a.link_qty_z
+                    _sz = (_zt - _zb) / (_nz - 1) if _nz > 1 else 0.0
+                else:
+                    _nz = math.floor((_zt - _zb) / a.link_level_spacing + 1e-6) + 1
+                    _sz = a.link_level_spacing
+                sec_link_rows.append({
+                    'Bar_mark': f'CL{len(sec_link_rows) + 1}', 'Rebar_Type': 'c_link_with_hook', 'Dia': _zdia, 'Plane': 'YZ',
+                    'Pos_Rotation': 0, 'Pos_x': round(_px, 2),
+                    'Pos_y': round(sec_cfg['y'] + sec_cfg['cover'] + _zdia / 2, 2), 'Pos_z': round(_zb, 1),
+                    'length': round(sec_cfg['width'] - 2 * (sec_cfg['cover'] + _zdia / 2), 1),
+                    'c_length_a': a.link_leg_a, 'c_length_b': a.link_leg_b,
+                    'double_hook': 'yes' if a.link_double_hook else 'no',
+                    'qty_x': _nx, 'spacing_x': round(_sx, 3), 'qty_y': 1, 'spacing_y': 0,
+                    'qty_z': _nz, 'spacing_z': round(_sz, 3),
+                    'qty': 1, 'Visible': 1, 'bond_condition': '',
+                    'Group': concretes[0]['name'], 'host': concretes[0]['id'],
+                    'feature': f'c_link zone: {_nx} along X, {_nz} levels',
+                })
+                print(f'CL{len(sec_link_rows)}: c_link zone H{_zdia}, {_nx} stations along X from {_px:.1f} to {_px + (_nx - 1) * _sx:.1f} '
+                      f'at {_sx:.1f} ({_xsrc}), {_nz} levels at {_sz:.1f} from Z {_zb:.1f} to {_zt:.1f}')
+            _prof_used.add(id(_z))  # the rectangle is the zone, not a tie
+        for _ti, (_tx, _ty, _tt) in enumerate(zone_sp_tags):
+            if _ti not in sp_tag_used:
+                print(f'NOTE tag "{_tt}" at X {_tx:.1f}, Y {_ty:.1f} is not at a link zone: ignored')
+    _sec_host = concretes[0]['id'] if (sec_cfg is not None and concretes) else ''
     if str(a.profiles).lower() == 'auto':
         _auto_n = 0
         _ppl = str(a.starter_plane).upper() if str(a.starter_plane).upper() in ('XY', 'XZ', 'YZ') else 'XY'
@@ -1226,6 +1410,36 @@ def main():
                     _tagged = True
                     break
             if _tagged:
+                continue
+            if sec_cfg is not None and a.link_box and _e.dxf.layer.startswith('REBAR-LINK') and len(_q) == 2:
+                # a section link line is a closed box across the beam (YZ for an XZ section); its drawn height is the box height
+                if abs(_q[1][0] - _q[0][0]) > 1e-3:
+                    sys.exit(f'{_e.dxf.layer}: the link line is not vertical in the elevation (X must match at both ends)')
+                _ldia = int(re.search(r'H(\d+)', _e.dxf.layer).group(1))
+                _mg = sec_cfg['cover'] + _ldia / 2
+                _kl = math.ceil((sec_cfg['zx0'] + _mg - _q[0][0]) / a.link_spacing)
+                _kh = math.floor((sec_cfg['zx1'] - _mg - _q[0][0]) / a.link_spacing)
+                if _kh < _kl:
+                    print(f'NOTE {_e.dxf.layer}: no link station fits inside the zone at {a.link_spacing:g} mm')
+                    continue
+                _wid = round(sec_cfg['width'] - 2 * _mg, 1)
+                _hgt = round(abs(_q[1][1] - _q[0][1]), 1)
+                sec_link_rows.append({
+                    'Bar_mark': f'L{len(sec_link_rows) + 1}', 'Rebar_Type': a.link_shape, 'Dia': _ldia, 'Plane': 'YZ', 'Pos_Rotation': 0,
+                    'Pos_x': round(_q[0][0] + _kl * a.link_spacing, 2),
+                    'Pos_y': round(sec_cfg['y'] + sec_cfg['cover'] + _ldia / 2, 2),
+                    'Pos_z': round(sec_cfg['base'] + (min(_q[0][1], _q[1][1]) - sec_cfg['ymin']), 1),
+                    'length': _wid, 'c_length_a': _hgt,
+                    'qty_x': _kh - _kl + 1, 'spacing_x': a.link_spacing, 'qty_y': 1, 'spacing_y': 0, 'qty_z': 1, 'spacing_z': 0,
+                    'qty': 1, 'Visible': 1, 'bond_condition': '',
+                    'Group': concretes[0]['name'], 'host': concretes[0]['id'],
+                    'feature': f'section box: {_kh - _kl + 1} stations every {a.link_spacing:g} mm',
+                })
+                print(f'L{len(sec_link_rows)}: {a.link_shape} H{_ldia} {_wid} x {_hgt} in YZ, {_kh - _kl + 1} stations from X {_q[0][0] + _kl * a.link_spacing:.1f}')
+                if a.link_shape == 'c_link':
+                    # a C-link's two legs both run the drawn height; its base is the box width (c_length_b = second leg)
+                    sec_link_rows[-1].update(c_length_b=_hgt, double_hook='no')
+                _prof_used.add(id(_e))  # consumed: the legacy plan path must not also read this line as a bar
                 continue
             _legs = []
             for _k in range(1, len(_q)):
@@ -1257,7 +1471,10 @@ def main():
                 if a.starter_x is not None:
                     _flagign[0] += 1  # --starter-x unused on an XZ plane
                 _ppy = round(float(a.starter_y), 2) if a.starter_y is not None else 0.0
-            if a.starter_z is not None:
+            if sec_cfg is not None:
+                _ppy = round(sec_cfg['y'] + sec_cfg['cover'] + sec_cfg['link_dia'] + _pdia / 2, 2)
+                _pz, _pzsrc = round(sec_cfg['base'] + (_q[0][1] - sec_cfg['ymin']), 1), 'section-base'
+            elif a.starter_z is not None:
                 _pz, _pzsrc = float(a.starter_z), 'default'
             elif _ppl in ('XZ', 'YZ'):
                 # section drawing: DXF Y is the elevation (same rule as the
@@ -1266,6 +1483,11 @@ def main():
             else:
                 _pz, _pzsrc = 0.0, 'default-0'
             _pdist = _prof_dist(None, _ppl)
+            if sec_cfg is not None and _pdist['qty_y'] > 1:
+                # bars across Y: one row per drawn line, spaced so the outer bars sit one cover + link + bar radius in from the faces
+                _n = _pdist['qty_y']
+                _pdist['spacing_y'] = round((sec_cfg['width'] - 2 * (sec_cfg['cover'] + sec_cfg['link_dia'] + _pdia / 2)) / (_n - 1), 2)
+                _pdist['dist_note'] = f'x{_n} toward +Y @ {_pdist["spacing_y"]:.1f}'
             if len(_q) == 2:
                 # 2-pt section trace = straight bar along the drawn chord:
                 # rot is the chord angle in the section plane, `dir` steps
@@ -1275,13 +1497,13 @@ def main():
                         'L': _tot, 'z': _pz, 'zsrc': _pzsrc, 'tag': '',
                         'dir': ((math.cos(_th), 0.0, math.sin(_th)) if _ppl == 'XZ'
                                 else (0.0, math.cos(_th), math.sin(_th))),
-                        'host': (a.starter_host or '')}
+                        'host': (a.starter_host or _sec_host)}
                 _pcdia, _pkind, _pdesc = f'REBAR-H{_pdia}', 'auto-straight', 'chord'
             else:
                 _pov = {'rtype': 'profile', 'plane': _ppl, 'rot': 0.0,
                         'L': _tot, 'z': _pz, 'zsrc': _pzsrc,
                         'tag': '', 'legs': _legs, 'nosplit': True,
-                        'host': (a.starter_host or '')}
+                        'host': (a.starter_host or _sec_host)}
                 _pcdia, _pkind, _pdesc = f'PROFILE-H{_pdia}', 'auto-profile', f'{len(_legs)} legs'
                 if _tot > a.stock:
                     print(f'NOTE {_pmark}: profile {round(_tot)} over stock — single piece, split manually in app')
@@ -1913,6 +2135,13 @@ def main():
             if m0 != refm[0] and abs((a0 - refm[1] + 90) % 180 - 90) > 75:
                 print(f'WARN {m0}: main drawn at {a0}° across the main direction ({refm[0]} at {refm[1]}°)')
 
+    if sec_link_rows:
+        _next = max([int(r.get('Rebar_tag') or 0) for r in rows] + [0]) + 1
+        for _r in sec_link_rows:
+            _r['Rebar_tag'] = _next
+            _next += 1
+            rows.append(_r)
+        print(f'{len(sec_link_rows)} closed link box row(s) written in the section plane')
     suffix = a.bond if a.bond in ('good', 'poor') else 'auto'
     out = a.out or a.dxf.rsplit('.',1)[0] + f'_{suffix}.csv'
     with open(out,'w',newline='') as f:
