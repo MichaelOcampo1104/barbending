@@ -319,6 +319,8 @@ def main():
             sys.exit('section mode needs ' + ', '.join(_missing))
         if str(a.starter_plane).upper() != 'XZ':
             sys.exit('section mode needs --starter-plane XZ (an elevation: X along the beam, DXF Y = height)')
+        if str(a.profile_axis).upper() not in ('', 'Y'):
+            sys.exit('section mode spreads profile bars across Y: drop --profile-axis or use --profile-axis Y')
         if len(rects) != 1:
             sys.exit(f'section mode needs exactly one closed CONC-* outline, found {len(rects)}')
         if a.link_box and not a.link_spacing > 0:
@@ -332,7 +334,8 @@ def main():
         sec_cfg = {'base': a.section_base, 'depth': a.section_depth, 'y': a.section_y, 'width': a.section_width,
                    'cover': a.section_cover if a.section_cover is not None else a.cover,
                    'ymin': min(p[1] for p in _sr), 'zx0': min(_zone), 'zx1': max(_zone),
-                   'link_dia': int(_lm.group(1)) if _lm else 0}
+                   'link_dia': int(_lm.group(1)) if _lm else 0,
+                   'max_dia': max([int(m.group(1)) for m in (re.match(r'REBAR-H(\d+)$', e.dxf.layer) for e in bars) if m] or [0])}
         a.profiles = 'auto'
         print(f'section mode: beam at Y {a.section_y}, elevation {a.section_base} to {a.section_base + a.section_depth}, '
               f'width {a.section_width}, cover {sec_cfg["cover"]}, link H{sec_cfg["link_dia"]}, zone X {min(_zone):.1f} to {max(_zone):.1f}')
@@ -1483,11 +1486,24 @@ def main():
             else:
                 _pz, _pzsrc = 0.0, 'default-0'
             _pdist = _prof_dist(None, _ppl)
-            if sec_cfg is not None and _pdist['qty_y'] > 1:
-                # bars across Y: one row per drawn line, spaced so the outer bars sit one cover + link + bar radius in from the faces
-                _n = _pdist['qty_y']
-                _pdist['spacing_y'] = round((sec_cfg['width'] - 2 * (sec_cfg['cover'] + sec_cfg['link_dia'] + _pdia / 2)) / (_n - 1), 2)
-                _pdist['dist_note'] = f'x{_n} toward +Y @ {_pdist["spacing_y"]:.1f}'
+            if sec_cfg is not None and (_pdist['qty_y'] > 1 or a.profile_spacing):
+                # bars across Y: one row per drawn line, the same count on every row. Without --profile-spacing the outer bars sit one cover +
+                # link + bar radius in from the faces (--profile-n sets the count). With it they step from the south cover line (negative:
+                # from the north one) at that spacing; the count is --profile-n, or the number that fits the widest bar's cover-to-cover span
+                if a.profile_spacing:
+                    _sp_y = float(a.profile_spacing)
+                    _span_max = sec_cfg['width'] - 2 * (sec_cfg['cover'] + sec_cfg['link_dia'] + sec_cfg['max_dia'] / 2)
+                    _n = _pdist['qty_y'] if _pdist['qty_y'] > 1 else math.floor(_span_max / abs(_sp_y) + 1e-6) + 1
+                    if (_n - 1) * abs(_sp_y) > _span_max + 1e-6:
+                        sys.exit(f'--profile-n {_n} at --profile-spacing {abs(_sp_y):g} needs {(_n - 1) * abs(_sp_y):.1f} mm across the width; '
+                                 f'the widest bar has {_span_max:.1f} mm between its cover lines')
+                    _pdist.update(qty_y=_n, spacing_y=_sp_y, dist_note=f'x{_n} toward {"-" if _sp_y < 0 else "+"}Y @ {abs(_sp_y):.0f}')
+                    if _sp_y < 0:
+                        _ppy = round(sec_cfg['y'] + sec_cfg['width'] - sec_cfg['cover'] - sec_cfg['link_dia'] - _pdia / 2, 2)
+                else:
+                    _n = _pdist['qty_y']
+                    _pdist['spacing_y'] = round((sec_cfg['width'] - 2 * (sec_cfg['cover'] + sec_cfg['link_dia'] + _pdia / 2)) / (_n - 1), 2)
+                    _pdist['dist_note'] = f'x{_n} toward +Y @ {_pdist["spacing_y"]:.1f}'
             if len(_q) == 2:
                 # 2-pt section trace = straight bar along the drawn chord:
                 # rot is the chord angle in the section plane, `dir` steps
