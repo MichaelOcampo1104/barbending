@@ -814,8 +814,8 @@ function ConcreteEditor() {
                 <Field key={k} label={l} value={c[k]} onChange={(v) => updateConcrete(c.id, { [k]: v })} />
               ))}
             </div>
-            <div className="distnote" style={{ marginTop: 2 }} title={concreteVolumeSource(c) === 'mesh' ? 'Exact mesh volume: retraced IFC profile incl. openings/chamfers — this is the BBS take-off' : 'Lx·Ly·Lz box volume — this is the BBS take-off'}>
-              Volume {concreteVolumeM3(c).toFixed(3)} m³ {concreteVolumeSource(c) === 'mesh' ? '(✨ exact mesh)' : '(box)'}
+            <div className="distnote" style={{ marginTop: 2 }} title={{ mesh: 'Exact mesh volume: retraced IFC profile incl. openings/chamfers — this is the BBS take-off', schedule: 'Volume from the column schedule: each size from its level up to the next size, or the top — this is the BBS take-off', box: 'Lx·Ly·Lz box volume — this is the BBS take-off' }[concreteVolumeSource(c)]}>
+              Volume {concreteVolumeM3(c).toFixed(3)} m³ {{ mesh: '(✨ exact mesh)', schedule: '(from schedule)', box: '(box)' }[concreteVolumeSource(c)]}
             </div>
 
             {c.id === selectedConcrete && <MemberCard member={c} />}

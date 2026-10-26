@@ -219,12 +219,25 @@ try {
   await waitFor(b, `!!document.querySelector('.memberCard input[data-field="bars"]')`);
   await typeField(b, 'bars', 0, '40H25');
   await clickInCard(b, '▦ Generate sets');
-  report(await waitFor(b, `window.__store.getState().bars.length === 300`), 'the C4/C4A drawing adds 300 rows');
+  report(await waitFor(b, `window.__store.getState().bars.length === 340`), 'the C4/C4A drawing adds 340 rows');
   const c4Sets = await b.ev(`Object.fromEntries(['C4 mains', 'C4 links', 'C4 starters'].map((n) => [n, window.__store.getState().bars.filter((r) => r.setId === n).length]))`);
-  report(JSON.stringify(c4Sets) === JSON.stringify({ 'C4 mains': 184, 'C4 links': 28, 'C4 starters': 88 }), `C4 sets: ${JSON.stringify(c4Sets)}`);
+  report(JSON.stringify(c4Sets) === JSON.stringify({ 'C4 mains': 224, 'C4 links': 28, 'C4 starters': 88 }), `C4 sets: ${JSON.stringify(c4Sets)}`);
   report(await b.ev(`document.querySelector('.memberCard').textContent.includes('Size step to 2400 x 800')`), 'the read-back names the size step at B1');
+  report(await b.ev(`document.body.textContent.includes('Volume 49.779 m³ (from schedule)')`), 'the C4 volume comes from its schedule: 3200 x 800 to B1, then 2400 x 800, 49.779 m³');
   await b.ev(`window.__store.getState().undo()`);
   report(await waitFor(b, `window.__store.getState().bars.length === 0`), 'one undo removes the C4 sets');
+  report(await waitFor(b, `document.body.textContent.includes('Volume 53.504 m³ (box)')`), 'one undo puts back the C4 box volume, 53.504 m³');
+  // A size step that changes the bar diameter (spec 12): a 44H40 base under B1 40H25 adds 356 rows, with 40 starters rising from B1.
+  // The base is the last row's input.
+  const nLong = await b.ev(`document.querySelectorAll('.memberCard input[data-field="barslong"]').length`);
+  await typeField(b, 'barslong', nLong - 1, '44H40');
+  await typeField(b, 'bars', 0, '40H25');
+  report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('starters bent in at 14400 mm')`), 'B1 40H25 under the 44H40 base reads back its 40 starters at 14400 mm');
+  report(await b.ev(`document.querySelectorAll('.memberCard input[data-field="crankmax"]').length === 1`), 'only the size-step level has the Longest crank input');
+  await clickInCard(b, '▦ Generate sets');
+  report(await waitFor(b, `window.__store.getState().bars.length === 356`), 'a 44H40 base under B1 40H25 adds 356 rows, with 40 starters at B1');
+  await b.ev(`window.__store.getState().undo()`);
+  report(await waitFor(b, `window.__store.getState().bars.length === 0`), 'one undo removes those sets too');
 
   report(b.consoleErrors.length === 0, `no console errors${b.consoleErrors.length ? `: ${b.consoleErrors.slice(0, 3).join(' | ')}` : ''}`);
 } catch (e) {

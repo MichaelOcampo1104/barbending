@@ -238,6 +238,33 @@ py scripts/dxf_to_bbs.py inputs/additional_bar_shapes.dxf
 - Schedule: shape 99 (special), cut length in A with per-turn bend
   deductions; `legs` round-trips through CSV/project JSON.
 
+## Column schedule from a CSV (CLI)
+
+`scripts/column_csv_to_bbs.mjs` adds a box column's sets (mains, links and starters) from a CSV laid out like the card's schedule: one row per
+level, top level first, with the card's labels as the header row. It runs the card's own steps and writes a project JSON with the sets added.
+
+Without a project file, the column is built from the CSV. The bottom level gives its SIZE and SFL, and the height comes from the roof level less
+the roof slab, or from `--height`:
+
+```bash
+node scripts/column_csv_to_bbs.mjs --csv inputs/column_levels_drawing_sample.csv --column Sub --roof-sfl 2.070 --roof-slab 2000 --out inputs/Sub_drawing_bbs.json
+```
+
+With `--project <file>` the column is taken from that project instead, and `--height` or the roof options change its height in the output.
+
+- `--height <mm>`: the column height, instead of `--roof-sfl` with `--roof-slab`. `--roof-slab 0` when the roof level is the underside of the slab.
+- `--x <mm>`, `--y <mm>`: the plan position (default 0, or the project's). `--cover <mm>`: cover on both faces (default 40, or the project's).
+- `--layout all|faces|x|y`: the column's Layout on the card (default `all`). `--lap <mm>`: its Lap at corner.
+- `--loose-ties`: a cross-tie group may sit off the bars. Where fewer bars line up across the faces than the group has ties, its ties spread evenly
+  between the corners, keeping their quantity and length, and the output warns. Without it, each tie must find a bar on both faces, and the card refuses otherwise.
+- `--out <file>`: the project to write (default: `<csv name>_bbs.json` beside the CSV). `--dry-run`: print the levels and the sets, and write nothing.
+
+The header is `Level, SFL (m), SIZE, MAIN BARS layout, MAIN BARS, MAIN BARS long face, MAIN BARS short face, Outer link, Cross links X,
+Cross links Y, Slab thk (mm), Longest crank (mm), Lap (good bond), Crank step, Jog`. `SFL (m)`, `SIZE`, `Outer link` and either `MAIN BARS` or
+both face columns are required. Each cell holds what the card's cell holds: `same`, `same as below` or `= below` takes the level under it, and
+`MAIN BARS layout` takes `same as below`, `one size on every face` or `long and short faces`. SFL is in metres (`-20.870`). A bad header, cell or
+SFL stops the run with the reason. See `inputs/Sub_card_levels.csv`.
+
 ## Large projects (BarField renderer)
 
 Projects with hundreds of thousands to millions of physical bars stay interactive: bars are drawn in

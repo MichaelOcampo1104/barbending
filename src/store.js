@@ -924,7 +924,8 @@ export const useStore = create((set, get) => ({
   },
   // Member reinforcement card (src/bbs/memberReinforcement.js): each group becomes a ▦ set named by its `name`, the rows are numbered
   // in sequence, and everything is one undo step. Names are checked first (unused, at most 40 characters), so a refusal changes nothing.
-  addMemberRows: (groups) => {
+  // opts.hostId names the column they belong to, and opts.sections (its schedule's sections, or null for a column of one size) is stored on it in the same step.
+  addMemberRows: (groups, opts = {}) => {
     const s0 = get();
     const list = (Array.isArray(groups) ? groups : []).filter((g) => g && g.rows && g.rows.length);
     if (!list.length) return { ok: false, msg: 'Nothing to add.' };
@@ -947,6 +948,7 @@ export const useStore = create((set, get) => ({
     }
     set((state) => withHist(state, {
       bars: [...state.bars, ...rows],
+      concretes: opts.hostId ? state.concretes.map((c) => (c.id === opts.hostId ? { ...c, sections: opts.sections ?? null } : c)) : state.concretes,
       selectedBar: state.bars.length + rows.length - 1,
       selectedBars: rows.map((_, i) => first + i),
       selectedConcrete: rows[0].host || state.selectedConcrete,

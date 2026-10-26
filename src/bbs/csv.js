@@ -4,6 +4,7 @@
 // file can be consumed directly, and accept any of the gen_* templates.
 
 import { genBarPoints, distCount, getBentDefaults, resolveBarHost, meshVolumeM3, parseLegs } from './shapes.js';
+import { hasSections, sectionVolumeM3 } from './columnSections.js';
 import { barWeightKg, normalizeBond, inferBondFromMark } from './calc.js';
 
 export const SHAPE_CODES = {
@@ -24,22 +25,27 @@ export const SHAPE_CODES = {
 
 // Concrete volume in m³. Precedence: exact retraced mesh geometry (auto-traced
 // complex profiles, openings and chamfers included) guarded against degenerate
-// meshes — a closed solid can never exceed its own bbox — else Lx·Ly·Lz box.
+// meshes — a closed solid can never exceed its own bbox — else, for a column
+// that changes size up its height, the volume of its schedule's sections
+// (spec 11), else Lx·Ly·Lz box.
 export function concreteVolumeM3(c) {
   if (!c) return 0;
   const box = (Math.max(0, Number(c.lx) || 0) * Math.max(0, Number(c.ly) || 0) * Math.max(0, Number(c.lz) || 0)) / 1e9;
   const mesh = meshVolumeM3(c.meshData);
   if (mesh > 0 && (box <= 0 || mesh <= box * 1.001)) return mesh;
+  if (hasSections(c)) return sectionVolumeM3(c.sections, Number(c.lz) || 0);
   return box;
 }
 
-// Where a member's BBS volume comes from: 'mesh' (exact retraced geometry)
-// or 'box' (Lx·Ly·Lz). Shown in the Concrete tab so the take-off is auditable.
+// Where a member's BBS volume comes from: 'mesh' (exact retraced geometry),
+// 'schedule' (the sections of its column schedule) or 'box' (Lx·Ly·Lz). Shown
+// in the Concrete tab so the take-off is auditable.
 export function concreteVolumeSource(c) {
   if (!c) return 'box';
   const box = (Math.max(0, Number(c.lx) || 0) * Math.max(0, Number(c.ly) || 0) * Math.max(0, Number(c.lz) || 0)) / 1e9;
   const mesh = meshVolumeM3(c.meshData);
-  return (mesh > 0 && (box <= 0 || mesh <= box * 1.001)) ? 'mesh' : 'box';
+  if (mesh > 0 && (box <= 0 || mesh <= box * 1.001)) return 'mesh';
+  return hasSections(c) ? 'schedule' : 'box';
 }
 
 // Rebar ratio in kg/m³, or null when there is no concrete volume.

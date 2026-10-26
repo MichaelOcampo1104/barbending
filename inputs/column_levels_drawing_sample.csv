@@ -1,0 +1,5 @@
+Level,SFL (m),SIZE,MAIN BARS layout,MAIN BARS,MAIN BARS long face,MAIN BARS short face,Outer link,Cross links X,Cross links Y,Slab thk (mm),Longest crank (mm),Lap (good bond),Crank step,Jog
+B1 CONCOURSE,-5.970,2400 x 800,one size on every face,40H25,same,same,H10-100,2H10-100,4H10-100,800,,,,
+B2 LOWER CONCOURSE,-12.270,same,same as below,same,same,same,same,same,same,800,,,,
+B3 PLATFORM,-18.570,same,same as below,same,same,same,same,same,same,800,,,,
+B3 UNDERPLATFORM,-20.870,3200 x 800,long and short faces,,44H40,8H32,H10-125,2H10-125,6H10-125,,,,,

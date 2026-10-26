@@ -169,6 +169,23 @@ test('cross-ties are counted against the bars each direction can hook: 20 on the
   assert.match(x.msg, /Only 4 bars can take a cross-tie along X, so 5 do not fit/);
 });
 
+test('cross-ties off the bars: with looseTies the drawn count is kept and the output warns, and a count past the faces is still refused', () => {
+  // 25 bars on 1500 x 800: the four corners leave 21 for the sides, so the bottom row has six between its corners and the top row five. No Y tie
+  // finds a bar on both rows, but the six ties keep their count and length.
+  const C5 = { id: 'c5', name: 'C5', kind: 'COLUMN', lx: 1500, ly: 800, lz: 4000, x: 0, y: 0, z: 0, covB: 40, covT: 40 };
+  const row = { name: 'Base', sfl: 0, size: '1500 x 800', bars: '25H25', links: 'H10-125 + 2H10-125 X + 6H10-125 Y' };
+  const refused = memberGroups(C5, inputs([row], 'all'), { neighbours: [] });
+  assert.match(refused.msg, /Cross-ties along Y hook bars/);
+  const res = memberGroups(C5, inputs([row], 'all'), { neighbours: [], looseTies: true });
+  assert.equal(res.ok, true, res.msg);
+  const links = group(res, 'C5 links').rows;
+  assert.equal(links.filter((r) => r.Bar_mark.startsWith('CT1-')).length, 6);
+  assert.equal(links.filter((r) => r.Bar_mark.startsWith('CX1-')).length, 2);
+  assert.ok(res.warnings.some((w) => /6 cross-ties along Y sit at evenly spaced positions, because no bars line up/.test(w)), res.warnings.join('\n'));
+  const past = memberGroups(C5, inputs([{ ...row, links: 'H10-125 + 7H10-125 Y' }], 'all'), { neighbours: [], looseTies: true });
+  assert.match(past.msg, /Only 6 bars can take a cross-tie along Y, so 7 do not fit/);
+});
+
 test('a member longer along Y has its long faces as the left and right columns, and the hook widths swap', () => {
   const tall = { ...COLUMN1, lx: 1000, ly: 2500 };
   const rows = [base({ size: '1000 x 2500', links: 'H10-100 + 6H10-150 X + 2H10-150 Y' })];

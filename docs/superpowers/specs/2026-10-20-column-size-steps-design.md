@@ -28,9 +28,9 @@ R1. **Size step.** A level whose SIZE differs from the level below starts a new 
 
 R2. **Bars at a size step (revised 2026-10-20 after your answer on lapped starters).** Each lower bar is sorted by where it lands in the new section's envelope (the box centred on the base):
 - **Inside the envelope:** the bar laps as usual at the step: its crank (the usual crank for the larger bar, 40 mm for H40), its jog (1 in 6) and its lap (2240 mm for H40). The upper bar stays at the same position.
-- **Outside the envelope:** the bar bends in to the envelope. These are every short-face bar, and the nearest outside bar at each end of each long face (`STEP_BEND_PER_END` = 1). Its crank is its move to the envelope plus the usual crank, so its tail lies beside its upper bar. Its jog is 1 in 6 of that crank, and it starts below the SFL, so the bend sits in the lower section and the lap sits in the new section.
-- **The rest of the outside long-face bars** (the outermost one or two at each end of each long face) end in the slab, bent in there with a leg of their lap length (2240 for H40).
-The upper section takes the bars that lap or bend, and its count must equal MAIN BARS. For C4/C4A: 28 lap, 12 bend and 8 end, so 40 upper bars, as the drawing says. The bends sit one cover above the soffit (14320 mm).
+- **Outside the envelope, moving no more than the Longest crank (150 mm by default):** the bar cranks in to the envelope. Its crank is its move to the envelope plus the usual crank, so its tail lies beside its upper bar. Its jog is 1 in 6 of that crank, and it starts below the SFL, so the bend sits in the lower section and the lap sits in the new section.
+- **Outside the envelope, moving further:** the bar bends outward at the level and ends in the slab, with a leg of its lap length (2240 for H40, 1650 for H32). Section 10 has the current values.
+The upper section takes the bars that lap or crank in, and its count must equal MAIN BARS (section 10 has the C4/C4A counts). The bends sit one cover above the soffit (14320 mm).
 
 R3. **Levels that keep their size** are splices, as now: crank, jog and lap.
 
@@ -100,9 +100,35 @@ C4/C4A needs the member's height set to 20900 mm. The project's Column is 11000 
 
 After the first build, your answer on lapped starters changed the step rule (R2): the bars that land inside the new envelope lap as usual, the bars outside it bend in, and the outermost end in the slab. The first build's terminate-and-starter rule, and its "no bend" choice, no longer apply. Section 8's "no bent offset option" is superseded too: bends are built.
 
-- **The split for C4/C4A (approved "go"):** 48 lower bars. 28 lap as usual (crank 40, jog 240, lap 2240, upper bar from 15395 mm). 8 short-face bars bend in (move 396.5 mm, crank 431.5, jog 2590, from 12490 mm). 4 long-face bars bend in, the nearest at each end of each long face (move 74.6 mm, crank 114.6, jog 690, from 14390 mm). 8 long-face bars end in the slab at 14320 mm, each with a 2240 mm leg. The upper bars: 40 H25, 28 from 15395 mm and 12 from the SFL (15080 mm), each to the top cover.
+- **The split for C4/C4A (approved "go"; superseded by section 10):** 48 lower bars. 28 lap as usual (crank 40, jog 240, lap 2240, upper bar from 15395 mm). 8 short-face bars bend in (move 396.5 mm, crank 431.5, jog 2590, from 12490 mm). 4 long-face bars bend in, the nearest at each end of each long face (move 74.6 mm, crank 114.6, jog 690, from 14390 mm). 8 long-face bars end in the slab at 14320 mm, each with a 2240 mm leg. The upper bars: 40 H25, 28 from 15395 mm and 12 from the SFL (15080 mm), each to the top cover.
 - **Positions:** the new section takes the lower positions for the bars that lap, and the envelope's edge for the bars that bend. It is no longer a ring. Its cross-ties take the same counts (X 2, Y 4). A step keeps the member's depth: a SIZE with another depth is refused, because the bars are sorted by x alone.
 - **The bend's tail sits beside its upper bar:** the crank is the move plus the usual crank, and the jog is 1 in 6 of that crank, rounded to 10 mm.
 - **Open (O6): cross-ties in the storey below B1.** The two X ties in that storey hook the short-face bars at 336 and 464 mm. Those bars bend in between about 12.5 and 14.3 m, so the ties cross them on 18 layers each (36 crossings). The card warns. The lower storey's X ties there need a decision: stop them below the bends, or route them around.
 - **The clash check (R7)** applies to the ends in the slab against every other bar at the step. The laps are the usual laps, so they are not checked.
+- **How many bars end (superseded by section 10).** The upper section takes every bar that laps or bends in, so its MAIN BARS count must equal that number, or the card refuses. Long bars bending in (on the size-step row, blank 1) sets how many of the outside long-face bars bend in at each end of each long face; the rest end in the slab. Each step of 1 changes the count by 4 (two long faces, two ends). The refusal names the two ways out: MAIN BARS set to the count the card carries up, or Long bars bending in set to the value that gives MAIN BARS' count. C4/C4A with a 44H40 base under B1 40H25: 44 carry up; 0 gives 40 (12 end in the slab).
 - **Correction:** the first build avoided bends because of the B2 splice. That reason came from reading B1 as −9.870; B1 is −5.790 (15.08 m above the base). A bend starts at 12.5 m, above the B2 splice's top at 11.16 m, so bends fit.
+
+## 10. Revision (2026-10-22): the Longest crank
+
+- **The rule.** A bar outside the new width cranks in when it moves no more than the step's Longest crank (150 mm by default, when the card's field is blank). A bar that moves further bends outward at the step and ends in the slab, with a leg of its lap length. Bars inside the new width lap as usual. The field sits on the size-step row and replaces the Long bars bending in count that was added earlier the same day.
+- **Why 150.** A 400 mm move needs a crank that is too steep and long to be workable (a 425 mm offset needs a 2550 mm jog), while a 150 mm move is workable. Anything between is a judgement call, so the field sets the limit; the card names the value that gives MAIN BARS' count.
+- **Counts.** C4/C4A with a 40H40 base: 28 lap, 4 crank in (74.6 mm) and 16 bend outward, so 32 bars carry up and B1 is 32H25. With a 44H40 base: 32 lap; at 150 mm, 4 crank in (105.3 mm) and 16 bend outward, so 36 carry up (B1 36H25); at 251 mm the 250.9 mm bars crank in too, so 40 carry up (B1 40H25) and 12 bend outward. No limit gives 40 with the 40H40 base.
+- **Cross-ties in X at B1.** X ties hook interior bars on the left and right faces. Those bars now bend outward, so the upper section has none to hook, and B1's cross-links X must be set to none (the card refuses until then). No X tie crosses a bend in the storey below B1 at 150 mm, so open item O6 no longer arises there.
+- **Recommended (2026-10-22):** for the 44H40 base, B1 36H28 with the 150 mm Longest crank: 32 lap, 4 crank in (about 107 mm), 16 bend outward, so 36 bars carry up and the model has 306 rows. 36 H28 is 1.15% of the 2400 x 800 section. 36 H25 would be 0.92%, below the 1% minimum in ACI 318 and NSCP (Eurocode and BS have lower minimums, so confirm the code). The engineer confirms the upper column's capacity; the card does not check steel.
+- **Still open:** the slab must hold the bent-out legs (item O1).
+
+## 11. Concrete volume from the schedule (2026-10-23)
+
+- A column that changes size up its height takes its volume from its schedule: each size runs from its level's height above the base to the next size's level, and the last one runs to the top of the member (Hz). For the C4/C4A drawing with B1 at 15.08 m and Hz 20.9 m: 3200 x 800 up to B1 and 2400 x 800 above it, 49.779 m³ (the box would be 53.504 m³).
+- Generate sets stores the sections on the column, in the same undo step as the sets. A column of one size keeps its box. The volume follows the schedule as of the last Generate, so regenerate after changing it.
+- The Concrete tab reads "(from schedule)". The BBS header total, the BBS CSV concrete block (Source: schedule), the export panel and the viewer use the same volume.
+- The 800 mm B1 slab counts as column, since the lower size runs to the level's SFL. Stopping the column at the slab soffit instead would take 2.05 m³ out of the 3200 x 800 section; not decided.
+- The 3D box still draws the full box, and resizing lx or ly does not update the stored sizes.
+
+## 12. A size step where the bar diameter changes (2026-10-23)
+
+- The lower bars cannot carry up into smaller bars, so at such a step every bar below ends in the slab: bent outward at the soffit plus one cover, with a leg of its lap length (2240 mm for H40, 1650 mm for H32). For C4/C4A with a 44H40 base: 48 bars end at 14320 mm. The 8H32 short bars are included in the count at a 52-bar base.
+- The upper section's bars (its MAIN BARS, in its own layout) start in the slab as starters. Each starter bends outward in the slab at 14400 mm, two lower-bar diameters above the lower bends, and runs up to a lap 1290 mm above a = SFL + 75. The main bar above starts at a = 15155 mm and overlaps its starter by the lap. For C4/C4A: 40 starters and 40 main bars of H25 on the ring of the 2400 x 800 box.
+- The Longest crank (section 10) applies only where the bars keep their diameter. The number of starters is B1's MAIN BARS, so any count works. The cross-ties in X now hook the ring's short-face bars.
+- Choices to confirm: the bend height (14400 mm), the bend direction (outward, as the lower bars), and the lap at a = SFL + 75. The slab must hold the lower bends and the starter bends together (open item O1).
+- Browser check: C4 with B1 40H25 gives 224 mains, 28 links and 88 starters (340 rows). A 44H40 base gives 356 rows.

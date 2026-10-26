@@ -2,15 +2,16 @@ import { useState } from 'react';
 import { useStore } from '../store.js';
 import { memberKind } from './shapes.js';
 import {
-  barsText, defaultCardInputs, defaultLinkLap, faceDias, levelDefaults, linkZones, linksNotation, memberGroups, resolveSchedule, starterSpec,
+  barsText, CARD_STARTERS, cardInputsOf, defaultCardInputs, defaultLinkLap, faceDias, levelDefaults, linkZones, memberGroups, resolveSchedule,
+  starterSpec,
 } from './memberReinforcement.js';
+import { sectionsOfRows } from './columnSections.js';
 
 // Member reinforcement card (Concrete tab, under the selected box member). The form holds raw text, so partial input stays typable.
 // A blank auto field is null here, and the card derives it (the placeholder shows the value). The form lives in this component only:
-// it lasts while the member stays selected and is never saved in the project.
+// it lasts while the member stays selected and is never saved in the project. Generating the sets also stores a column's sections (spec 11).
 // A column is entered as a schedule laid out like the drawing: one block per level, top level first, with SIZE, MAIN BARS and LINKS.
 
-const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
 // A placeholder for a value that differs between the long and the short faces ("1650 / 1290"), or the one value when they match.
 const pair = (long, short) => (long === short ? String(long) : `${long} / ${short}`);
 // Column and wall bars cast in good bond (vertical steel, as the BBS bond column reads it), so the laps are the good-bond lengths from the lap
@@ -23,7 +24,7 @@ const spanText = (sp) => (sp.long.a === sp.short.a && sp.long.c === sp.short.c
 let rowSeq = 0;
 const newRow = (over = {}) => ({
   id: ++rowSeq, name: '', sfl: '', size: 'same', bars: 'same', barsLong: 'same', barsShort: 'same',
-  linksOuter: 'same', linksX: 'same', linksY: 'same', layout: 'same', slab: '', lap: '', step: '', jog: '', ...over,
+  linksOuter: 'same', linksX: 'same', linksY: 'same', layout: 'same', slab: '', lap: '', step: '', jog: '', crankMax: '', ...over,
 });
 
 function formOf(member, cover) {
@@ -47,37 +48,7 @@ function formOf(member, cover) {
       })],
     },
     wall: text(d.wall),
-    starters: { base: true, top: true, dia: '', topDia: '', lap: '', anchorage: '', bend: '' },
-  };
-}
-
-function inputsOf(f, cover) {
-  const nums = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'string' && k !== 'layout' ? Number(v) : v]));
-  // The LINKS notation of each level, from its outer link and cross-link cells (see linksNotation).
-  const links = linksNotation(f.column.schedule);
-  return {
-    kind: f.kind,
-    cover,
-    bond: BOND,
-    column: {
-      layout: f.column.layout,
-      lap: numOrNull(f.column.lap),
-      schedule: f.column.schedule.map((r, i) => ({
-        name: r.name, sfl: numOrNull(r.sfl), size: r.size, layout: r.layout, bars: r.bars, barsLong: r.barsLong, barsShort: r.barsShort, links: links[i],
-        slab: numOrNull(r.slab),
-        lap: numOrNull(r.lap), step: numOrNull(r.step), jog: numOrNull(r.jog),
-      })),
-    },
-    wall: nums(f.wall),
-    starters: {
-      base: f.starters.base,
-      top: f.starters.top,
-      dia: numOrNull(f.starters.dia),
-      topDia: numOrNull(f.starters.topDia),
-      lap: numOrNull(f.starters.lap),
-      anchorage: numOrNull(f.starters.anchorage),
-      bend: numOrNull(f.starters.bend),
-    },
+    starters: { ...CARD_STARTERS },
   };
 }
 
@@ -137,7 +108,7 @@ export default function MemberCard({ member }) {
   const [form, setForm] = useState(() => formOf(member, cover));
   const [note, setNote] = useState(null);
 
-  const inp = inputsOf(form, cover);
+  const inp = cardInputsOf(form, cover, BOND);
   const plan = memberGroups(member, inp, { neighbours: concretes });
   // The splice at a level, on each face: its crank foot a and lap top c (see resolveLevels). Matched by the level's height, so a level that
   // is a size step (its bars lap, bend or end in the slab, with no splice there) gives null. Null for a wall.
@@ -172,7 +143,9 @@ export default function MemberCard({ member }) {
       setNote({ ok: false, text: plan.msg });
       return;
     }
-    const r = addMemberRows(plan.groups);
+    // A column that changes size keeps its schedule's sections, so its volume follows the schedule (spec 11). A column of one size keeps its box.
+    const steps = rowsRes ? sectionsOfRows(rowsRes) : null;
+    const r = addMemberRows(plan.groups, { hostId: member.id, sections: steps && steps.length > 1 ? steps : null });
     setNote(r.ok
       ? { ok: true, text: `Added ${r.sets} set${r.sets === 1 ? '' : 's'}, ${r.count} rows. Undo removes them all.` }
       : { ok: false, text: r.msg });
@@ -218,7 +191,7 @@ export default function MemberCard({ member }) {
           <div className="sect">Schedule: top level first, as in the drawing</div>
           <div className="distnote">SFL is in metres: -20.870, not -20870. Each level is a height above the base, so it must lie between the base and the top of this member. “= below” takes the level under it.</div>
           <div className="distnote">MAIN BARS: one size on every face (44H25), or long and short faces (44H40 and 8H32) in their own cells. Each count is for a pair of faces, and the long faces take the corners. Each level picks its layout; “same as below” takes the level under it.</div>
-          <div className="distnote">SIZE: a level with a different SIZE starts a new section, centred on the base. The bars below it that land inside the new size lap as usual. Those outside bend in, except the long-face bars beyond the first at each end, which end in that level's slab, so it needs its SLAB THK. One size step per column for now.</div>
+          <div className="distnote">SIZE: a level with a different SIZE starts a new section, centred on the base. If its bars keep their diameter, the bars below that land inside the new size lap as usual, and outside bars crank in when they move no more than Longest crank (the rest bend outward into the slab). If its bar diameter changes, every bar below ends in the slab, and starters bent into the slab rise to lap its bars. Either way the level needs its SLAB THK. One size step per column for now.</div>
           <div className="distnote">LINKS: above each SFL, the outer link and cross links run up to the slab of the level above. SLAB THK is the slab below an SFL (the SFL is its top). No links run inside a slab. The base's slab is below the member, so it is not modelled.</div>
           <div className="distnote">LAP: each splice starts 75 mm above its SFL. Its lap is the good-bond lap for the bar Ø (from the lap table) unless you type one in that level.</div>
           {rows.map((row, i) => {
@@ -267,6 +240,12 @@ export default function MemberCard({ member }) {
                     <div className="distnote" style={{ marginTop: 2 }}>No links in this slab: the links below stop at its bottom, and the links above start at this SFL.</div>
                   </>
                 )}
+                {!isBottom && row.size !== 'same' && (
+                  <>
+                    <NumField label="Longest crank (mm)" field="crankmax" value={row.crankMax} placeholder="150" onChange={(v) => patchRow(row.id, 'crankMax', v)} />
+                    <div className="distnote" style={{ marginTop: 2 }}>Used only where the bar diameter stays the same at this step: a bar outside the new width cranks in if it moves no more than this many mm, and a bar that moves further bends outward into the slab. Blank is 150.</div>
+                  </>
+                )}
                 {!isBottom && (
                   <>
                     <NumField label="Lap (good bond)" field="lap" value={row.lap} placeholder={auto ? pair(auto.long.lap, auto.short.lap) : ''} onChange={(v) => patchRow(row.id, 'lap', v)} />
@@ -295,7 +274,9 @@ export default function MemberCard({ member }) {
                   <div key={r.h}>
                     {r.name}{r.h ? ` at ${r.h} mm` : ''}: {barsText(r.bars)}, links H{r.links.dia} @{r.links.spacing}
                     {r.links.cross.map((g) => `, + ${g.count} hooked cross-ties ${g.dir} H${g.dia} @${g.spacing}`).join('')}
-                    {st && <div>Size step to {r.size.lx} x {r.size.ly}: {st.counts.inside} bars lap as usual, {st.counts.bend} bend in, and {st.counts.terminate} end in the slab at {Math.round(st.zL)} mm above the base.</div>}
+                    {st && (st.starters
+                      ? <div>Size step to {r.size.lx} x {r.size.ly}: the bar diameter changes, so {st.counts.terminate} bars below end in the slab at {Math.round(st.zL)} mm, and {st.starters.count} starters bent in at {Math.round(st.starters.zS)} mm rise past the SFL to lap the main bars from {Math.round(st.starters.a)} mm.</div>
+                      : <div>Size step to {r.size.lx} x {r.size.ly}: {st.counts.inside} bars lap as usual, {st.counts.bend} crank in, and {st.counts.terminate} bend outward and end in the slab at {Math.round(st.zL)} mm above the base.</div>)}
                     {sp && sp.long && sp.short && <div>Splice {spanText(sp)}, lap {pair(sp.long.lap, sp.short.lap)} mm</div>}
                   </div>
                 );
