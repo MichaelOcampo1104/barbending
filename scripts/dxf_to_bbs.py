@@ -1,6 +1,7 @@
 # dxf_to_bbs.py - DXF plan -> barbending rebar_scheduling.csv + *_bbs.json project
 # Usage: py scripts/dxf_to_bbs.py inputs/bar_plan_bbs.dxf [--bond poor|good] [--stock 12000] [--out out.csv]
 # Convention (written into bar_plan_bbs.dxf):
+#   block references (INSERT, nested ones too) are exploded when the file is read, so the entities drawn in them count (NOTE with the count)
 #   centerline LWPOLYLINE on REBAR-H<dia>  -> bar length + position (WCS mm)
 #   cyan tick on REBAR-EXTENT, PERPENDICULAR -> its LENGTH = distribution width
 #   TEXT tag  "B1 H32-150-T Z=1000 EXT=1800 HOST=GL23-Roof"
@@ -61,7 +62,8 @@
 #     section-spanners (flight root ~waist depth up) are A-seated verbatim.
 #   drawn-circle starters: one bent dowel per CIRCLE (any layer — the DXF
 #     is a SECTION: centre X = in-plane horizontal, centre Y = ELEVATION
-#     (becomes Pos_z unless Z= wins); the out-of-plane coordinate is NOT in
+#     (becomes Pos_z unless Z= wins; in section mode it is --section-base plus
+#     the height above the lowest drawn line, as the profiles'); the out-of-plane coordinate is NOT in
 #     the drawing — give --starter-x (YZ plane: App X of the plane) or
 #     --starter-y (XZ plane: App Y of the plane), or per-group X=/Y= in the
 #     spec tag. So YZ: Pos=(X-input, circle-X, circle-Y); XZ:
@@ -109,7 +111,8 @@
 #     straight-chord rows. In plan (XY) 2-pt lines always stay straight bars.
 #     With --starter-plane XZ|YZ the DXF is a SECTION, like the drawn-circle
 #     starters (X = in-plane horizontal, Y = ELEVATION): Pos_z = the first
-#     vertex's DXF Y (--starter-z, when given, pins every bar instead), the
+#     vertex's DXF Y (in section mode, --section-base plus its height above the
+#     lowest drawn line; --starter-z, when given, pins every bar instead), the
 #     out-of-plane coordinate comes from --starter-y (XZ) / --starter-x (YZ),
 #     and 2-pt lines become straight bars in that plane (rot = chord angle,
 #     stock-split along the slope) placed, hosted and distributed exactly
@@ -241,6 +244,19 @@ LEGVW = re.compile(r'\bVIEW\s*=\s*(XY|XZ|YZ)\b', re.I)
 LEGROT = re.compile(r'\bROT\s*=\s*([-\d.]+)', re.I)
 CONCTAG = re.compile(r'(C\w+)?\s*(SLAB|BEAM|COLUMN|WALL|FOOTING|STAIR)?\s*(\S+)?\s*THK\s*=\s*([\d.]+).*?Z\s*=\s*([-\d.]+)', re.I)
 
+# Block references (INSERT, nested ones too) are exploded into the modelspace before the file is read, so the entities drawn in them count
+# like the modelspace's own. Only this in-memory copy changes; the drawing file is not written.
+def explode_block_references(msp, limit=10):
+    count = 0
+    for _ in range(limit):
+        inserts = list(msp.query('INSERT'))
+        if not inserts:
+            break
+        for ins in inserts:
+            ins.explode()
+            count += 1
+    return count
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('dxf'); ap.add_argument('--bond', default='auto', choices=['good','poor','auto'])
@@ -295,6 +311,9 @@ def main():
     a = ap.parse_args()
 
     doc = ezdxf.readfile(a.dxf); msp = doc.modelspace()
+    exploded = explode_block_references(msp)
+    if exploded:
+        print(f'NOTE {exploded} block reference(s) exploded: the entities drawn inside them are read too')
     texts = [(t.plain_text(), t.dxf.insert) for t in msp.query('TEXT MTEXT')
              if TAG.search(t.plain_text())]
     cticks = [(t.plain_text(), t.dxf.insert) for t in msp.query('TEXT MTEXT')
@@ -1050,6 +1069,8 @@ def main():
             _z, _zsrc = float(a.starter_z), 'default'
         else:
             _z, _zsrc = round(_cy, 1), 'circle-Y'
+            if sec_cfg is not None:   # section mode: drawn heights run from the lowest drawn line, as the profiles' do
+                _z, _zsrc = round(sec_cfg['base'] + (_cy - sec_cfg['ymin']), 1), 'section-base'
         if not _want_straight and _hook == 'yes':
             # hook-first: the run/corner sits AT the circle elevation (like a
             # straight bar protruding from the circle), so the upstand drops
