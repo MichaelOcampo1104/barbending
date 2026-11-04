@@ -203,7 +203,8 @@ py scripts/dxf_to_bbs.py inputs/additional_bar_shapes.dxf
 
 - Legs are taken 1:1 as `[length, compass°]` (no crank/bend fitting);
   `DIMENSION` entities are ignored. Single piece (never stock-split),
-  qty 1×1 — set copies/distribution in the app. Paired traces are
+  qty 1×1 unless the tag or a tick sets copies (see the array bullet
+  below), or you set them in the app. Paired traces are
   consumed (no double chord rows); dia falls back to the `REBAR-H<dia>`
   layer; `PLANE XY` positions verbatim from the first vertex.
 - `Pos` = first trace vertex (section X → App X on XZ / App Y on YZ),
@@ -235,6 +236,19 @@ py scripts/dxf_to_bbs.py inputs/additional_bar_shapes.dxf
   `--profile-n` / `--profile-spacing` / `--profile-axis` flags, e.g.
   `--profile-n 4 --profile-spacing -150 --profile-axis Y` steps four
   planes at 0/−150/−300/−450.
+- Rectangular array (a bent starter along a wall, at both faces): `NX=`/`SX=`,
+  `NY=`/`SY=` and `NZ=`/`SZ=` in the tag give each axis its own count and
+  signed spacing, one-sided from `Pos`; an axis set this way beats
+  `N=`/`SP=`/`AXIS=` on that axis. A `REBAR-EXTENT` tick that touches the
+  drawn profile (or lies within 300 mm of it) sets the count along its own
+  axis, `round(length / spacing) + 1`, with the copies centred on the drawn
+  profile, as a tick does for a bar line. The spacing is `SX=`/`SY=`, else
+  `SP=`, else 150. The profile takes its tick before the bar lines do, and a
+  count in the tag on the tick's axis (`NX=`, `NY=`, `N=`) leaves the tick
+  alone. A tick whose middle is more than half a spacing off the profile is
+  warned. E.g. `PB1 PROFILE H13 VIEW=XZ HOST=W1 Y=46.5 Z=187.3 SP=150 NY=2
+  SY=107` with a horizontal tick through the drawn L gives one bar every
+  150 mm along the tick at Y 46.5 and Y 153.5.
 - Schedule: shape 99 (special), cut length in A with per-turn bend
   deductions; `legs` round-trips through CSV/project JSON.
 

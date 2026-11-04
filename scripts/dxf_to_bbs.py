@@ -21,6 +21,11 @@
 #     layer (or a LINK_HOOK tag) selects the hooked variant.
 #     Omit EXT=/SP= to zone the grid from the drawn rect itself (spacing from
 #     SP=, else H<dia>-<sp>, else 150); keep EXT= when the field is smaller.
+#   tie line: an OPEN 2-point POLYLINE (not a LINE entity) on REBAR-LINK-H<dia> + a LINK_HOOK / LINK / C_LINK tag (TIE too: hooked, as
+#     LINK_HOOK) is a C-tie drawn as its own leg A: the spine stands at the line's START and leg A runs along the line to its end, so the
+#     tag carries no A= (an explicit A= wins), B= is the hook, the spine is the host depth. VIEW=/ROT= are ignored: the line sets the
+#     direction. The ties are spread like a bar line: across it, over the paired REBAR-EXTENT tick, at SP=<s> (else H<dia>-<s>, else
+#     150). On a closed rectangle a TIE tag is still the closed-loop tie.
 #   hooked links: "LINK_HOOK L=<spine> A=<a> B=<b> [DOUBLE]", e.g.
 #     "B1155 H13 LINK_HOOK L=1120 A=160 B=110 SINGLE Z=696 EXT=900x4050 SP=300x450 HOST=C_Links_Hook VIEW=XZ ROT=90"
 #     L=/A=/B= override measurement (geometry keeps Pos + direction only);
@@ -120,6 +125,21 @@
 #     Distribution (copies start AT Pos, step signed one-sided): tag N= /
 #     SP= (signed) / AXIS= X|Y|Z, else --profile-n / --profile-spacing /
 #     --profile-axis; axis defaults out-of-plane (XZ->Y, YZ->X, XY->X).
+#     Rectangular array: NX=/SX= NY=/SY= NZ=/SZ= in the tag give each axis its
+#     own count and signed spacing (one-sided from Pos); an axis set this way
+#     beats N=/SP=/AXIS= on that axis, a count without its spacing steps SP=
+#     (else --profile-spacing, else 150).
+#     Extent tick: a REBAR-EXTENT tick that touches (or lies within 300 mm of)
+#     the drawn profile sets the count along its own axis, round(length /
+#     spacing) + 1 (spacing SX=/SY=, else SP=/--profile-spacing, else 150; when
+#     N= spreads along another axis, SP= belongs to that one), and the copies
+#     are CENTRED on the drawn profile, like a tick centres the copies of a bar
+#     line. The tag wins: with NX=/NY=/N= on the tick's axis the tick is left
+#     alone (the bar lines may take it). A profile takes its tick before the bar
+#     lines look for theirs; a tick whose middle is more than half a spacing off
+#     the profile is warned. E.g. "PB1 PROFILE H13 VIEW=XZ HOST=W1 Y=46.5
+#     Z=187.3 SP=150 NY=2 SY=107" with a horizontal tick through the drawn L =
+#     one starter per 150 mm along the tick, at both wall faces (Y 46.5, 153.5).
 #   walls: closed rect on CONC-* + "W1 WALL W1 THK=<height> Z=<base> ...".
 #     Mains are verticals: "WV1 VERT 34xH12 HOST=<wall>" rings the rect like a
 #     column (perimeter positions, full internal height, good bond).
@@ -1127,11 +1147,29 @@ def main():
         print(f'NOTE {_oopdef} circles: no tag X=/Y= or --starter-x/--starter-y — out-of-plane defaults to 0')
 
     # profile distribution: copies start AT Pos and step toward the signed
-    # direction (one-sided, never centered). Tag N=/SP=(signed)/AXIS= win
-    # per key over --profile-n/--profile-spacing/--profile-axis; axis
-    # defaults out-of-plane (XZ->Y, YZ->X, XY->X); spacing defaults 150
-    # when N>1, else single.
-    def _prof_dist(ptxt, pl):
+    # direction (one-sided). Tag N=/SP=(signed)/AXIS= win per key over
+    # --profile-n/--profile-spacing/--profile-axis; axis defaults
+    # out-of-plane (XZ->Y, YZ->X, XY->X); spacing defaults 150 when N>1,
+    # else single.
+    # Rectangular array: NX=/SX= NY=/SY= NZ=/SZ= in the tag set one axis each
+    # (own count, own signed spacing, one-sided from Pos). An axis set this
+    # way beats N=/SP=/AXIS= on that axis; the other axes keep theirs. A count
+    # without its spacing steps SP= (else --profile-spacing, else 150).
+    # Extent tick: when the tag leaves the tick's axis without a count, the
+    # tick's length sets it (round(length / spacing) + 1; the spacing is
+    # SX=/SY=, else SP=, else 150) and the copies are CENTRED on the drawn
+    # profile, as a tick centres the copies of a bar line. tick = (axis, length).
+    def _prof_axis_keys(ptxt):
+        # NX=/SX= style keys: {'X': (count or None, spacing or None), ...}
+        out = {}
+        for k in 'XYZ':
+            mn = re.search(rf'\bN{k}\s*=\s*(\d+)', ptxt, re.I) if ptxt else None
+            ms = re.search(rf'\bS{k}\s*=\s*(-?[\d.]+)', ptxt, re.I) if ptxt else None
+            if mn or ms:
+                out[k] = (int(mn.group(1)) if mn else None, float(ms.group(1)) if ms else None)
+        return out
+
+    def _prof_dist(ptxt, pl, tick=None):
         mN = re.search(r'\bN\s*=?\s*(\d+)', ptxt, re.I) if ptxt else None
         mSP = re.search(r'\bSP\s*=?\s*(-?[\d.]+)', ptxt, re.I) if ptxt else None
         mAX = re.search(r'\bAXIS\s*=?\s*([XYZ])\b', ptxt, re.I) if ptxt else None
@@ -1155,14 +1193,68 @@ def main():
         g = {'qty_x': 1, 'spacing_x': 0, 'qty_y': 1, 'spacing_y': 0,
              'qty_z': 1, 'spacing_z': 0,
              'offset_x': 0.0, 'offset_y': 0.0, 'offset_z': 0.0}
-        if n <= 1:
-            g['dist_note'] = 'single'
-            return g
-        k = ax.lower()
-        g[f'qty_{k}'] = n
-        g[f'spacing_{k}'] = sp
-        g['dist_note'] = f'x{n} toward {"-" if sp < 0 else "+"}{ax} @ {abs(sp):.0f}'
+        keys = _prof_axis_keys(ptxt)
+        counted = {k for k, (kn, _) in keys.items() if kn is not None}  # axes whose count the tag fixes
+        notes = []
+        n_axis = None  # the axis N= / --profile-n spreads along, which SP= then belongs to
+        if n > 1 and ax not in counted:
+            g[f'qty_{ax.lower()}'] = n
+            g[f'spacing_{ax.lower()}'] = sp
+            notes.append(f'x{n} toward {"-" if sp < 0 else "+"}{ax} @ {abs(sp):.0f}')
+            counted.add(ax)
+            n_axis = ax
+        base_sp = float(mSP.group(1)) if mSP else (float(a.profile_spacing) if a.profile_spacing else 150.0)
+        for k in sorted(keys):
+            kn, ks = keys[k]
+            if kn is not None and kn > 1:
+                spk = ks if ks is not None else base_sp
+                g[f'qty_{k.lower()}'] = kn
+                g[f'spacing_{k.lower()}'] = spk
+                notes.append(f'x{kn} toward {"-" if spk < 0 else "+"}{k} @ {abs(spk):.0f}')
+        if tick is not None and tick[0] not in counted:
+            tk, tlen = tick
+            ks = keys.get(tk, (None, None))[1]
+            # SP= steps the tick's axis, unless N= already spreads along another axis with it
+            tsp = abs(ks if ks is not None else (150.0 if n_axis else base_sp))
+            tn = int(round(tlen / tsp)) + 1 if tsp else 1
+            if tn > 1:
+                g[f'qty_{tk.lower()}'] = tn
+                g[f'spacing_{tk.lower()}'] = tsp
+                g[f'offset_{tk.lower()}'] = round(-(tn - 1) * tsp / 2, 1)
+                notes.append(f'x{tn} along {tk} @ {tsp:g} (tick {tlen:.0f}, centred)')
+        g['dist_note'] = ' & '.join(notes) if notes else 'single'
         return g
+
+    # nearest REBAR-EXTENT tick that no bar or profile has taken and that
+    # touches (or lies within `reach` mm of) the profile's bounding box.
+    # Returns (tick index, axis 'X'|'Y', length, tick middle minus the point of
+    # the profile it crosses -- else its box centre -- along that axis).
+    def _prof_find_tick(q, reach=300.0):
+        bx0, bx1 = min(p[0] for p in q), max(p[0] for p in q)
+        by0, by1 = min(p[1] for p in q), max(p[1] for p in q)
+        best = None
+        for ti, t in enumerate(ticks):
+            if ti in main._tick_used:
+                continue
+            tq = [(float(p[0]), float(p[1])) for p in t.vertices()]
+            if len(tq) < 2:
+                continue
+            (tx0, ty0), (tx1, ty1) = tq[0], tq[-1]
+            gap = math.hypot(max(0.0, bx0 - max(tx0, tx1), min(tx0, tx1) - bx1),
+                             max(0.0, by0 - max(ty0, ty1), min(ty0, ty1) - by1))
+            if gap <= reach and (best is None or gap < best[0]):
+                best = (gap, ti, tq[0], tq[-1])
+        if best is None:
+            return None
+        _, ti, t0, t1 = best
+        ai = 0 if abs(t1[0] - t0[0]) >= abs(t1[1] - t0[1]) else 1  # along X, else along Y
+        oi = 1 - ai
+        c, mid = (t0[oi] + t1[oi]) / 2, (t0[ai] + t1[ai]) / 2
+        cross = [p0[ai] + (c - p0[oi]) * (p1[ai] - p0[ai]) / (p1[oi] - p0[oi])
+                 for p0, p1 in zip(q, q[1:])
+                 if p0[oi] != p1[oi] and min(p0[oi], p1[oi]) <= c <= max(p0[oi], p1[oi])]
+        ref = cross[0] if cross else (min(p[ai] for p in q) + max(p[ai] for p in q)) / 2
+        return ti, 'XY'[ai], math.hypot(t1[0] - t0[0], t1[1] - t0[1]), mid - ref
 
     # ---- drawn section profiles: one `profile` bar per PROFILE tag ----
     # "PB1 PROFILE H25 [HOST=] [PLANE=/VIEW=] [ROT=] [Z=] [X=/Y=] [GOOD|POOR]"
@@ -1176,6 +1268,7 @@ def main():
     _PROFW = re.compile(r'\bPROFILE\b', re.I)
     _prof_tags = [(t, p) for t, p in alltexts if _PROFW.search(t)]
     _prof_used, _pidx, _poopdef = set(), 0, 0
+    main._tick_used = set()  # ticks taken so far: a profile takes its own before the bar lines look for theirs
     for _ptxt, _ppos in _prof_tags:
         _cand, _bd = None, None
         for _e in msp.query('LWPOLYLINE'):
@@ -1288,9 +1381,22 @@ def main():
                 'tag': _ptxt, 'legs': _legs, 'nosplit': True,
                 'host': _phost}
         _pdist = _prof_dist(_ptxt, _ppl)
+        _ptick = _prof_find_tick(_q)
+        if _ptick:
+            _pti, _ptax, _ptlen, _ptoff = _ptick
+            if _pdist[f'qty_{_ptax.lower()}'] > 1 or re.search(rf'\bN{_ptax}\s*=', _ptxt, re.I):
+                print(f'NOTE {_pmark}: the tag gives the count along {_ptax} itself, so the extent tick beside it ({_ptlen:.0f} mm) is not used for this profile')
+            else:
+                main._tick_used.add(_pti)  # taken: no bar line pairs with it afterwards
+                _pdist = _prof_dist(_ptxt, _ppl, tick=(_ptax, _ptlen))
+                _psp = _pdist[f'spacing_{_ptax.lower()}']
+                if _pdist[f'qty_{_ptax.lower()}'] > 1 and abs(_ptoff) > _psp / 2:
+                    print(f'WARN {_pmark}: the tick\'s middle is {abs(_ptoff):.0f} mm off the profile along {_ptax}; the copies are centred on the '
+                          f'profile, so the end copies miss the tick ends by {abs(_ptoff):.0f} mm - move the tick or the profile')
         for _gk, _gv in _pdist.items():
             if _gk != 'dist_note':
                 _pov[_gk] = _gv
+        _pov['feature'] = f'profile {len(_legs)} legs; copies: {_pdist["dist_note"]}'
         if _tot > a.stock:
             print(f'NOTE {_pmark}: profile {round(_tot)} over stock {round(a.stock)} — single piece, split manually in app')
         bars.append(_CBar(f'PROFILE-H{_pdia}', _ppx, _ppy, _pmark, dict(_pov)))
@@ -1562,6 +1668,8 @@ def main():
         print(f'WARN {_flagign[1]} bars: --starter-y given but unused (XZ plane needs Y; YZ/XY ignore it)')
 
     rows = []; tag = 0
+    used_tags = set()  # the tags some bar paired with, so a link/tie tag nobody took can be reported below
+    _tagkey = lambda t: (t[0], round(float(t[1][0]), 1), round(float(t[1][1]), 1))
     bar_n = 0  # auto B-numbers count bars, not rows — stock-split pieces
     odir = []  # (mark, rtype, ang, len, slabId) for the parity-orientation check
     for b in bars:
@@ -1570,6 +1678,7 @@ def main():
         bar_n += 1
         pts = list(b.vertices()); (x1,y1),(x2,y2) = pts[0][:2], pts[1][:2]
         L = math.hypot(x2-x1, y2-y1)
+        line_len = L  # the drawn length; L itself becomes a link's spine below
         ang = round(math.degrees(math.atan2(y2-y1, x2-x1)), 1)
         ux, uy = ((x2-x1)/L, (y2-y1)/L) if L else (1,0)
         uz = 0.0  # stock-split direction: plan for drawn bars, +Z for VERT
@@ -1591,7 +1700,7 @@ def main():
         # with the layer (bars overlap in Y, so pure distance mis-pairs).
         # Dia-less tags (TIE) carry no penalty — the layer gives the diameter.
         # Generator tags are fenced: VERT tags pair only their own synthesized
-        # perimeter bars, TIE tags only closed LINK-layer rects.
+        # perimeter bars, TIE tags only LINK-layer rects (the closed loop) or 2-point lines (a C-tie drawn as its leg A).
         lay_dia_n = int(lay_dia.group(1)) if lay_dia else 0
         def score(t):
             m2 = TAG.search(t[0])
@@ -1602,7 +1711,7 @@ def main():
                 return dseg(t[1][0], t[1][1])
             if kw2 in ('VERT', 'STARTER', 'RISER') or (m2 and VERTCOUNT.search(t[0])):
                 return 1e12
-            if kw2 == 'TIE' and not (b.is_closed and 'LINK' in b.dxf.layer.upper()):
+            if kw2 == 'TIE' and not ('LINK' in b.dxf.layer.upper() and (b.is_closed or len(pts) == 2)):
                 return 1e12
             mr2 = LOCROLE.search(t[0])
             if mr2 and mr2.group(1).upper().startswith('DIST'):
@@ -1630,6 +1739,8 @@ def main():
         if texts and not getattr(b, '_circ', False):
             scored = sorted(((score(t), t) for t in texts), key=lambda r: r[0])
             best = scored[0][1]
+            if scored[0][0] < 1e11:
+                used_tags.add(_tagkey(best))
             # tags drift during CAD edits; a close runner-up means the pairing
             # is a guess — shout instead of silently writing wrong BBS rows
             if len(scored) > 1 and scored[1][0] - scored[0][0] < 400:
@@ -1689,7 +1800,8 @@ def main():
         elif tword in ('LINK', 'C_LINK'):
             rtype = 'c_link'
         elif tword == 'TIE':
-            rtype = 'tie'
+            # on a closed rectangle the closed-loop tie; on an open 2-point line on a link layer, a hooked C-tie drawn as its leg A (as LINK_HOOK)
+            rtype = 'c_link_with_hook' if (not b.is_closed and len(pts) == 2 and 'LINK' in b.dxf.layer.upper()) else 'tie'
         elif b.is_closed and 'LINK' in b.dxf.layer.upper():
             # closed rect on a REBAR-LINK layer declares a link by itself
             rtype = 'c_link_with_hook' if 'HOOK' in b.dxf.layer.upper() else 'c_link'
@@ -1720,6 +1832,16 @@ def main():
         # wall-hosted links run re-oriented (VIEW=YZ): spine through the wall
         # thickness, field spread along the wall, stacked in Z like ties
         wallFlag = bool(slab) and str(slab.get('kind') or '').upper() == 'WALL'
+        # a drawn line on a link layer is a C-tie drawn as its own leg A (see header): the spine stands at the line's start and leg A runs
+        # along the line, so the shape is built in XZ with the spine up and turned about Z to follow the line. Copies still step along world X / Y.
+        tie_line = (rtype in ('c_link', 'c_link_with_hook') and not b.is_closed and len(pts) == 2
+                    and b.dxf.layer.upper().startswith('REBAR-LINK') and not wallFlag and sec_cfg is None)
+        tie_plan_rot = None
+        if tie_line:
+            if (mv and plane != 'XZ') or (mr and abs(rot - 90.0) > 1e-6):
+                print(f'NOTE {mark}: VIEW=/ROT= ignored on a tie line: the line sets the direction (XZ, spine up, leg A along the line)')
+            plane, rot = 'XZ', 90.0
+            tie_plan_rot = round((ang + 180.0) % 360.0, 1)
         # link spine: explicit L= wins, else slab internal depth (THK - covers),
         # else rect-measured (closed) / line length. Legs stay tag-or-measured.
         def meas_rect():
@@ -1749,9 +1871,12 @@ def main():
             # nothing measurable (open line, or wall rect = field not profile):
             # small defaults instead of garbage
             if not ma:
-                link_a = 130.0
+                link_a = round(line_len, 1) if tie_line else 130.0
             if not mb and not wallFlag:
                 link_b = 130.0
+            if tie_line:
+                print(f'NOTE {mark}: tie line: leg A {link_a:g} ({"A= in the tag" if ma else "the drawn line"}), spine at its start '
+                      f'({x1:.1f}, {y1:.1f}), hook B {link_b:g}')
             if wallFlag and not ma:
                 print(f'NOTE {mark}: leg A defaults to {link_a} (nothing measurable)')
         if wallFlag and rtype in ('c_link', 'c_link_with_hook'):
@@ -2110,9 +2235,13 @@ def main():
             if ov and 'plan_rotation' in ov:
                 # generated bars (starters) aim via plan rotation on any type
                 row['plan_rotation'] = ov['plan_rotation']
+            if tie_plan_rot is not None:
+                row['plan_rotation'] = tie_plan_rot   # tie line: leg A along the drawn line
             if ov and 'legs' in ov:
                 # drawn section profile: per-leg [[len, compassDeg]...] JSON
                 row['legs'] = json.dumps(ov['legs'])
+            if ov and 'feature' in ov and len(segs) == 1:
+                row['feature'] = ov['feature']
             if ov:
                 for gk in ('qty_x', 'spacing_x', 'qty_y', 'spacing_y',
                            'qty_z', 'spacing_z', 'offset_x', 'offset_y', 'offset_z'):
@@ -2147,8 +2276,30 @@ def main():
                 row['host'] = cmap[host.lower()]
             rows.append(row)
 
-        print(f'{b.dxf.layer} {mark} L={L:.1f}({Lsrc}) ang={ang} dia=H{dia} z={z}({zsrc}) plane={plane} rot={rot} grid={qx}x{qy} @ {sx}x{sy} | lap({bond_bar})={lap} -> {len(segs)} piece(s) [{rtype}]')
+        grid_txt = f'{qx}x{qy} @ {sx}x{sy}'
+        if ov and 'legs' in ov:  # a drawn profile carries its own array (x * y * z copies)
+            grid_txt = (f"{ov.get('qty_x', 1)}x{ov.get('qty_y', 1)}x{ov.get('qty_z', 1)} @ "
+                        f"{ov.get('spacing_x', 0):g}x{ov.get('spacing_y', 0):g}x{ov.get('spacing_z', 0):g}")
+        print(f'{b.dxf.layer} {mark} L={L:.1f}({Lsrc}) ang={ang} dia=H{dia} z={z}({zsrc}) plane={plane} rot={rot} grid={grid_txt} | lap({bond_bar})={lap} -> {len(segs)} piece(s) [{rtype}]')
         odir.append((mark, rtype, ang, L, slab['id'] if slab else None, role))
+
+    # a link/tie tag that no bar paired with is dropped without a trace: say so, and what to draw (plan only; section zones are tagged apart)
+    if sec_cfg is None:
+        _open_lines = [(e.dxf.layer, [(p[0], p[1]) for p in e.vertices()]) for e in msp.query('LWPOLYLINE')
+                       if not e.is_closed and len(e) == 2 and not e.dxf.layer.upper().startswith(('REBAR', 'CONC'))]
+        for _t in texts:
+            _tw = TYPEW.search(_t[0])
+            _kw = _tw.group(1).upper() if _tw else ''
+            if _kw not in ('LINK_HOOK', 'HOOK', 'LINK', 'C_LINK', 'TIE') or _tagkey(_t) in used_tags:
+                continue
+            _hint = ''
+            for _lay, _q in _open_lines:
+                _d = _segdist(float(_t[1][0]), float(_t[1][1]), _q[0][0], _q[0][1], _q[1][0], _q[1][1])
+                if _d < 400:
+                    _hint = f' An open line on layer {_lay!r} is {_d:.0f} mm from the tag: a tie line has to be on REBAR-LINK-H<dia>.'
+                    break
+            _need = 'draw a closed rectangle (a zone) or an open 2-point polyline (a tie drawn as its leg A) on REBAR-LINK-H<dia> by it'
+            print(f'WARN tag {_t[0][:44]!r} pairs with no bar: {_need}.{_hint}')
 
     # main-vs-distribution orientation check (straight bars only): MAIN marks
     # must share one direction per slab; DIST marks must run across it.

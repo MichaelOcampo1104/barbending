@@ -9,7 +9,7 @@ AC1032
   9
 $ACADMAINTVER
  90
-      327
+      250
   9
 $DWGCODEPAGE
   3
@@ -17,7 +17,7 @@ ANSI_1252
   9
 $LASTSAVEDBY
   1
-micha
+Michael Ocampo
   9
 $REQUIREDVERSIONS
 160
@@ -35,7 +35,7 @@ $EXTMIN
  10
 0.0
  20
-0.0
+-11735.56190523121
  30
 0.0
   9
@@ -43,7 +43,7 @@ $EXTMAX
  10
 5034.583333333333
  20
-200.0
+2926.191411667753
  30
 0.0
   9
@@ -61,7 +61,7 @@ $LIMMAX
   9
 $ORTHOMODE
  70
-     0
+     1
   9
 $REGENMODE
  70
@@ -501,19 +501,19 @@ $TDUCREATE
   9
 $TDUPDATE
  40
-2461318.968298611
+2461349.447800926
   9
 $TDUUPDATE
  40
-2461318.634965278
+2461349.114467592
   9
 $TDINDWG
  40
-0.0109953704
+0.0130324074
   9
 $TDUSRTIMER
  40
-0.0109953704
+0.0130324074
   9
 $USRTIMER
  70
@@ -553,7 +553,7 @@ $SPLINESEGS
   9
 $HANDSEED
   5
-D6
+120
   9
 $SURFTAB1
  70
@@ -937,7 +937,7 @@ $FINGERPRINTGUID
   9
 $VERSIONGUID
   2
-{134D25C0-186E-0A43-A2AB-C3AA8D16B0C7}
+{688021D6-5BA9-A340-A084-3561F66200D0}
   9
 $EXTNAMES
 290
@@ -1247,7 +1247,7 @@ ObjectDBX Classes
  90
         0
  91
-        7
+       40
 280
      0
 281
@@ -1263,7 +1263,7 @@ ObjectDBX Classes
  90
      1152
  91
-        3
+        2
 280
      0
 281
@@ -1333,6 +1333,22 @@ ISM
 281
      0
   0
+CLASS
+  1
+SORTENTSTABLE
+  2
+AcDbSortentsTable
+  3
+ObjectDBX Classes
+ 90
+        0
+ 91
+        1
+280
+     0
+281
+     0
+  0
 ENDSEC
   0
 SECTION
@@ -1373,9 +1389,9 @@ AcDbViewportTableRecord
  21
 1.0
  12
-2527.356256359356
+3612.54553326562
  22
-95.91552417254943
+-170.0988470187644
  13
 0.0
  23
@@ -1401,9 +1417,9 @@ AcDbViewportTableRecord
  37
 0.0
  40
-133.6509359205303
+3555.030058581354
  41
-1.150127226463104
+2.259150805270863
  42
 50.0
  43
@@ -1491,7 +1507,7 @@ LTYPE
 100
 AcDbSymbolTable
  70
-     2
+     1
   0
 LTYPE
   5
@@ -1577,7 +1593,7 @@ LAYER
 100
 AcDbSymbolTable
  70
-     7
+     9
   0
 LAYER
   5
@@ -1763,6 +1779,68 @@ Continuous
 348
 0
   0
+LAYER
+  5
+DE
+330
+1
+100
+AcDbSymbolTableRecord
+100
+AcDbLayerTableRecord
+  2
+REBAR-EXTENT
+ 70
+     0
+ 62
+     4
+  6
+Continuous
+370
+    -3
+390
+13
+347
+21
+348
+0
+  0
+LAYER
+  5
+DF
+330
+1
+100
+AcDbSymbolTableRecord
+100
+AcDbLayerTableRecord
+  2
+REBAR-H20
+ 70
+     0
+ 62
+    40
+  6
+Continuous
+370
+    -3
+390
+13
+347
+21
+348
+0
+1001
+AcAecLayerStandard
+1000
+
+1000
+
+1001
+AcCmTransparency
+1071
+        0
+  0
 ENDTAB
   0
 TABLE
@@ -1845,7 +1923,7 @@ APPID
 100
 AcDbSymbolTable
  70
-     5
+     9
   0
 APPID
   5
@@ -1917,6 +1995,62 @@ ACAD_NAV_VCDISPLAY
  70
      0
   0
+APPID
+  5
+E1
+330
+3
+100
+AcDbSymbolTableRecord
+100
+AcDbRegAppTableRecord
+  2
+ACAD_PSEXT
+ 70
+     0
+  0
+APPID
+  5
+E2
+330
+3
+100
+AcDbSymbolTableRecord
+100
+AcDbRegAppTableRecord
+  2
+AcCmTransparency
+ 70
+     0
+  0
+APPID
+  5
+E3
+330
+3
+100
+AcDbSymbolTableRecord
+100
+AcDbRegAppTableRecord
+  2
+AcAecLayerStandard
+ 70
+     0
+  0
+APPID
+  5
+E4
+330
+3
+100
+AcDbSymbolTableRecord
+100
+AcDbRegAppTableRecord
+  2
+AcLayerTools
+ 70
+     0
+  0
 ENDTAB
   0
 TABLE
@@ -1929,7 +2063,7 @@ DIMSTYLE
 100
 AcDbSymbolTable
  70
-     1
+     2
 100
 AcDbDimStyleTable
  71
@@ -1997,6 +2131,62 @@ Standard
 340
 29
   0
+DIMSTYLE
+105
+E0
+330
+4
+100
+AcDbSymbolTableRecord
+100
+AcDbDimStyleTableRecord
+  2
+ISO-25
+ 70
+     0
+ 41
+2.5
+ 42
+0.625
+ 43
+3.75
+ 44
+1.25
+ 73
+     0
+ 74
+     0
+ 77
+     1
+ 78
+     8
+140
+2.5
+141
+2.5
+143
+0.03937007874016
+147
+0.625
+171
+     3
+172
+     1
+271
+     2
+272
+     2
+274
+     3
+278
+    44
+283
+     0
+284
+     8
+340
+29
+  0
 ENDTAB
   0
 TABLE
@@ -2009,7 +2199,7 @@ BLOCK_RECORD
 100
 AcDbSymbolTable
  70
-     0
+     1
   0
 BLOCK_RECORD
   5
@@ -2441,6 +2631,86 @@ ST2 STARTER H13-150 AT=TOP HOST=W1
 100
 AcDbText
   0
+LWPOLYLINE
+  5
+DB
+330
+17
+100
+AcDbEntity
+  8
+REBAR-H12
+100
+AcDbPolyline
+ 90
+        3
+ 70
+     0
+ 43
+0.0
+ 10
+2451.212497499814
+ 20
+286.6941597326095
+ 10
+2500.947561571676
+ 20
+286.6941597326095
+ 10
+2500.947561571676
+ 20
+99.38400028758678
+  0
+LWPOLYLINE
+  5
+DC
+330
+17
+100
+AcDbEntity
+  8
+REBAR-EXTENT
+100
+AcDbPolyline
+ 90
+        2
+ 70
+     0
+ 43
+0.0
+ 10
+24.4770774906865
+ 20
+193.0390800100981
+ 10
+4977.418045652665
+ 20
+193.0390800100981
+  0
+TEXT
+  5
+11F
+330
+17
+100
+AcDbEntity
+  8
+REBAR-TEXT
+100
+AcDbText
+ 10
+2451.2
+ 20
+290.0
+ 30
+0.0
+ 40
+2.5
+  1
+PB1 PROFILE H13 VIEW=XZ HOST=W1 Y=46.5 Z=187.3 SP=150 NY=2 SY=107
+100
+AcDbText
+  0
 ENDSEC
   0
 SECTION
@@ -2519,11 +2789,11 @@ ACAD_VISUALSTYLE
   3
 ACDB_RECOMPOSE_DATA
 350
-D5
+11D
   3
-AcDbVariableDictionary
+ACDBVARIABLEDICTIONARY
 350
-71
+E5
   3
 EZDXF_META
 350
@@ -2561,11 +2831,11 @@ AcDbXrecord
 280
      1
 300
-ACD
+ACDLT
 300
-2025
+2024
 300
-87919ACD_2025_0F
+
   0
 DICTIONARY
   5
@@ -2623,7 +2893,13 @@ AcDbXrecord
 280
      1
 300
-{134D25C0-186E-0A43-A2AB-C3AA8D16B0C7}
+{688021D6-5BA9-A340-A084-3561F66200D0}
+301
+{ABA9F92C-E766-A248-A558-2BFBA538AB39}
+302
+{688021D6-5BA9-A340-A084-3561F66200D0}
+303
+C:\Users\Michael Ocampo\Documents\P_Files\barbending\inputs\wall_sample.dxf
 301
 {DFF001C1-0A6B-A249-BF59-CC3B6969C199}
 302
@@ -2947,7 +3223,7 @@ X-Ray
   0
 XRECORD
   5
-D5
+11D
 102
 {ACAD_REACTORS
 330
@@ -2967,7 +3243,7 @@ AcDbXrecord
   0
 DICTIONARY
   5
-71
+E5
 102
 {ACAD_REACTORS
 330
@@ -2979,27 +3255,127 @@ A
 100
 AcDbDictionary
 281
-     1
+     2
+  3
+#COMPAREDIFFTOTAL
+350
+E6
+  3
+#REVCLOUDAPPROXARCLEN
+350
+E7
+  3
+ANNOALLVISIBLE
+350
+E8
   3
 CANNOSCALE
 350
-76
+E9
   3
 CMLEADERSTYLE
 350
-73
+EA
   3
 CTABLESTYLE
 350
-72
+EB
   3
 CVIEWDETAILSTYLE
 350
-74
+EC
   3
 CVIEWSECTIONSTYLE
 350
-75
+ED
+  3
+DIMADEC
+350
+EE
+  3
+DIMASSOC
+350
+EF
+  3
+DIMLAYER
+350
+F0
+  3
+DWFFRAME
+350
+F1
+  3
+EXPORTPAPERSPACE
+350
+F2
+  3
+GEOMARKERVISIBILITY
+350
+F3
+  3
+HIDETEXT
+350
+F4
+  3
+HPCOLOR
+350
+F5
+  3
+HPLAYER
+350
+F6
+  3
+HPTRANSPARENCY
+350
+F7
+  3
+INDEXCTL
+350
+F8
+  3
+LAYEREVAL
+350
+F9
+  3
+LAYERNOTIFY
+350
+FA
+  3
+LIGHTINGUNITS
+350
+FB
+  3
+MLEADERSCALE
+350
+FD
+  3
+MSLTSCALE
+350
+FE
+  3
+MSOLESCALE
+350
+FF
+  3
+OLEFRAME
+350
+100
+  3
+PDFFRAME
+350
+101
+  3
+POINTCLOUDCLIPFRAME
+350
+102
+  3
+PROJECTNAME
+350
+103
+  3
+SORTENTS
+350
+104
   0
 DICTIONARY
   5
@@ -10613,15 +10989,69 @@ strokes_ogs.tif
   0
 DICTIONARYVAR
   5
-76
+E6
 102
 {ACAD_REACTORS
 330
-71
+E5
 102
 }
 330
-71
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+10
+  0
+DICTIONARYVAR
+  5
+E7
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+100.000000
+  0
+DICTIONARYVAR
+  5
+E8
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+1
+  0
+DICTIONARYVAR
+  5
+E9
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
 100
 DictionaryVariables
 280
@@ -10631,15 +11061,15 @@ DictionaryVariables
   0
 DICTIONARYVAR
   5
-73
+EA
 102
 {ACAD_REACTORS
 330
-71
+E5
 102
 }
 330
-71
+E5
 100
 DictionaryVariables
 280
@@ -10649,15 +11079,15 @@ STANDARD
   0
 DICTIONARYVAR
   5
-72
+EB
 102
 {ACAD_REACTORS
 330
-71
+E5
 102
 }
 330
-71
+E5
 100
 DictionaryVariables
 280
@@ -10667,15 +11097,15 @@ STANDARD
   0
 DICTIONARYVAR
   5
-74
+EC
 102
 {ACAD_REACTORS
 330
-71
+E5
 102
 }
 330
-71
+E5
 100
 DictionaryVariables
 280
@@ -10685,21 +11115,417 @@ Metric50
   0
 DICTIONARYVAR
   5
-75
+ED
 102
 {ACAD_REACTORS
 330
-71
+E5
 102
 }
 330
-71
+E5
 100
 DictionaryVariables
 280
      0
   1
 Metric50
+  0
+DICTIONARYVAR
+  5
+EE
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+-1
+  0
+DICTIONARYVAR
+  5
+EF
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+1
+  0
+DICTIONARYVAR
+  5
+F0
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+S-DIM
+  0
+DICTIONARYVAR
+  5
+F1
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+0
+  0
+DICTIONARYVAR
+  5
+F2
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+1
+  0
+DICTIONARYVAR
+  5
+F3
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+1
+  0
+DICTIONARYVAR
+  5
+F4
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+1
+  0
+DICTIONARYVAR
+  5
+F5
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+7
+  0
+DICTIONARYVAR
+  5
+F6
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+ERSS - BATCH2 WALER
+  0
+DICTIONARYVAR
+  5
+F7
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+0
+  0
+DICTIONARYVAR
+  5
+F8
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+0
+  0
+DICTIONARYVAR
+  5
+F9
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+0
+  0
+DICTIONARYVAR
+  5
+FA
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+0
+  0
+DICTIONARYVAR
+  5
+FB
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+2
+  0
+DICTIONARYVAR
+  5
+FD
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+1.000000
+  0
+DICTIONARYVAR
+  5
+FE
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+1
+  0
+DICTIONARYVAR
+  5
+FF
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+1.000000
+  0
+DICTIONARYVAR
+  5
+100
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+2
+  0
+DICTIONARYVAR
+  5
+101
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+1
+  0
+DICTIONARYVAR
+  5
+102
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+0
+  0
+DICTIONARYVAR
+  5
+103
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+
+  0
+DICTIONARYVAR
+  5
+104
+102
+{ACAD_REACTORS
+330
+E5
+102
+}
+330
+E5
+100
+DictionaryVariables
+280
+     0
+  1
+127
   0
 DICTIONARYVAR
   5
@@ -10739,11 +11565,11 @@ AcDbDictionary
   3
 ACAD_ROUNDTRIP_2008_TABLESTYLE_CELLSTYLEMAP
 360
-D4
+11C
   0
 CELLSTYLEMAP
   5
-D4
+11C
 102
 {ACAD_REACTORS
 330
