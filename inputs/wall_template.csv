@@ -1,0 +1,3 @@
+Wall,Thickness (mm),Length (mm),Height (mm),SFL (m),X (mm),Y (mm),Main bars,Distribution bars,Links,Link leg A (mm),Base,Top,Starter bars,Starter lap (mm),Starter anchorage (mm),Starter bend leg (mm),Dowel bars,Dowel length (mm),Dowel projection (mm),Second starter bars,Second starter face,Second starter leg (mm),Second starter foot (mm),Second starter projection (mm),Second starter first level (mm)
+W1,200,5000,3000,,,,H16-150,H13-150,H13-150 x 300,,starters,starters,H13,,,,,,,,,,,,
+W2,498,3150,3000,,,,H13-150,H10-200,H10-150 x 300,,starters,dowels,H13,,,,H16-1000,600,250,,,,,,

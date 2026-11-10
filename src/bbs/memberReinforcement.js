@@ -33,13 +33,24 @@ export function defaultCardInputs(cover = 40) {
     cover,
     bond: 'good',
     column: { mainDia: 25, layout: 'all', mainCount: 16, faceCount: 8, linkDia: 10, linkSpacing: 150, lap: null, levels: [] },
-    wall: { mainDia: 16, mainSpacing: 150, distDia: 13, distSpacing: 150, linkDia: 13, linkSpacing: 150, linkVSpacing: 300, legA: 130 },
-    starters: { base: true, top: true, dia: null, lap: null, anchorage: null, bend: null },
+    // noLinks: a wall with no links (only main bars and distribution bars) makes no link row, and its link inputs are not checked.
+    wall: { mainDia: 16, mainSpacing: 150, distDia: 13, distSpacing: 150, linkDia: 13, linkSpacing: 150, linkVSpacing: 300, legA: 130, noLinks: false },
+    starters: {
+      base: true, top: true, dia: null, lap: null, anchorage: null, bend: null,
+      dowelBase: false, dowelTop: false, dowelDia: null, dowelSpacing: null, dowelLength: null, dowelOut: null,
+      second: '', secondDia: null, secondSpacing: null, secondVSpacing: null, secondLeg: null, secondFoot: null, secondOut: null, secondZ: null,
+    },
   };
 }
 
-// The card's starters before the user types anything (the starters section of its form).
-export const CARD_STARTERS = { base: true, top: true, dia: '', topDia: '', lap: '', anchorage: '', bend: '' };
+// The card's starters before the user types anything (the starters section of its form). A wall end can carry dowels instead of starters
+// (dowelBase, dowelTop; see dowelPlan): their Ø, spacing, length and projection are typed, and a blank projection is half the length. A wall
+// can also have second starters (see secondPlan): horizontal L bars out of a face, `second` being the face (north, south, both; blank: none).
+export const CARD_STARTERS = {
+  base: true, top: true, dia: '', topDia: '', lap: '', anchorage: '', bend: '',
+  dowelBase: false, dowelTop: false, dowelDia: '', dowelSpacing: '', dowelLength: '', dowelOut: '',
+  second: '', secondDia: '', secondSpacing: '', secondVSpacing: '', secondLeg: '', secondFoot: '', secondOut: '', secondZ: '',
+};
 
 // The card's form as the generator reads it: its text cells become numbers where a field is numeric, and each level's LINKS notation is built
 // from its three link cells (see linksNotation). `bond` is the card's bond (good for a column or a wall).
@@ -69,6 +80,20 @@ export function cardInputsOf(f, cover, bond = 'good') {
       lap: numOrNull(f.starters.lap),
       anchorage: numOrNull(f.starters.anchorage),
       bend: numOrNull(f.starters.bend),
+      dowelBase: !!f.starters.dowelBase,
+      dowelTop: !!f.starters.dowelTop,
+      dowelDia: numOrNull(f.starters.dowelDia),
+      dowelSpacing: numOrNull(f.starters.dowelSpacing),
+      dowelLength: numOrNull(f.starters.dowelLength),
+      dowelOut: numOrNull(f.starters.dowelOut),
+      second: String(f.starters.second ?? '').trim().toLowerCase(),
+      secondDia: numOrNull(f.starters.secondDia),
+      secondSpacing: numOrNull(f.starters.secondSpacing),
+      secondVSpacing: numOrNull(f.starters.secondVSpacing),
+      secondLeg: numOrNull(f.starters.secondLeg),
+      secondFoot: numOrNull(f.starters.secondFoot),
+      secondOut: numOrNull(f.starters.secondOut),
+      secondZ: numOrNull(f.starters.secondZ),
     },
   };
 }
@@ -243,6 +268,89 @@ export function elementDepth(member, neighbours, x, y, end, cover) {
     if (end === 'top' && Math.abs(c.z - topZ) <= FACE_TOL) return c.z + c.lz - topZ - cover;
   }
   return null;
+}
+
+// Wall dowels, in place of the starters at a wall end (the detail where a non-load-bearing wall meets the slab above with a sliding dowel):
+// one straight vertical bar in the middle of the thickness at each position, centred along the wall at the given spacing, so the first and
+// the last dowel are the same distance from the wall's ends (never closer than WALL_END_OFFSET). `out` is how far a dowel stands out of the
+// end face (blank: half its length), and the rest of its length stands in the wall. The wall's own bars end inside the wall as always.
+// Returns { ok: true, spec } (spec is null when no end has dowels, and always for a column) or { ok: false, msg }.
+function dowelPlan(member, inp, cover, covB, covT) {
+  const st = inp.starters || {};
+  const ends = [];
+  if (st.dowelBase) ends.push('base');
+  if (st.dowelTop) ends.push('top');
+  if (inp.kind !== 'Wall' || !ends.length) return { ok: true, spec: null };
+  const dia = num(st.dowelDia), spacing = num(st.dowelSpacing), length = num(st.dowelLength);
+  if (!(dia > 0)) return { ok: false, msg: 'The dowels need a Ø.' };
+  if (!(spacing > 0)) return { ok: false, msg: 'The dowels need a spacing.' };
+  if (!(length > 0)) return { ok: false, msg: 'The dowels need a length.' };
+  const out = orDefault(st.dowelOut, length / 2);
+  if (!(out > 0) || !(out < length)) {
+    return { ok: false, msg: 'The dowel projection (how far it stands out of the wall) must be above zero and less than the dowel length, so that some of it stays in the wall.' };
+  }
+  const embed = length - out;
+  const intH = member.lz - covB - covT;
+  if (embed > intH) {
+    return { ok: false, msg: `The part of a dowel that stands in the wall (${r1(embed)} mm) is longer than the wall's height between its covers (${r1(intH)} mm).` };
+  }
+  if (!(member.ly - 2 * cover - dia >= 0)) {
+    return { ok: false, msg: 'A dowel must fit between the covers across the thickness (thickness − 2 × cover must be at least its Ø).' };
+  }
+  const { count, first } = alongWall(member.lx, spacing);
+  return { ok: true, spec: { ends, dia, spacing, length, out, embed, count, first, last: first + (count - 1) * spacing } };
+}
+
+// Positions along a wall for bars spaced at `spacing`: as many as fit between the wall-end offsets, centred, so the first and the last are the
+// same distance from the wall's ends and never closer than WALL_END_OFFSET. A wall shorter than that gets one, in the middle.
+function alongWall(lx, spacing) {
+  const count = Math.max(1, Math.floor((lx - 2 * WALL_END_OFFSET) / spacing + 1e-9) + 1);
+  return { count, first: (lx - (count - 1) * spacing) / 2 };
+}
+
+// Wall second starters: horizontal L bars in plan that stand out of a face of the wall (the "PB1 H13" of a wall drawing). The long leg runs
+// across the thickness from outside the face into the wall, and the foot lies along the wall on the -X side of the leg (the bar runs along +X from the end of the foot to the bend). `second` is the face: north (the
+// face at the higher Y, the top edge of the plan), south (the lower Y; the bars are mirrored) or both. Typed: Ø, the spacing along the wall,
+// the spacing up the wall, the leg (its whole length) and, blank for the card's default, the foot (10 × Ø, 150 at least, as a starter's bend
+// leg), the projection (how far the bend stands out of the face; half the leg) and the first level (mm above the base; the bottom cover plus
+// half the bar). They are spaced along the wall as the links and the dowels are, and up the height while the bar stays under the top cover.
+// Returns { ok: true, spec } (spec is null when no face is chosen, and always for a column) or { ok: false, msg }.
+const SECOND_FACES = ['north', 'south', 'both'];
+function secondPlan(member, inp, cover, covB, covT) {
+  const st = inp.starters || {};
+  const face = String(st.second ?? '').trim().toLowerCase();
+  if (inp.kind !== 'Wall' || face === '') return { ok: true, spec: null };
+  if (!SECOND_FACES.includes(face)) return { ok: false, msg: 'The second starters need a face: north, south or both.' };
+  const dia = num(st.secondDia), spacing = num(st.secondSpacing), vSpacing = num(st.secondVSpacing), leg = num(st.secondLeg);
+  if (!(dia > 0)) return { ok: false, msg: 'The second starters need a Ø.' };
+  if (!(spacing > 0)) return { ok: false, msg: 'The second starters need a spacing along the wall.' };
+  if (!(vSpacing > 0)) return { ok: false, msg: 'The second starters need a spacing up the wall.' };
+  if (!(leg > 0)) return { ok: false, msg: 'The second starters need a leg length.' };
+  const foot = orDefault(st.secondFoot, Math.max(10 * dia, STARTER_BEND_MIN));
+  if (!(foot > 0)) return { ok: false, msg: 'The foot of a second starter must be above zero.' };
+  const out = orDefault(st.secondOut, leg / 2);
+  if (!(out > 0) || !(out < leg)) {
+    return { ok: false, msg: 'The projection of a second starter (how far its bend stands out of the face) must be above zero and less than its leg, so that some of the leg stays in the wall.' };
+  }
+  const embed = leg - out;
+  if (embed > member.ly - cover) {
+    return { ok: false, msg: `The part of a second starter that stands in the wall (${r1(embed)} mm) is deeper than the thickness less the cover (${r1(member.ly - cover)} mm).` };
+  }
+  const zLow = covB + dia / 2, zHigh = member.lz - covT - dia / 2;
+  if (!(zHigh >= zLow)) return { ok: false, msg: 'The covers leave no height for the second starters.' };
+  const zFirst = orDefault(st.secondZ, zLow);
+  if (!(zFirst >= zLow - 1e-6) || !(zFirst <= zHigh + 1e-6)) {
+    return { ok: false, msg: `The first level of the second starters (${r1(zFirst)} mm above the base) must lie between ${r1(zLow)} and ${r1(zHigh)} mm, inside the covers.` };
+  }
+  const levels = Math.floor((zHigh - zFirst) / vSpacing + 1e-9) + 1;
+  const { count, first } = alongWall(member.lx, spacing);
+  return {
+    ok: true,
+    spec: {
+      face, faces: face === 'both' ? ['north', 'south'] : [face], dia, spacing, vSpacing, leg, foot, out, embed,
+      count, first, last: first + (count - 1) * spacing, levels, zFirst, zLast: zFirst + (levels - 1) * vSpacing,
+    },
+  };
 }
 
 // Plan rotation (deg, 0..360) that turns the bar's local direction `from` → `to` to point along `target` (a plan vector). Measured on
@@ -993,22 +1101,31 @@ export function cardInputError(member, inp, looseTies = false) {
   let mainDia, topDia;
   if (inp.kind === 'Wall') {
     const w = inp.wall;
+    const links = !w.noLinks;   // a wall with no links is checked without its link inputs
     if (!(member.lx > member.ly)) return 'A wall card needs the wall to run along X (Lx longer than Ly).';
-    if (!(num(w.mainDia) > 0) || !(num(w.distDia) > 0) || !(num(w.linkDia) > 0)) return 'Wall bar diameters must be positive.';
-    if (!(num(w.mainSpacing) > 0) || !(num(w.distSpacing) > 0) || !(num(w.linkSpacing) > 0) || !(num(w.linkVSpacing) > 0)) {
+    if (!(num(w.mainDia) > 0) || !(num(w.distDia) > 0) || (links && !(num(w.linkDia) > 0))) return 'Wall bar diameters must be positive.';
+    if (!(num(w.mainSpacing) > 0) || !(num(w.distSpacing) > 0) || (links && (!(num(w.linkSpacing) > 0) || !(num(w.linkVSpacing) > 0)))) {
       return 'Wall spacings must be positive.';
     }
-    if (!(num(w.legA) >= 0)) return 'Leg A must be zero or more.';
-    if (!(member.ly - 2 * cover - num(w.linkDia) > 0)) return 'The wall is too thin for its link (thickness − 2 × cover − Ø must be positive).';
+    if (links && !(num(w.legA) >= 0)) return 'Leg A must be zero or more.';
+    if (links && !(member.ly - 2 * cover - num(w.linkDia) > 0)) return 'The wall is too thin for its link (thickness − 2 × cover − Ø must be positive).';
+    if (!links && !(member.ly - 2 * cover - num(w.mainDia) > 0)) return 'The wall is too thin for its main bars (thickness − 2 × cover − Ø must be positive).';
     mainDia = { long: num(w.mainDia), short: num(w.mainDia) };
     topDia = mainDia;
+    const dowels = dowelPlan(member, inp, cover, covB, covT);
+    if (!dowels.ok) return dowels.msg;
+    const second = secondPlan(member, inp, cover, covB, covT);
+    if (!second.ok) return second.msg;
   } else {
     const plan = columnPlan(member, inp, cover, covB, covT, looseTies);
     if (!plan.ok) return plan.msg;
     mainDia = plan.mainDia;
     topDia = plan.topDia;
   }
+  // A wall end with dowels has no starters, so its starter inputs are not checked.
+  const dowelEnds = inp.kind === 'Wall' ? (dowelPlan(member, inp, cover, covB, covT).spec?.ends ?? []) : [];
   for (const [end, dias] of [['base', mainDia], ['top', topDia]]) {
+    if (dowelEnds.includes(end)) continue;
     for (const dia of [dias.long, dias.short]) {
       const spec = starterSpec(inp.starters, dia, end, inp.bond || 'good');
       if (!(spec.dia > 0)) return 'Starter Ø must be positive.';
@@ -1311,9 +1428,9 @@ function wallGroups(member, inp, cover, covB, intH, neighbours, warnings) {
     bond_condition: 'poor',
   }));
 
-  // The link's spine runs across the thickness, centred between the covers; its legs run along the wall.
+  // The link's spine runs across the thickness, centred between the covers; its legs run along the wall. A wall with no links has none.
   const legB = t - 2 * cover;
-  const link = [tagRow(member, {
+  const link = w.noLinks ? [] : [tagRow(member, {
     Bar_mark: 'WL1',
     Rebar_Type: 'c_link_with_hook',
     Dia: dL,
@@ -1330,15 +1447,72 @@ function wallGroups(member, inp, cover, covB, intH, neighbours, warnings) {
     spacing_z: num(w.linkVSpacing),
   })];
 
+  // An end with dowels has no starters; the dowels stand in the middle of the thickness (see dowelPlan).
+  const dowelSpec = dowelPlan(member, inp, cover, covB, Number(member.covT ?? cover)).spec;
+  const dowelEnds = dowelSpec ? dowelSpec.ends : [];
   const specFor = (end) => starterSpec(inp.starters, dM, end, inp.bond || 'good');
   const faceOf = positions.map(() => 'long');
-  const starters = starterRows({ member, positions, faceOf, starters: inp.starters, specFor, cover, neighbours, mark: 'ST', warnings });
-  return [
-    { name: `${member.name} mains`, rows: mains },
-    { name: `${member.name} distribution`, rows: distribution },
-    { name: `${member.name} links`, rows: link },
-    { name: `${member.name} starters`, rows: starters },
-  ];
+  const starterFlags = { ...inp.starters, base: inp.starters.base && !dowelEnds.includes('base'), top: inp.starters.top && !dowelEnds.includes('top') };
+  const starters = starterRows({ member, positions, faceOf, starters: starterFlags, specFor, cover, neighbours, mark: 'ST', warnings });
+  const dowels = dowelSpec ? dowelEnds.map((end) => tagRow(member, {
+    Bar_mark: end === 'base' ? 'WD1' : 'WD2',
+    Rebar_Type: 'straight',
+    Dia: dowelSpec.dia,
+    Plane: 'XZ',
+    Pos_Rotation: 90,
+    Pos_x: r2(member.x + dowelSpec.first), Pos_y: r2(member.y + t / 2),
+    Pos_z: r2(end === 'base' ? member.z - dowelSpec.out : member.z + member.lz - dowelSpec.embed),
+    'Length of Bar': r1(dowelSpec.length),
+    qty_x: dowelSpec.count,
+    spacing_x: dowelSpec.spacing,
+    bond_condition: inp.bond || 'good',
+  })) : [];
+  for (const end of dowelEnds) {
+    const room = elementDepth(member, neighbours, member.x + dowelSpec.first, member.y + t / 2, end, cover);
+    if (room !== null && dowelSpec.out > room + 1e-6) {
+      warnings.push(`The dowels at the ${end} stand ${r1(dowelSpec.out)} mm out of the wall, but the element ${end === 'base' ? 'below' : 'above'} it is only ${Math.round(room)} mm deep inside its cover.`);
+    }
+  }
+
+  // Second starters: flat L bars in plan. The first vertex is the end of the foot, outside the face; the foot runs along +X to the bend, and the
+  // leg runs from the bend back across the thickness (towards -Y from the north face, +Y from the south face).
+  const secondSpec = secondPlan(member, inp, cover, covB, Number(member.covT ?? cover)).spec;
+  const second = secondSpec ? secondSpec.faces.map((face) => tagRow(member, {
+    Bar_mark: face === 'north' ? 'WS1' : 'WS2',
+    Rebar_Type: 'profile',
+    Dia: secondSpec.dia,
+    Plane: 'XY',
+    Pos_Rotation: 0,
+    Pos_x: r2(member.x + secondSpec.first),
+    Pos_y: r2(face === 'north' ? member.y + t + secondSpec.out : member.y - secondSpec.out),
+    Pos_z: r2(member.z + secondSpec.zFirst),
+    legs: JSON.stringify([[r1(secondSpec.foot), 0], [r1(secondSpec.leg), face === 'north' ? 270 : 90]]),
+    qty_x: secondSpec.count,
+    spacing_x: secondSpec.spacing,
+    qty_z: secondSpec.levels,
+    spacing_z: secondSpec.vSpacing,
+    bond_condition: inp.bond || 'good',
+  })) : [];
+
+  return {
+    groups: [
+      { name: `${member.name} mains`, rows: mains },
+      { name: `${member.name} distribution`, rows: distribution },
+      { name: `${member.name} links`, rows: link },
+      { name: `${member.name} starters`, rows: starters },
+      { name: `${member.name} dowels`, rows: dowels },
+      { name: `${member.name} second starters`, rows: second },
+    ],
+    dowels: dowelSpec && {
+      dia: dowelSpec.dia, spacing: dowelSpec.spacing, length: dowelSpec.length, out: dowelSpec.out, embed: r1(dowelSpec.embed),
+      count: dowelSpec.count, first: r2(dowelSpec.first), last: r2(dowelSpec.last), ends: dowelEnds,
+    },
+    second: secondSpec && {
+      face: secondSpec.face, dia: secondSpec.dia, spacing: secondSpec.spacing, vSpacing: secondSpec.vSpacing, leg: secondSpec.leg,
+      foot: secondSpec.foot, out: secondSpec.out, embed: r1(secondSpec.embed), count: secondSpec.count, first: r2(secondSpec.first),
+      last: r2(secondSpec.last), levels: secondSpec.levels, zFirst: r2(secondSpec.zFirst), zLast: r2(secondSpec.zLast),
+    },
+  };
 }
 
 // The world points of a bar: its local polyline (genBarPoints) placed by Pos and turned by its rotation.
@@ -1418,8 +1592,9 @@ export function memberGroups(member, inp, { neighbours = [], looseTies = false }
   const intH = member.lz - covB - covT;
   const warnings = [];
   const plan = inp.kind === 'Wall' ? null : columnPlan(member, inp, cover, covB, covT, looseTies);
-  const built = inp.kind === 'Wall'
-    ? { groups: wallGroups(member, inp, cover, covB, intH, neighbours, warnings), clash: null }
+  const wall = inp.kind === 'Wall' ? wallGroups(member, inp, cover, covB, intH, neighbours, warnings) : null;
+  const built = wall
+    ? { groups: wall.groups, clash: null }
     : columnGroups(member, inp, cover, covB, covT, plan, neighbours, warnings);
   if (built.clash) {
     return {
@@ -1437,5 +1612,7 @@ export function memberGroups(member, inp, { neighbours = [], looseTies = false }
     warnings,
     splices: plan ? plan.splices : null,
     steps: plan ? plan.steps : [],
+    dowels: wall ? wall.dowels : null,   // where a wall's dowels stand (null: none), for the card's read-back
+    second: wall ? wall.second : null,   // the same for a wall's second starters
   };
 }

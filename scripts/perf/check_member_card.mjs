@@ -3,7 +3,9 @@
 // Column C1 (800 x 800 x 4500, cover 40, the base level only: 16 x Ø25 mains, Ø10 lapped links at 150, Ø25 starters at both ends)
 // adds 49 rows in three ▦ sets, the same count as inputs/column_sample_800_auto_bbs.json. The same names are refused. One undo removes all three.
 // A level 2.5 m above the base with 16H20 (links the same as below) adds 65 rows with 16 double-crank bars; a level 0.1 m above is refused.
-// Wall W1 (5000 x 200 x 3000, switched to Wall) adds 204 rows, the same count as inputs/wall_sample_auto_bbs.json.
+// Wall W1 (5000 x 200 x 3000, switched to Wall) adds 204 rows, the same count as inputs/wall_sample_auto_bbs.json. With a top end set to dowels
+// (H16 at 1000 c/c, 600 long) it adds 138 rows, with dowels at both ends 72, and the dowel inputs are checked by name. With Links unticked it
+// adds 203 rows (no link row), and with second starters (the PB1 H13 L bars out of the north face) 205, or 206 on both faces.
 // Rectangular column R1 (2500 x 1000 x 4500): 44H40 on the long faces and 8H32 on the short, with 2 X and 6 Y cross-ties at 150, adds 165 rows.
 // The card's screenshots go to scripts/perf/out/member_card.png and member_card_levels.png.
 import fs from 'node:fs';
@@ -51,6 +53,23 @@ const typeField = (b, field, index, value) => b.ev(`(() => {
   if (!input) return false;
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
   input.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+})()`);
+
+// Picks an option of the card's select with this data-field, through React's own change handling.
+const pickField = (b, field, value) => b.ev(`(() => {
+  const select = document.querySelector('.memberCard select[data-field="${field}"]');
+  if (!select) return false;
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, ${JSON.stringify(value)});
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+})()`);
+
+// Ticks or unticks the card's checkbox with this data-field (a click, so React's own handler runs).
+const setTick = (b, field, on) => b.ev(`(() => {
+  const input = document.querySelector('.memberCard input[type="checkbox"][data-field="${field}"]');
+  if (!input) return false;
+  if (input.checked !== ${on}) input.click();
   return true;
 })()`);
 
@@ -192,6 +211,92 @@ try {
   await sleep(400);
   const shot = await b.send('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(outDir, 'member_card.png'), Buffer.from(shot.data, 'base64'));
+
+  // Wall dowels: a wall end set to dowels has no starters, and its dowels stand in the middle of the thickness, centred along the wall.
+  await b.ev(`window.__store.getState().undo()`);
+  report(await waitFor(b, `window.__store.getState().bars.length === 0`), 'one undo removes the wall sets before the dowel check');
+  report(await b.ev(`!!document.querySelector('.memberCard input[type="checkbox"][data-field="dowelTop"]')`), 'the wall card has the dowel option');
+  await setTick(b, 'dowelTop', true);
+  report(await waitFor(b, `document.querySelector('.memberCard input[data-field="starterTop"]').disabled && !document.querySelector('.memberCard input[data-field="starterTop"]').checked`), 'a top set to dowels switches its starters off');
+  report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('The dowels need a Ø.')`), 'dowels with no Ø typed are refused by name');
+  report(await b.ev(`[...document.querySelectorAll('.memberCard button')].find((x) => x.textContent.trim() === '▦ Generate sets').disabled`), 'Generate is off until the dowels are typed');
+  await typeField(b, 'dowelDia', 0, '16');
+  await typeField(b, 'dowelSpacing', 0, '1000');
+  await typeField(b, 'dowelLength', 0, '600');
+  report(await waitFor(b, `!!document.querySelector('.memberCard input[data-field="dowelOut"][placeholder="300"]')`), 'the projection placeholder is half the dowel length, 300 mm');
+  report(await waitFor(b, `/Dowels: 5 H16 at 1000 c\\/c, from x 500 to x 4500; each 600 long, 300 in the wall and 300 out\\./.test(document.querySelector('.memberCard').textContent)`), 'the read-back shows five H16 dowels at 1000 c/c, 600 long, 300 in the wall and 300 out');
+  await clickInCard(b, '▦ Generate sets');
+  report(await waitFor(b, `window.__store.getState().bars.length === 138`), 'a top dowel adds 138 rows: 67 mains, 2 distribution, 1 link, 67 base starters, 1 dowel row');
+  const dowelSets = await b.ev(`[...new Set(window.__store.getState().bars.map((r) => r.setId))]`);
+  report(JSON.stringify(dowelSets) === JSON.stringify(['W1 mains', 'W1 distribution', 'W1 links', 'W1 starters', 'W1 dowels']), `dowel sets: ${JSON.stringify(dowelSets)}`);
+  report(await b.ev(`(() => {
+    const d = window.__store.getState().bars.filter((r) => r.setId === 'W1 dowels');
+    return d.length === 1 && d[0].Bar_mark === 'WD2' && d[0].Dia === 16 && d[0].qty_x === 5 && d[0].spacing_x === 1000 && d[0]['Length of Bar'] === 600
+      && d[0].Pos_x === 2500 && d[0].Pos_y === 2100 && d[0].Pos_z === 2700 && d[0].host === 'c2' && d[0].Group === 'W1';
+  })()`), 'the dowel row stands at x 2500, y 2100 (the wall\'s middle), z 2700, hosted by W1');
+  report(await b.ev(`window.__store.getState().bars.filter((r) => r.setId === 'W1 starters').every((r) => r.Bar_mark.startsWith('ST1-'))`), 'only the base starters remain');
+  await b.ev(`window.__store.getState().undo()`);
+  report(await waitFor(b, `window.__store.getState().bars.length === 0`), 'one undo removes the dowel wall\'s sets');
+  await setTick(b, 'dowelBase', true);
+  await clickInCard(b, '▦ Generate sets');
+  report(await waitFor(b, `window.__store.getState().bars.length === 72`), 'dowels at both ends add 72 rows: 67 mains, 2 distribution, 1 link, 2 dowel rows');
+  report(await b.ev(`!window.__store.getState().bars.some((r) => r.setId === 'W1 starters')`), 'no starters at all when both ends have dowels');
+  await b.ev(`window.__store.getState().undo()`);
+  report(await waitFor(b, `window.__store.getState().bars.length === 0`), 'one undo removes the two-ended dowel sets');
+  await setTick(b, 'dowelTop', false);
+  await setTick(b, 'dowelBase', false);
+  await clickInCard(b, '▦ Generate sets');
+  report(await waitFor(b, `window.__store.getState().bars.length === 204`), 'with the dowels off the wall card is the sample again: 204 rows');
+  await b.ev(`window.__store.getState().undo()`);
+  await waitFor(b, `window.__store.getState().bars.length === 0`);
+  await b.ev(`document.querySelector('.memberCard').scrollIntoView({ block: 'end' })`);
+  await sleep(300);
+  const dowelShot = await b.send('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(path.join(outDir, 'member_card_dowels.png'), Buffer.from(dowelShot.data, 'base64'));
+
+  // A wall with no links (only main bars and distribution bars): untick Links, and the link row and its inputs go.
+  report(await b.ev(`!!document.querySelector('.memberCard input[type="checkbox"][data-field="links"]')`), 'the wall card has the Links tick');
+  await setTick(b, 'links', false);
+  report(await waitFor(b, `['linkDia', 'linkSpacing', 'linkVSpacing', 'legA'].every((f) => document.querySelector('.memberCard input[data-field="' + f + '"]').disabled)`), 'with Links unticked the four link inputs are disabled');
+  await clickInCard(b, '▦ Generate sets');
+  report(await waitFor(b, `window.__store.getState().bars.length === 203`), 'a wall with no links adds 203 rows: 67 mains, 2 distribution, 134 starters');
+  const noLinkSets = await b.ev(`[...new Set(window.__store.getState().bars.map((r) => r.setId))]`);
+  report(JSON.stringify(noLinkSets) === JSON.stringify(['W1 mains', 'W1 distribution', 'W1 starters']), `no-links sets: ${JSON.stringify(noLinkSets)}`);
+  report(await b.ev(`!window.__store.getState().bars.some((r) => r.Bar_mark === 'WL1' || r.Rebar_Type === 'c_link_with_hook')`), 'there is no link row at all');
+  await b.ev(`window.__store.getState().undo()`);
+  report(await waitFor(b, `window.__store.getState().bars.length === 0`), 'one undo removes the no-links sets');
+  await setTick(b, 'links', true);
+  report(await waitFor(b, `!document.querySelector('.memberCard input[data-field="linkDia"]').disabled`), 'ticking Links again enables the link inputs');
+
+  // Second starters: the PB1 H13 of the wall drawing, flat L bars out of the north face.
+  report(await b.ev(`!!document.querySelector('.memberCard select[data-field="secondFace"]')`), 'the wall card has the second starters');
+  await pickField(b, 'secondFace', 'north');
+  report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('The second starters need a Ø.')`), 'second starters with no Ø typed are refused by name');
+  for (const [field, value] of [['secondDia', '13'], ['secondSpacing', '150'], ['secondVSpacing', '300'], ['secondLeg', '187.3'], ['secondFoot', '49.7'], ['secondOut', '86.7'], ['secondZ', '233.8']]) {
+    await typeField(b, field, 0, value);
+  }
+  report(await waitFor(b, `document.querySelector('.memberCard').textContent.includes('Second starters: 33 H13 L bars along the wall at 150 (x 100 to x 4900) in 10 levels at 300 (233.8 to 2933.8 mm above the base), out of the north face: leg 187.3 (100.6 in the wall, 86.7 out), foot 49.7.')`), 'the read-back shows 33 L bars along the wall in 10 levels, leg 187.3, 100.6 in the wall and 86.7 out');
+  await clickInCard(b, '▦ Generate sets');
+  report(await waitFor(b, `window.__store.getState().bars.length === 205`), 'second starters add one row to the wall sample: 205 rows');
+  report(await b.ev(`(() => {
+    const r = window.__store.getState().bars.find((x) => x.Bar_mark === 'WS1');
+    return !!r && r.setId === 'W1 second starters' && r.Rebar_Type === 'profile' && r.Plane === 'XY' && r.Dia === 13 && r.legs === JSON.stringify([[49.7, 0], [187.3, 270]])
+      && r.Pos_x === 2100 && r.Pos_y === 2286.7 && r.Pos_z === 233.8 && r.qty_x === 33 && r.spacing_x === 150 && r.qty_z === 10 && r.spacing_z === 300 && r.host === 'c2';
+  })()`), 'the WS1 row is a flat L in plan: bend 86.7 out of the north face (y 2286.7), 33 along the wall at x 2100 and 10 levels from 233.8');
+  await b.ev(`window.__store.getState().undo()`);
+  report(await waitFor(b, `window.__store.getState().bars.length === 0`), 'one undo removes the second starters with the rest');
+  await pickField(b, 'secondFace', 'both');
+  await clickInCard(b, '▦ Generate sets');
+  report(await waitFor(b, `window.__store.getState().bars.length === 206`), 'both faces add two rows: 206');
+  report(await b.ev(`JSON.stringify(window.__store.getState().bars.filter((x) => x.setId === 'W1 second starters').map((x) => [x.Bar_mark, x.Pos_y])) === JSON.stringify([['WS1', 2286.7], ['WS2', 1913.3]])`), 'WS1 stands out of the north face and WS2 out of the south face (y 1913.3)');
+  await b.ev(`window.__store.getState().undo()`);
+  await waitFor(b, `window.__store.getState().bars.length === 0`);
+  await pickField(b, 'secondFace', '');
+  await clickInCard(b, '▦ Generate sets');
+  report(await waitFor(b, `window.__store.getState().bars.length === 204`), 'with the face set to None the wall card is the sample again: 204 rows');
+  await b.ev(`window.__store.getState().undo()`);
+  await waitFor(b, `window.__store.getState().bars.length === 0`);
+
   // Size steps: the C4/C4A drawing, typed as the drawing writes it. The base has long and short faces; B3 platform and B2 keep them ("same as
   // below"); B1 takes one size, 2400 x 800, from its SFL up. Entered bottom up, so each new level goes above the one before.
   await b.ev(`window.__store.setState({ concretes: [${JSON.stringify(COLUMN)}, ${JSON.stringify(C4)}], bars: [], selectedConcrete: 'c4', past: [], future: [] })`);

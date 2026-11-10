@@ -289,6 +289,61 @@ both face columns are required. Each cell holds what the card's cell holds: `sam
 `MAIN BARS layout` takes `same as below`, `one size on every face` or `long and short faces`. SFL is in metres (`-20.870`). A bad header, cell or
 SFL stops the run with the reason. See `inputs/Sub_card_levels.csv`.
 
+## Wall schedule from a CSV (CLI)
+
+`scripts/wall_csv_to_bbs.mjs` adds walls' sets (mains, distribution, links, and starters or dowels) from a CSV with one row per wall, written as a
+wall schedule writes it. It runs the card's own steps and writes a project JSON with the sets added. Every wall is checked before anything is
+written, so a row that cannot be built stops the run by name and leaves no file.
+
+```bash
+node scripts/wall_csv_to_bbs.mjs --csv inputs/wall_template.csv --out inputs/walls_bbs.json
+```
+
+- Each wall is built from its row (a new member), or, with `--project <file>`, is the member of that name in the project; a size the row gives then
+  replaces the project's. `--wall <name>` adds only that wall. `--cover <mm>` is the cover on both faces (default 40, or the project's).
+  `--out <file>` is the project to write (default `<csv name>_bbs.json` beside the CSV). `--dry-run` prints each wall's read-back and writes nothing.
+- A new wall sits at its `X (mm)`, `Y (mm)` and `SFL (m)` (blank: 0). A blank `Y (mm)` stacks it 1000 mm behind the new wall before it, so that
+  walls do not overlap in the model.
+- Columns: `Wall, Thickness (mm), Length (mm), Height (mm), SFL (m), X (mm), Y (mm), Main bars, Distribution bars, Links, Link leg A (mm), Base, Top,
+  Starter bars, Starter lap (mm), Starter anchorage (mm), Starter bend leg (mm), Dowel bars, Dowel length (mm), Dowel projection (mm), Second starter
+  bars, Second starter face, Second starter leg (mm), Second starter foot (mm), Second starter projection (mm), Second starter first level (mm)`.
+  Only `Wall`, `Main bars` and `Distribution bars` are required (the others are optional, and a column may be left out of the file), and a new wall
+  needs its three sizes. A wall must run along X (length above thickness).
+- Bars are written as the drawing writes them: `Main bars` `H16-150` (Ø and spacing, as the card's Main Ø and Main spacing: the verticals ring the
+  wall's outline), `Distribution bars` `H13-150` (two horizontal layers, spaced up the height), `Links` `H13-150 x 300` (spacing along the wall,
+  then up it). The link's length is not typed: its spine follows the thickness less the covers (107 mm on a 200 mm wall with 40 mm covers), leg B
+  the thickness less the covers (120), the hook is the usual single hook, and `Link leg A (mm)` defaults to the card's 130.
+- A wall with no links (only main bars and distribution bars): leave `Links` blank (or write `none`), or leave the column out. The wall gets no link
+  row, its link inputs are not checked, and a `Link leg A (mm)` with no links is refused. In the card, untick Links.
+- Second starters (the `PB1 H13` of a wall drawing; the card has the same section under its wall inputs): flat L bars in plan that stand out of a
+  face of the wall, with the long leg across the thickness, from outside the face into the wall, and the foot lying along the wall on the -X side of the leg (the bar runs along +X from the end of the foot to the bend, then back across the thickness, as in the drawing).
+  `Second starter bars` is `H13-150 x 300` (Ø, spacing along the wall, spacing up it), `Second starter face` is `north` (the face at the higher Y,
+  the top edge of the plan), `south` (the lower Y, mirrored) or `both`, and `Second starter leg (mm)` is the whole long leg. These three are needed
+  once there are second starters. Optional: `Second starter foot (mm)` (blank: 10 × Ø, 150 at least, as a starter's bend leg),
+  `Second starter projection (mm)` (how far the bend stands out of the face; blank: half the leg) and `Second starter first level (mm)` (above the
+  base; blank: the bottom cover plus half the bar). They are spaced along the wall as the links and the dowels are (centred, the first and last
+  never closer than 100 mm to the ends: 33 at 150 on a 5000 mm wall, x 100 to 4900) and up the height at the second spacing while the bar stays
+  under the top cover. The rows are marks `WS1` (north) and `WS2` (south), `profile` rows in the set `<wall> second starters`. The run (and the card)
+  refuses a projection that is not above zero and below the leg, a part in the wall deeper than the thickness less the cover, and a first level
+  outside the covers. `inputs/wall_r1_schedule.csv` is `inputs/wall_sample_starter_array_r1.dxf` as a row (a 313.7 mm wall, its `PB1 H13` as second
+  starters: leg 301, foot 49.7, bend 86.7 out of the north face, first level 233.8), with a wall with no links beside it. The DXF import of the same
+  drawing gives the same L (cut length 325, y 400.4 to 99.4, levels 233.8 to 2933.8), but 34 along the wall (from its drawn tick, starting 25.9 in)
+  where the card's rule gives 33 from 100 in.
+- `Base` and `Top` say what stands at each end of the wall: `starters` (blank is starters), `dowels` or `none`. `Starter bars` is the starters' Ø
+  (`H13`, blank: the main bars' Ø): starters stand at the main bars, so they take no spacing. The lap, anchorage and bend leg are the card's
+  fields, with its defaults when blank.
+- Dowels instead of starters (a wall end set to `dowels`; the card has the same option under its wall inputs): the wall's own bars end inside the
+  wall, and in place of the starters single straight dowels stand in the middle of the thickness. `Dowel bars` is `H16-1000` (or `H16-1000 c/c`: Ø
+  and spacing), `Dowel length (mm)` the whole bar, and `Dowel projection (mm)` how far it stands out of the wall's end, the rest standing in the
+  wall (blank: half the length; 250 for a 50 mm gap and the 200 mm sleeve in the slab above). The dowels are centred along the wall, so the first
+  and the last are the same distance from its ends (never closer than 100 mm): 5 at 1000 c/c on a 5000 mm wall, at x 500, 1500 ... 4500. An end
+  with dowels has no starters, and both ends may have dowels. The rows are marks `WD1` (base) and `WD2` (top), one grid row each, in the set
+  `<wall> dowels`. The run (and the card) refuses a dowel that does not fit between the covers across the thickness, a projection that is not
+  above zero and below the length, or a part in the wall that is taller than the wall; it warns when the slab it stands in is shallower than the
+  projection.
+- A bad header, cell or notation stops the run with the wall and the cell. See `inputs/wall_template.csv` (the header, with the user's walls) and
+  `inputs/wall_r1_schedule.csv`.
+
 ## Large projects (BarField renderer)
 
 Projects with hundreds of thousands to millions of physical bars stay interactive: bars are drawn in

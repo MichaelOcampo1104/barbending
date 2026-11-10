@@ -52,11 +52,11 @@ function formOf(member, cover) {
   };
 }
 
-function NumField({ label, field, value, onChange, placeholder }) {
+function NumField({ label, field, value, onChange, placeholder, disabled }) {
   return (
     <label className="fld">
       <span>{label}</span>
-      <input type="text" inputMode="decimal" data-field={field} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+      <input type="text" inputMode="decimal" data-field={field} value={value} placeholder={placeholder} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
     </label>
   );
 }
@@ -305,12 +305,18 @@ export default function MemberCard({ member }) {
           </div>
           <div className="grid3">
             <NumField label="Distribution spacing" value={W.distSpacing} onChange={(v) => patch('wall', 'distSpacing', v)} />
-            <NumField label="Link Ø" value={W.linkDia} onChange={(v) => patch('wall', 'linkDia', v)} />
-            <NumField label="Link spacing" value={W.linkSpacing} onChange={(v) => patch('wall', 'linkSpacing', v)} />
+            <label className="chk" style={{ marginTop: 12, gridColumn: 'span 2' }} title="Untick for a wall with only main bars and distribution bars">
+              <input type="checkbox" data-field="links" checked={!W.noLinks} onChange={(e) => patch('wall', 'noLinks', !e.target.checked)} />
+              Links (untick for a wall with none)
+            </label>
           </div>
           <div className="grid3">
-            <NumField label="Link spacing (height)" value={W.linkVSpacing} onChange={(v) => patch('wall', 'linkVSpacing', v)} />
-            <NumField label="Link leg A" value={W.legA} onChange={(v) => patch('wall', 'legA', v)} />
+            <NumField label="Link Ø" field="linkDia" value={W.linkDia} disabled={!!W.noLinks} onChange={(v) => patch('wall', 'linkDia', v)} />
+            <NumField label="Link spacing" field="linkSpacing" value={W.linkSpacing} disabled={!!W.noLinks} onChange={(v) => patch('wall', 'linkSpacing', v)} />
+            <NumField label="Link spacing (height)" field="linkVSpacing" value={W.linkVSpacing} disabled={!!W.noLinks} onChange={(v) => patch('wall', 'linkVSpacing', v)} />
+          </div>
+          <div className="grid3">
+            <NumField label="Link leg A" field="legA" value={W.legA} disabled={!!W.noLinks} onChange={(v) => patch('wall', 'legA', v)} />
           </div>
         </>
       )}
@@ -318,11 +324,13 @@ export default function MemberCard({ member }) {
       <div className="sect">Starters</div>
       <div className="grid3">
         <label className="chk" style={{ marginTop: 12 }}>
-          <input type="checkbox" checked={S.base} onChange={(e) => patch('starters', 'base', e.target.checked)} />
+          <input type="checkbox" data-field="starterBase" checked={S.base && !(isWall && S.dowelBase)} disabled={isWall && S.dowelBase}
+            onChange={(e) => patch('starters', 'base', e.target.checked)} />
           Base
         </label>
         <label className="chk" style={{ marginTop: 12 }}>
-          <input type="checkbox" checked={S.top} onChange={(e) => patch('starters', 'top', e.target.checked)} />
+          <input type="checkbox" data-field="starterTop" checked={S.top && !(isWall && S.dowelTop)} disabled={isWall && S.dowelTop}
+            onChange={(e) => patch('starters', 'top', e.target.checked)} />
           Top
         </label>
         <NumField label="Base Ø" value={S.dia} placeholder={baseDias && baseDias.long ? pair(baseDias.long, baseDias.short) : ''} onChange={(v) => patch('starters', 'dia', v)} />
@@ -335,6 +343,68 @@ export default function MemberCard({ member }) {
       <div className="grid3">
         <NumField label="Bend leg" value={S.bend} placeholder={startBase ? pair(startBase.long.bend, startBase.short.bend) : ''} onChange={(v) => patch('starters', 'bend', v)} />
       </div>
+
+      {isWall && (
+        <>
+          <div className="sect">Dowels instead of starters</div>
+          <div className="distnote">A wall end set to dowels has no starters: single straight bars stand in the middle of the thickness, centred along the wall at the spacing, and the wall's own bars end inside the wall. Projection is how far a dowel stands out of the wall's end (blank: half its length); the rest of its length stands in the wall.</div>
+          <div className="grid3">
+            <label className="chk" style={{ marginTop: 12 }}>
+              <input type="checkbox" data-field="dowelBase" checked={!!S.dowelBase} onChange={(e) => patch('starters', 'dowelBase', e.target.checked)} />
+              Base
+            </label>
+            <label className="chk" style={{ marginTop: 12 }}>
+              <input type="checkbox" data-field="dowelTop" checked={!!S.dowelTop} onChange={(e) => patch('starters', 'dowelTop', e.target.checked)} />
+              Top
+            </label>
+            <NumField label="Dowel Ø" field="dowelDia" value={S.dowelDia} onChange={(v) => patch('starters', 'dowelDia', v)} />
+          </div>
+          <div className="grid3">
+            <NumField label="Dowel spacing" field="dowelSpacing" value={S.dowelSpacing} onChange={(v) => patch('starters', 'dowelSpacing', v)} />
+            <NumField label="Dowel length" field="dowelLength" value={S.dowelLength} onChange={(v) => patch('starters', 'dowelLength', v)} />
+            <NumField label="Projection" field="dowelOut" value={S.dowelOut} placeholder={Number(S.dowelLength) > 0 ? String(Number(S.dowelLength) / 2) : ''}
+              onChange={(v) => patch('starters', 'dowelOut', v)} />
+          </div>
+          {plan.ok && plan.dowels && (
+            <div className="distnote" data-dowels="read-back">
+              Dowels: {plan.dowels.count} H{plan.dowels.dia} at {plan.dowels.spacing} c/c, from x {Math.round(plan.dowels.first * 10) / 10} to x {Math.round(plan.dowels.last * 10) / 10}; each {plan.dowels.length} long, {Math.round(plan.dowels.embed * 10) / 10} in the wall and {Math.round(plan.dowels.out * 10) / 10} out.
+            </div>
+          )}
+
+          <div className="sect">Second starters (L bars out of a face)</div>
+          <div className="distnote">Flat L bars in plan that stand out of a face of the wall: the long leg runs across the thickness, from outside the face into the wall, and the foot lies along the wall, on the -X side of the leg. They are spaced along the wall (centred) and up its height. Projection is how far the bend stands out of the face (blank: half the leg), and the first level is in mm above the base (blank: the bottom cover).</div>
+          <div className="grid3">
+            <label className="fld">
+              <span>Face</span>
+              <select data-field="secondFace" value={S.second} onChange={(e) => patch('starters', 'second', e.target.value)}>
+                <option value="">None</option>
+                <option value="north">North (high Y)</option>
+                <option value="south">South (low Y)</option>
+                <option value="both">Both faces</option>
+              </select>
+            </label>
+            <NumField label="Ø" field="secondDia" value={S.secondDia} onChange={(v) => patch('starters', 'secondDia', v)} />
+            <NumField label="Spacing along" field="secondSpacing" value={S.secondSpacing} onChange={(v) => patch('starters', 'secondSpacing', v)} />
+          </div>
+          <div className="grid3">
+            <NumField label="Spacing up" field="secondVSpacing" value={S.secondVSpacing} onChange={(v) => patch('starters', 'secondVSpacing', v)} />
+            <NumField label="Leg" field="secondLeg" value={S.secondLeg} onChange={(v) => patch('starters', 'secondLeg', v)} />
+            <NumField label="Foot" field="secondFoot" value={S.secondFoot} placeholder={Number(S.secondDia) > 0 ? String(Math.max(10 * Number(S.secondDia), 150)) : ''}
+              onChange={(v) => patch('starters', 'secondFoot', v)} />
+          </div>
+          <div className="grid3">
+            <NumField label="Projection" field="secondOut" value={S.secondOut} placeholder={Number(S.secondLeg) > 0 ? String(Number(S.secondLeg) / 2) : ''}
+              onChange={(v) => patch('starters', 'secondOut', v)} />
+            <NumField label="First level" field="secondZ" value={S.secondZ}
+              placeholder={Number(S.secondDia) > 0 ? String(Number(member.covB ?? cover) + Number(S.secondDia) / 2) : ''} onChange={(v) => patch('starters', 'secondZ', v)} />
+          </div>
+          {plan.ok && plan.second && (
+            <div className="distnote" data-second="read-back">
+              Second starters: {plan.second.count} H{plan.second.dia} L bars along the wall at {plan.second.spacing} (x {plan.second.first} to x {plan.second.last}) in {plan.second.levels} level{plan.second.levels === 1 ? '' : 's'} at {plan.second.vSpacing} ({plan.second.zFirst} to {plan.second.zLast} mm above the base), out of the {plan.second.face === 'both' ? 'north and south faces' : `${plan.second.face} face`}: leg {plan.second.leg} ({plan.second.embed} in the wall, {plan.second.out} out), foot {plan.second.foot}.
+            </div>
+          )}
+        </>
+      )}
 
       {plan.ok ? (
         <div className="distnote" style={{ marginTop: 4 }}>

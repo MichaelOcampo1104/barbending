@@ -35,10 +35,11 @@ const LAYOUT_WORDS = new Map([
 ]);
 const SAME_CELL = /^(=\s*below|same(\s+as\s+below)?)$/i;
 const NUMBER_CELL = /^-?\d+(\.\d+)?$/;
-const norm = (s) => String(s).replace(/\s+/g, ' ').trim().toLowerCase();
+export const norm = (s) => String(s).replace(/\s+/g, ' ').trim().toLowerCase();
 
 // Splits CSV text into rows of trimmed cells. A cell in double quotes may hold commas, and "" is one quote. Blank rows are dropped.
-function csvRows(text) {
+// (The wall CSV, src/bbs/wallCsv.js, reads its file the same way.)
+export function csvRows(text) {
   const s = String(text).replace(/^﻿/, '');
   const rows = [];
   let row = [];
@@ -120,7 +121,7 @@ export function parseColumnCsv(text) {
 export function columnFormFromCsv(text, { layout = 'all', lap = '', cover = 40 } = {}) {
   const parsed = parseColumnCsv(text);
   if (!parsed.ok) return parsed;
-  const wall = Object.fromEntries(Object.entries(defaultCardInputs(cover).wall).map(([k, v]) => [k, String(v)]));
+  const wall = Object.fromEntries(Object.entries(defaultCardInputs(cover).wall).map(([k, v]) => [k, typeof v === 'boolean' ? v : String(v)]));
   return {
     ok: true,
     form: { kind: 'Column', column: { layout, lap: String(lap ?? ''), schedule: parsed.schedule }, wall, starters: { ...CARD_STARTERS } },
