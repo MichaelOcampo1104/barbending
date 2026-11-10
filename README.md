@@ -249,6 +249,16 @@ py scripts/dxf_to_bbs.py inputs/additional_bar_shapes.dxf
   warned. E.g. `PB1 PROFILE H13 VIEW=XZ HOST=W1 Y=46.5 Z=187.3 SP=150 NY=2
   SY=107` with a horizontal tick through the drawn L gives one bar every
   150 mm along the tick at Y 46.5 and Y 153.5.
+- Up the host's height: `SZ=<spacing>`, or the second value of
+  `SP=<along>x<up>` as on the wall links, without `NZ=`, counts the levels
+  from the host's height as the wall bars do. The first copy sits at `Z=`
+  (else the host's bottom cover), then every spacing up (down, if negative)
+  while the profile's highest (lowest) point stays inside the top (bottom)
+  cover. A WARN says how far a copy pokes out of a cover and which `Z=` would
+  sit the lowest one on it. `NZ=` wins, and with no host the levels need
+  `NZ=`. E.g. `PB1 PROFILE H13 VIEW=XZ HOST=W1 Y=46.5 Z=233.8 SP=150x300`
+  with the tick gives a bar every 150 mm along the wall and every 300 mm up
+  its 3000 mm height (34 × 10 = 340 bars).
 - Schedule: shape 99 (special), cut length in A with per-turn bend
   deductions; `legs` round-trips through CSV/project JSON.
 

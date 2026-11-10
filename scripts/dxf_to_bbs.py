@@ -140,6 +140,15 @@
 #     the profile is warned. E.g. "PB1 PROFILE H13 VIEW=XZ HOST=W1 Y=46.5
 #     Z=187.3 SP=150 NY=2 SY=107" with a horizontal tick through the drawn L =
 #     one starter per 150 mm along the tick, at both wall faces (Y 46.5, 153.5).
+#     Up the host's height: SZ=<spacing> (or the second value of
+#     SP=<along>x<up>, as on the wall links) without NZ= counts the levels from
+#     the host's height, like the wall bars: the first copy at Z= (else the host's
+#     bottom cover), then every <spacing> up (down, if negative) while the
+#     profile's highest (lowest) point stays inside the top (bottom) cover. A
+#     WARN says how far a copy pokes out of a cover and which Z= would sit the
+#     lowest one on it. NZ= wins; with no host the levels need NZ=.
+#     E.g. "PB1 PROFILE H13 VIEW=XZ HOST=W1 Y=46.5 Z=233.8 SP=150x300" with the
+#     tick = a copy every 150 mm along the tick and every 300 mm up the wall.
 #   walls: closed rect on CONC-* + "W1 WALL W1 THK=<height> Z=<base> ...".
 #     Mains are verticals: "WV1 VERT 34xH12 HOST=<wall>" rings the rect like a
 #     column (perimeter positions, full internal height, good bond).
@@ -1159,6 +1168,21 @@ def main():
     # tick's length sets it (round(length / spacing) + 1; the spacing is
     # SX=/SY=, else SP=, else 150) and the copies are CENTRED on the drawn
     # profile, as a tick centres the copies of a bar line. tick = (axis, length).
+    # Up the host's height: a spacing up Z (SZ=, or the second value of
+    # SP=<along>x<up>, as on the wall links) with no NZ= counts the levels from
+    # the host's height, like the wall bars: from Pos_z up (down, if the spacing
+    # is negative) while the profile's highest (lowest) point stays inside the
+    # top (bottom) cover. zfit = (Pos_z, lowest Pos_z allowed, highest Pos_z allowed).
+    def _prof_zsp(ptxt):
+        # the spacing up the height: SZ=, else the second value of SP=<along>x<up>
+        if not ptxt:
+            return None
+        ms = re.search(r'\bSZ\s*=\s*(-?[\d.]+)', ptxt, re.I)
+        if ms:
+            return float(ms.group(1))
+        m2 = re.search(r'\bSP\s*=?\s*-?[\d.]+\s*[x×]\s*(-?[\d.]+)', ptxt, re.I)
+        return float(m2.group(1)) if m2 else None
+
     def _prof_axis_keys(ptxt):
         # NX=/SX= style keys: {'X': (count or None, spacing or None), ...}
         out = {}
@@ -1169,7 +1193,7 @@ def main():
                 out[k] = (int(mn.group(1)) if mn else None, float(ms.group(1)) if ms else None)
         return out
 
-    def _prof_dist(ptxt, pl, tick=None):
+    def _prof_dist(ptxt, pl, tick=None, zfit=None):
         mN = re.search(r'\bN\s*=?\s*(\d+)', ptxt, re.I) if ptxt else None
         mSP = re.search(r'\bSP\s*=?\s*(-?[\d.]+)', ptxt, re.I) if ptxt else None
         mAX = re.search(r'\bAXIS\s*=?\s*([XYZ])\b', ptxt, re.I) if ptxt else None
@@ -1204,13 +1228,23 @@ def main():
             counted.add(ax)
             n_axis = ax
         base_sp = float(mSP.group(1)) if mSP else (float(a.profile_spacing) if a.profile_spacing else 150.0)
+        zsp = _prof_zsp(ptxt)  # the spacing up the height, when the tag gives one
         for k in sorted(keys):
             kn, ks = keys[k]
             if kn is not None and kn > 1:
-                spk = ks if ks is not None else base_sp
+                spk = ks if ks is not None else (zsp if (k == 'Z' and zsp is not None) else base_sp)
                 g[f'qty_{k.lower()}'] = kn
                 g[f'spacing_{k.lower()}'] = spk
                 notes.append(f'x{kn} toward {"-" if spk < 0 else "+"}{k} @ {abs(spk):.0f}')
+        if zsp and 'Z' not in counted and zfit is not None:
+            # levels up (or down) the host: as many as keep the profile inside the covers
+            z0, lo_start, hi_start = zfit
+            span = (hi_start - z0) if zsp > 0 else (z0 - lo_start)
+            nz = max(1, int((span + 1e-6) // abs(zsp)) + 1)
+            if nz > 1:
+                g['qty_z'] = nz
+                g['spacing_z'] = zsp
+                notes.append(f'x{nz} {"down" if zsp < 0 else "up"} the host @ {abs(zsp):g}')
         if tick is not None and tick[0] not in counted:
             tk, tlen = tick
             ks = keys.get(tk, (None, None))[1]
@@ -1380,7 +1414,19 @@ def main():
                 'L': _tot, 'z': _pz, 'zsrc': _pzsrc,
                 'tag': _ptxt, 'legs': _legs, 'nosplit': True,
                 'host': _phost}
-        _pdist = _prof_dist(_ptxt, _ppl)
+        # how far the drawn profile reaches above / below its first vertex (standing planes only), so a stack up the
+        # host's height can keep every copy between the covers: zfit = (Pos_z, lowest Pos_z allowed, highest Pos_z allowed)
+        _pzfit = None
+        if _mslab is not None and _mslab.get('lz'):
+            _zc, _zs = 0.0, [0.0]
+            if _ppl in ('XZ', 'YZ'):
+                for _ln, _th in _legs:
+                    _zc += _ln * math.sin(math.radians(_th + _prot0))
+                    _zs.append(_zc)
+            _pzfit = (_pz,
+                      _mslab['z'] + _mslab.get('covB', a.cover) + _pdia/2 - min(_zs),
+                      _mslab['z'] + _mslab['lz'] - _mslab.get('covT', a.cover) - _pdia/2 - max(_zs))
+        _pdist = _prof_dist(_ptxt, _ppl, zfit=_pzfit)
         _ptick = _prof_find_tick(_q)
         if _ptick:
             _pti, _ptax, _ptlen, _ptoff = _ptick
@@ -1388,11 +1434,25 @@ def main():
                 print(f'NOTE {_pmark}: the tag gives the count along {_ptax} itself, so the extent tick beside it ({_ptlen:.0f} mm) is not used for this profile')
             else:
                 main._tick_used.add(_pti)  # taken: no bar line pairs with it afterwards
-                _pdist = _prof_dist(_ptxt, _ppl, tick=(_ptax, _ptlen))
+                _pdist = _prof_dist(_ptxt, _ppl, tick=(_ptax, _ptlen), zfit=_pzfit)
                 _psp = _pdist[f'spacing_{_ptax.lower()}']
                 if _pdist[f'qty_{_ptax.lower()}'] > 1 and abs(_ptoff) > _psp / 2:
                     print(f'WARN {_pmark}: the tick\'s middle is {abs(_ptoff):.0f} mm off the profile along {_ptax}; the copies are centred on the '
                           f'profile, so the end copies miss the tick ends by {abs(_ptoff):.0f} mm - move the tick or the profile')
+        _pzsp = _prof_zsp(_ptxt)
+        if _pzsp and _pdist['qty_z'] == 1 and not re.search(r'\bNZ\s*=', _ptxt, re.I):
+            if _pzfit is None:
+                print(f'NOTE {_pmark}: a spacing up the height ({abs(_pzsp):g}) needs the host\'s height to count the levels: add HOST=<member> (or NZ=)')
+            else:
+                print(f'NOTE {_pmark}: only one level fits the host between its covers at {abs(_pzsp):g}')
+        if _pzfit is not None and _pdist['qty_z'] > 1:
+            # the stack's lowest and highest copies against the covers: say what Z= would sit them on
+            _zlast = _pz + (_pdist['qty_z'] - 1) * _pdist['spacing_z']
+            _zlo, _zhi = min(_pz, _zlast), max(_pz, _zlast)
+            if _zlo < _pzfit[1] - 1e-6:
+                print(f'WARN {_pmark}: the lowest copy reaches {_pzfit[1] - _zlo:.1f} mm below the bottom cover (Z={_pzfit[1] + (_pz - _zlo):.1f} would sit it on the cover)')
+            if _zhi > _pzfit[2] + 1e-6:
+                print(f'WARN {_pmark}: the highest copy reaches {_zhi - _pzfit[2]:.1f} mm above the top cover')
         for _gk, _gv in _pdist.items():
             if _gk != 'dist_note':
                 _pov[_gk] = _gv
